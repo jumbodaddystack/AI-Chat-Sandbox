@@ -3,6 +3,7 @@ package com.aichat.sandbox.ui.screens.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichat.sandbox.data.local.PreferencesManager
+import com.aichat.sandbox.data.model.ChatSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -10,14 +11,15 @@ import javax.inject.Inject
 
 data class SettingsUiState(
     val apiKey: String = "",
-    val apiBaseUrl: String = "https://api.openai.com/v1/",
-    val defaultModel: String = "gpt-4o",
-    val defaultTemperature: Float = 0.1f,
-    val defaultTopP: Float = 1.0f,
-    val defaultMaxTokens: Int = 131072,
-    val defaultPresencePenalty: Float = 0.0f,
-    val defaultFrequencyPenalty: Float = 0.0f,
-    val darkMode: Boolean = true
+    val apiBaseUrl: String = ChatSettings.Defaults.API_BASE_URL,
+    val apiBaseUrlError: String? = null,
+    val defaultModel: String = ChatSettings.Defaults.MODEL,
+    val defaultTemperature: Float = ChatSettings.Defaults.TEMPERATURE,
+    val defaultTopP: Float = ChatSettings.Defaults.TOP_P,
+    val defaultMaxTokens: Int = ChatSettings.Defaults.MAX_TOKENS,
+    val defaultPresencePenalty: Float = ChatSettings.Defaults.PRESENCE_PENALTY,
+    val defaultFrequencyPenalty: Float = ChatSettings.Defaults.FREQUENCY_PENALTY,
+    val darkMode: Boolean = ChatSettings.Defaults.DARK_MODE
 )
 
 @HiltViewModel
@@ -75,7 +77,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setApiBaseUrl(url: String) {
-        viewModelScope.launch { preferencesManager.setApiBaseUrl(url) }
+        _uiState.update { it.copy(apiBaseUrl = url) }
+        if (PreferencesManager.isValidApiBaseUrl(url)) {
+            _uiState.update { it.copy(apiBaseUrlError = null) }
+            viewModelScope.launch { preferencesManager.setApiBaseUrl(url) }
+        } else if (url.isNotEmpty()) {
+            _uiState.update { it.copy(apiBaseUrlError = "URL must be HTTPS, valid, and end with /") }
+        }
     }
 
     fun setDefaultModel(model: String) {

@@ -1,12 +1,24 @@
 package com.aichat.sandbox.data.model
 
 data class ChatSettings(
-    val temperature: Float = 0.1f,
-    val topP: Float = 1.0f,
-    val maxTokens: Int = 131072,
-    val presencePenalty: Float = 0.0f,
-    val frequencyPenalty: Float = 0.0f
-)
+    val temperature: Float = Defaults.TEMPERATURE,
+    val topP: Float = Defaults.TOP_P,
+    val maxTokens: Int = Defaults.MAX_TOKENS,
+    val presencePenalty: Float = Defaults.PRESENCE_PENALTY,
+    val frequencyPenalty: Float = Defaults.FREQUENCY_PENALTY
+) {
+    object Defaults {
+        const val MODEL = "gpt-4o"
+        const val TEMPERATURE = 0.1f
+        const val TOP_P = 1.0f
+        const val MAX_TOKENS = 131072
+        const val MAX_TOKENS_LIMIT = 131072f
+        const val PRESENCE_PENALTY = 0.0f
+        const val FREQUENCY_PENALTY = 0.0f
+        const val API_BASE_URL = "https://api.openai.com/v1/"
+        const val DARK_MODE = true
+    }
+}
 
 data class ApiProvider(
     val name: String,

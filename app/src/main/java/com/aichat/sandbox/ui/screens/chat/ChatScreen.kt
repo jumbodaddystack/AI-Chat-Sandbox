@@ -26,11 +26,14 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichat.sandbox.data.model.ApiProvider
+import com.aichat.sandbox.data.model.ChatSettings
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.ui.components.MarkdownText
 import com.aichat.sandbox.ui.components.ModelSelector
@@ -206,7 +209,7 @@ private fun ChatTopBar(
             ) {
                 Icon(
                     Icons.Default.Chat,
-                    contentDescription = null,
+                    contentDescription = "Chat",
                     modifier = Modifier.size(18.dp),
                     tint = MaterialTheme.colorScheme.onSurface
                 )
@@ -218,7 +221,7 @@ private fun ChatTopBar(
                 )
                 Icon(
                     Icons.Default.ArrowDropDown,
-                    contentDescription = null,
+                    contentDescription = "Options",
                     tint = MaterialTheme.colorScheme.onSurface
                 )
             }
@@ -321,6 +324,9 @@ private fun MessageBubble(
             } else {
                 MarkdownText(
                     text = message.content + if (isStreaming) "▊" else "",
+                    modifier = if (isStreaming) Modifier.semantics {
+                        contentDescription = "Assistant is typing"
+                    } else Modifier,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
@@ -581,7 +587,7 @@ private fun ChatSettingsPanel(
             SettingsSlider(
                 label = "Max tokens",
                 value = chat.maxTokens.toFloat(),
-                valueRange = 1f..131072f,
+                valueRange = 1f..ChatSettings.Defaults.MAX_TOKENS_LIMIT,
                 onValueChange = { onMaxTokensChange(it.toInt()) },
                 displayFormat = { it.toInt().toString() }
             )
