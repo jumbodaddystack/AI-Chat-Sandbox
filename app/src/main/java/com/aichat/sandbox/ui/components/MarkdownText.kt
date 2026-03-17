@@ -1,6 +1,7 @@
 package com.aichat.sandbox.ui.components
 
 import android.widget.TextView
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -18,6 +19,7 @@ fun MarkdownText(
 ) {
     val context = LocalContext.current
     val markwon = remember { Markwon.create(context) }
+    val linkColor = MaterialTheme.colorScheme.primary.toArgb()
 
     AndroidView(
         modifier = modifier,
@@ -26,10 +28,11 @@ fun MarkdownText(
                 if (color != Color.Unspecified) {
                     setTextColor(color.toArgb())
                 }
-                setLinkTextColor(android.graphics.Color.parseColor("#6BA3F7"))
+                setLinkTextColor(linkColor)
             }
         },
         update = { textView ->
+            textView.setLinkTextColor(linkColor)
             markwon.setMarkdown(textView, text)
         }
     )

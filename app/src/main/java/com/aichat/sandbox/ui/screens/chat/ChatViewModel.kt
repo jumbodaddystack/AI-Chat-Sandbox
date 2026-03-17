@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.data.model.MessageRole
+import com.aichat.sandbox.data.model.ModelPricing
 import com.aichat.sandbox.data.remote.ApiResult
 import com.aichat.sandbox.data.remote.StreamEvent
 import com.aichat.sandbox.data.repository.ChatRepository
@@ -55,6 +56,10 @@ class ChatViewModel @Inject constructor(
     fun sendMessage(content: String) {
         val chat = _uiState.value.chat ?: return
         if (content.isBlank()) return
+        if (content.length > MAX_MESSAGE_LENGTH) {
+            _uiState.update { it.copy(error = "Message too long (max ${MAX_MESSAGE_LENGTH / 1000}K characters)") }
+            return
+        }
 
         viewModelScope.launch {
             // Save user message
@@ -274,21 +279,10 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun estimateCost(model: String, promptTokens: Int, completionTokens: Int): Double {
-        // Approximate pricing per 1M tokens
-        val (inputPrice, outputPrice) = when {
-            model.contains("gpt-4o-mini") -> 0.15 to 0.60
-            model.contains("gpt-4o") -> 2.50 to 10.00
-            model.contains("gpt-4-turbo") -> 10.00 to 30.00
-            model.contains("gpt-4") -> 30.00 to 60.00
-            model.contains("gpt-3.5") -> 0.50 to 1.50
-            model.contains("o1-preview") -> 15.00 to 60.00
-            model.contains("o1-mini") -> 3.00 to 12.00
-            model.contains("claude-3-opus") -> 15.00 to 75.00
-            model.contains("claude-3-5-sonnet") || model.contains("claude-sonnet") -> 3.00 to 15.00
-            model.contains("claude-3-haiku") || model.contains("claude-haiku") -> 0.25 to 1.25
-            model.contains("claude-opus") -> 15.00 to 75.00
-            else -> 2.50 to 10.00
-        }
-        return (promptTokens * inputPrice / 1_000_000.0) + (completionTokens * outputPrice / 1_000_000.0)
+        return ModelPricing.forModel(model).estimateCost(promptTokens, completionTokens)
+    }
+
+    companion object {
+        const val MAX_MESSAGE_LENGTH = 100_000
     }
 }

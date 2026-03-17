@@ -1,9 +1,12 @@
 package com.aichat.sandbox.data.remote
 
+import android.util.Log
 import com.aichat.sandbox.BuildConfig
 import com.aichat.sandbox.data.model.*
 import com.google.gson.Gson
+import com.google.gson.JsonSyntaxException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -36,7 +39,13 @@ class ApiClient @Inject constructor() {
     private fun buildApi(baseUrl: String, apiKey: String): OpenAiApi {
         val cacheKey = "$baseUrl|$apiKey"
         return apiCache.getOrPut(cacheKey) {
+            val loggingInterceptor = HttpLoggingInterceptor().apply {
+                level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
+                        else HttpLoggingInterceptor.Level.NONE
+            }
+
             val client = OkHttpClient.Builder()
+                .addInterceptor(loggingInterceptor)
                 .addInterceptor { chain ->
                     val request = chain.request().newBuilder()
                         .addHeader("Authorization", "Bearer $apiKey")
@@ -44,10 +53,6 @@ class ApiClient @Inject constructor() {
                         .build()
                     chain.proceed(request)
                 }
-                .addInterceptor(HttpLoggingInterceptor().apply {
-                    level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY
-                            else HttpLoggingInterceptor.Level.NONE
-                })
                 .connectTimeout(60, TimeUnit.SECONDS)
                 .readTimeout(120, TimeUnit.SECONDS)
                 .writeTimeout(60, TimeUnit.SECONDS)
@@ -146,6 +151,7 @@ class ApiClient @Inject constructor() {
         reader.use { r ->
             var line: String?
             while (r.readLine().also { line = it } != null) {
+                kotlinx.coroutines.coroutineContext.ensureActive()
                 val l = line ?: continue
                 if (l.startsWith("data: ")) {
                     val data = l.removePrefix("data: ").trim()
@@ -162,8 +168,8 @@ class ApiClient @Inject constructor() {
                         if (chunk.usage != null) {
                             collector.emit(StreamEvent.Complete(chunk.usage))
                         }
-                    } catch (_: Exception) {
-                        // Skip malformed chunks
+                    } catch (e: JsonSyntaxException) {
+                        Log.w("ApiClient", "Skipping malformed stream chunk: ${data.take(100)}", e)
                     }
                 }
             }

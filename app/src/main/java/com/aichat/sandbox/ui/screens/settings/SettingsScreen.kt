@@ -17,6 +17,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichat.sandbox.data.model.ApiProvider
+import com.aichat.sandbox.data.model.ChatSettings
 import com.aichat.sandbox.ui.components.ModelSelector
 import com.aichat.sandbox.ui.components.SettingsSlider
 
@@ -78,7 +79,11 @@ fun SettingsScreen(
             onValueChange = { viewModel.setApiBaseUrl(it) },
             label = { Text("API Base URL") },
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true
+            singleLine = true,
+            isError = uiState.apiBaseUrlError != null,
+            supportingText = uiState.apiBaseUrlError?.let { error ->
+                { Text(error, color = MaterialTheme.colorScheme.error) }
+            }
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -124,7 +129,7 @@ fun SettingsScreen(
         SettingsSlider(
             label = "Max Tokens",
             value = uiState.defaultMaxTokens.toFloat(),
-            valueRange = 1f..131072f,
+            valueRange = 1f..ChatSettings.Defaults.MAX_TOKENS_LIMIT,
             onValueChange = { viewModel.setDefaultMaxTokens(it.toInt()) },
             displayFormat = { it.toInt().toString() }
         )

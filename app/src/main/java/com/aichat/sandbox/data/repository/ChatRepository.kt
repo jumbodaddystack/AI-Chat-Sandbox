@@ -72,13 +72,10 @@ class ChatRepository @Inject constructor(
     }
 
     fun sendMessageStream(chat: Chat, messages: List<Message>): Flow<StreamEvent> {
-        val apiKey: String
-        val baseUrl: String
-        // We need these synchronously for the flow builder, so we'll pass them through
         return kotlinx.coroutines.flow.flow {
-            val key = preferencesManager.apiKey.first()
-            val url = preferencesManager.apiBaseUrl.first()
-            apiClient.sendMessageStream(url, key, chat, messages).collect { emit(it) }
+            val apiKey = preferencesManager.apiKey.first()
+            val baseUrl = preferencesManager.apiBaseUrl.first()
+            apiClient.sendMessageStream(baseUrl, apiKey, chat, messages).collect { emit(it) }
         }
     }
 }
