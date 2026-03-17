@@ -71,4 +71,8 @@ class PreferencesManager @Inject constructor(
     suspend fun setDefaultFrequencyPenalty(penalty: Float) {
         dataStore.edit { it[DEFAULT_FREQUENCY_PENALTY] = penalty }
     }
+
+    suspend fun setDarkMode(enabled: Boolean) {
+        dataStore.edit { it[DARK_MODE] = enabled }
+    }
 }

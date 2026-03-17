@@ -57,6 +57,10 @@ class ChatRepository @Inject constructor(
         chatDao.insertMessage(message)
     }
 
+    suspend fun deleteMessage(message: Message) {
+        chatDao.deleteMessage(message)
+    }
+
     suspend fun clearChatHistory(chatId: String) {
         chatDao.clearChatHistory(chatId)
     }

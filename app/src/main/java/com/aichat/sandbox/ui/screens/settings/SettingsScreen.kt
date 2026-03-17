@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
@@ -18,6 +17,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichat.sandbox.data.model.ApiProvider
+import com.aichat.sandbox.ui.components.ModelSelector
+import com.aichat.sandbox.ui.components.SettingsSlider
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,7 +27,6 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var showApiKey by remember { mutableStateOf(false) }
-    var modelExpanded by remember { mutableStateOf(false) }
     val allModels = ApiProvider.defaults.flatMap { it.models }
 
     Column(
@@ -93,80 +93,82 @@ fun SettingsScreen(
         )
 
         // Model
+        ModelSelector(
+            label = "Default Model",
+            selectedModel = uiState.defaultModel,
+            models = allModels,
+            onModelSelected = { viewModel.setDefaultModel(it) }
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Temperature
+        SettingsSlider(
+            label = "Temperature",
+            value = uiState.defaultTemperature,
+            valueRange = 0f..2f,
+            onValueChange = { viewModel.setDefaultTemperature(it) },
+            displayFormat = { String.format("%.1f", it) }
+        )
+
+        // Top P
+        SettingsSlider(
+            label = "Top P",
+            value = uiState.defaultTopP,
+            valueRange = 0f..1f,
+            onValueChange = { viewModel.setDefaultTopP(it) },
+            displayFormat = { String.format("%.1f", it) }
+        )
+
+        // Max Tokens
+        SettingsSlider(
+            label = "Max Tokens",
+            value = uiState.defaultMaxTokens.toFloat(),
+            valueRange = 1f..131072f,
+            onValueChange = { viewModel.setDefaultMaxTokens(it.toInt()) },
+            displayFormat = { it.toInt().toString() }
+        )
+
+        // Presence Penalty
+        SettingsSlider(
+            label = "Presence Penalty",
+            value = uiState.defaultPresencePenalty,
+            valueRange = -2f..2f,
+            onValueChange = { viewModel.setDefaultPresencePenalty(it) },
+            displayFormat = { String.format("%.1f", it) }
+        )
+
+        // Frequency Penalty
+        SettingsSlider(
+            label = "Frequency Penalty",
+            value = uiState.defaultFrequencyPenalty,
+            valueRange = -2f..2f,
+            onValueChange = { viewModel.setDefaultFrequencyPenalty(it) },
+            displayFormat = { String.format("%.1f", it) }
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Appearance
+        Text(
+            text = "Appearance",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Default Model", style = MaterialTheme.typography.bodyMedium)
-            Box {
-                OutlinedButton(onClick = { modelExpanded = true }) {
-                    Text(uiState.defaultModel)
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                }
-                DropdownMenu(
-                    expanded = modelExpanded,
-                    onDismissRequest = { modelExpanded = false }
-                ) {
-                    allModels.forEach { model ->
-                        DropdownMenuItem(
-                            text = { Text(model) },
-                            onClick = {
-                                viewModel.setDefaultModel(model)
-                                modelExpanded = false
-                            }
-                        )
-                    }
-                }
-            }
+            Text("Dark Mode", style = MaterialTheme.typography.bodyMedium)
+            Switch(
+                checked = uiState.darkMode,
+                onCheckedChange = { viewModel.setDarkMode(it) }
+            )
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Temperature
-        SettingsSliderItem(
-            label = "Temperature",
-            value = uiState.defaultTemperature,
-            valueRange = 0f..2f,
-            onValueChange = { viewModel.setDefaultTemperature(it) },
-            format = { String.format("%.1f", it) }
-        )
-
-        // Top P
-        SettingsSliderItem(
-            label = "Top P",
-            value = uiState.defaultTopP,
-            valueRange = 0f..1f,
-            onValueChange = { viewModel.setDefaultTopP(it) },
-            format = { String.format("%.1f", it) }
-        )
-
-        // Max Tokens
-        SettingsSliderItem(
-            label = "Max Tokens",
-            value = uiState.defaultMaxTokens.toFloat(),
-            valueRange = 1f..131072f,
-            onValueChange = { viewModel.setDefaultMaxTokens(it.toInt()) },
-            format = { it.toInt().toString() }
-        )
-
-        // Presence Penalty
-        SettingsSliderItem(
-            label = "Presence Penalty",
-            value = uiState.defaultPresencePenalty,
-            valueRange = -2f..2f,
-            onValueChange = { viewModel.setDefaultPresencePenalty(it) },
-            format = { String.format("%.1f", it) }
-        )
-
-        // Frequency Penalty
-        SettingsSliderItem(
-            label = "Frequency Penalty",
-            value = uiState.defaultFrequencyPenalty,
-            valueRange = -2f..2f,
-            onValueChange = { viewModel.setDefaultFrequencyPenalty(it) },
-            format = { String.format("%.1f", it) }
-        )
 
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -193,38 +195,3 @@ fun SettingsScreen(
     }
 }
 
-@Composable
-private fun SettingsSliderItem(
-    label: String,
-    value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit,
-    format: (Float) -> String
-) {
-    Column(modifier = Modifier.padding(vertical = 4.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = format(value),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = valueRange,
-            colors = SliderDefaults.colors(
-                thumbColor = MaterialTheme.colorScheme.primary,
-                activeTrackColor = MaterialTheme.colorScheme.primary
-            )
-        )
-    }
-}

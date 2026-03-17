@@ -16,7 +16,8 @@ data class SettingsUiState(
     val defaultTopP: Float = 1.0f,
     val defaultMaxTokens: Int = 131072,
     val defaultPresencePenalty: Float = 0.0f,
-    val defaultFrequencyPenalty: Float = 0.0f
+    val defaultFrequencyPenalty: Float = 0.0f,
+    val darkMode: Boolean = true
 )
 
 @HiltViewModel
@@ -46,6 +47,11 @@ class SettingsViewModel @Inject constructor(
                     )
                 }
             }.collect()
+        }
+        viewModelScope.launch {
+            preferencesManager.darkMode.collect { darkMode ->
+                _uiState.update { it.copy(darkMode = darkMode) }
+            }
         }
         viewModelScope.launch {
             combine(
@@ -94,5 +100,9 @@ class SettingsViewModel @Inject constructor(
 
     fun setDefaultFrequencyPenalty(penalty: Float) {
         viewModelScope.launch { preferencesManager.setDefaultFrequencyPenalty(penalty) }
+    }
+
+    fun setDarkMode(enabled: Boolean) {
+        viewModelScope.launch { preferencesManager.setDarkMode(enabled) }
     }
 }

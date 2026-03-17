@@ -19,6 +19,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -30,6 +32,9 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichat.sandbox.data.model.ApiProvider
 import com.aichat.sandbox.data.model.Message
+import com.aichat.sandbox.ui.components.MarkdownText
+import com.aichat.sandbox.ui.components.ModelSelector
+import com.aichat.sandbox.ui.components.SettingsSlider
 import com.aichat.sandbox.ui.theme.AssistantBubble
 import com.aichat.sandbox.ui.theme.UserBubble
 import kotlinx.coroutines.launch
@@ -94,7 +99,10 @@ fun ChatScreen(
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
                     items(uiState.messages, key = { it.id }) { message ->
-                        MessageBubble(message = message)
+                        MessageBubble(
+                            message = message,
+                            onDelete = { viewModel.deleteMessage(message) }
+                        )
                     }
                     // Streaming message
                     if (uiState.streamingContent.isNotEmpty()) {
@@ -153,7 +161,9 @@ fun ChatScreen(
             onMaxTokensChange = { viewModel.updateMaxTokens(it) },
             onPresencePenaltyChange = { viewModel.updatePresencePenalty(it) },
             onFrequencyPenaltyChange = { viewModel.updateFrequencyPenalty(it) },
-            onClearHistory = { viewModel.clearHistory() }
+            onClearHistory = { viewModel.clearHistory() },
+            onShareMarkdown = { viewModel.getShareContentAsMarkdown() },
+            onShareJson = { viewModel.getShareContentAsJson() }
         )
     }
 
@@ -280,7 +290,8 @@ private fun ExamplesView(onExampleClick: (String) -> Unit) {
 @Composable
 private fun MessageBubble(
     message: Message,
-    isStreaming: Boolean = false
+    isStreaming: Boolean = false,
+    onDelete: () -> Unit = {}
 ) {
     val isUser = message.role == "user"
     val clipboardManager = LocalClipboardManager.current
@@ -300,13 +311,19 @@ private fun MessageBubble(
                 .clickable { showMenu = true }
                 .padding(12.dp)
         ) {
-            Text(
-                text = message.content + if (isStreaming) "▊" else "",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isUser) MaterialTheme.colorScheme.onPrimary
-                       else MaterialTheme.colorScheme.onSurface,
-                lineHeight = 22.sp
-            )
+            if (isUser) {
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    lineHeight = 22.sp
+                )
+            } else {
+                MarkdownText(
+                    text = message.content + if (isStreaming) "▊" else "",
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
 
         // Context menu
@@ -320,15 +337,18 @@ private fun MessageBubble(
                     clipboardManager.setText(AnnotatedString(message.content))
                     showMenu = false
                 },
-                leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) }
+                leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = "Copy") }
             )
             DropdownMenuItem(
                 text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                onClick = { showMenu = false },
+                onClick = {
+                    onDelete()
+                    showMenu = false
+                },
                 leadingIcon = {
                     Icon(
                         Icons.Default.Delete,
-                        contentDescription = null,
+                        contentDescription = "Delete",
                         tint = MaterialTheme.colorScheme.error
                     )
                 }
@@ -365,30 +385,6 @@ private fun ChatInputBar(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Bottom
         ) {
-            // Mode toggle buttons
-            IconButton(
-                onClick = {},
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    Icons.Default.Chat,
-                    contentDescription = "Chat mode",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-            IconButton(
-                onClick = {},
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    Icons.Default.ViewList,
-                    contentDescription = "Template mode",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
             // Text input
             Box(
                 modifier = Modifier
@@ -506,12 +502,14 @@ private fun ChatSettingsPanel(
     onMaxTokensChange: (Int) -> Unit,
     onPresencePenaltyChange: (Float) -> Unit,
     onFrequencyPenaltyChange: (Float) -> Unit,
-    onClearHistory: () -> Unit
+    onClearHistory: () -> Unit,
+    onShareMarkdown: () -> String = { "" },
+    onShareJson: () -> String = { "" }
 ) {
     if (chat == null) return
 
     val allModels = ApiProvider.defaults.flatMap { it.models }
-    var expanded by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -524,63 +522,40 @@ private fun ChatSettingsPanel(
                 .padding(bottom = 32.dp)
         ) {
             // Share options
-            TextButton(onClick = {}) {
-                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+            TextButton(onClick = {
+                val content = onShareMarkdown()
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, content)
+                }
+                context.startActivity(Intent.createChooser(intent, "Share as Markdown"))
+            }) {
+                Icon(Icons.Default.Share, contentDescription = "Share as Markdown", modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Share as Markdown")
             }
-            TextButton(onClick = {}) {
-                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+            TextButton(onClick = {
+                val content = onShareJson()
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/json"
+                    putExtra(Intent.EXTRA_TEXT, content)
+                }
+                context.startActivity(Intent.createChooser(intent, "Share as JSON"))
+            }) {
+                Icon(Icons.Default.Share, contentDescription = "Share as JSON", modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Share as JSON")
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-            // Plain text toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("T", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Plain text")
-                }
-                Switch(checked = false, onCheckedChange = {})
-            }
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
             // Model selector
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Model")
-                Box {
-                    OutlinedButton(onClick = { expanded = true }) {
-                        Text(chat.model)
-                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                    }
-                    DropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        allModels.forEach { model ->
-                            DropdownMenuItem(
-                                text = { Text(model) },
-                                onClick = {
-                                    onModelChange(model)
-                                    expanded = false
-                                }
-                            )
-                        }
-                    }
-                }
-            }
+            ModelSelector(
+                label = "Model",
+                selectedModel = chat.model,
+                models = allModels,
+                onModelSelected = onModelChange
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -632,39 +607,3 @@ private fun ChatSettingsPanel(
     }
 }
 
-@Composable
-private fun SettingsSlider(
-    label: String,
-    value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit,
-    displayFormat: (Float) -> String
-) {
-    Column(modifier = Modifier.padding(vertical = 4.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = "$label ${displayFormat(value)}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Icon(
-                Icons.Default.Info,
-                contentDescription = "Info",
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = valueRange,
-            colors = SliderDefaults.colors(
-                thumbColor = MaterialTheme.colorScheme.primary,
-                activeTrackColor = MaterialTheme.colorScheme.primary
-            )
-        )
-    }
-}
