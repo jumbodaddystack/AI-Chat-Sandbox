@@ -73,7 +73,7 @@ fun ChatListScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
                         imageVector = Icons.Default.Chat,
-                        contentDescription = null,
+                        contentDescription = "No chats",
                         modifier = Modifier.size(48.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                     )
@@ -133,7 +133,7 @@ private fun ChatListItem(
         ) {
             Icon(
                 imageVector = Icons.Default.Chat,
-                contentDescription = null,
+                contentDescription = "Chat",
                 modifier = Modifier
                     .size(20.dp)
                     .padding(top = 2.dp),

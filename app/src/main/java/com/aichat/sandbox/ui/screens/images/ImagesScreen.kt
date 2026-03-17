@@ -35,7 +35,7 @@ fun ImagesScreen() {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     imageVector = Icons.Default.Image,
-                    contentDescription = null,
+                    contentDescription = "Images",
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )

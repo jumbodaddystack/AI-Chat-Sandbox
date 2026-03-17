@@ -9,6 +9,7 @@ import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.data.remote.ApiResult
 import com.aichat.sandbox.data.remote.StreamEvent
 import com.aichat.sandbox.data.repository.ChatRepository
+import com.google.gson.GsonBuilder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
@@ -163,7 +164,7 @@ class ChatViewModel @Inject constructor(
 
     fun deleteMessage(message: Message) {
         viewModelScope.launch {
-            // Note: would need deleteMessage in DAO, for now we skip
+            repository.deleteMessage(message)
         }
     }
 
@@ -242,6 +243,30 @@ class ChatViewModel @Inject constructor(
 
     fun dismissError() {
         _uiState.update { it.copy(error = null) }
+    }
+
+    fun getShareContentAsMarkdown(): String {
+        val chat = _uiState.value.chat ?: return ""
+        val messages = _uiState.value.messages
+        val sb = StringBuilder()
+        sb.appendLine("## ${chat.title}")
+        sb.appendLine("Model: ${chat.model}\n")
+        messages.forEach { msg ->
+            val role = if (msg.role == "user") "**User**" else "**Assistant**"
+            sb.appendLine("$role:\n${msg.content}\n")
+        }
+        return sb.toString()
+    }
+
+    fun getShareContentAsJson(): String {
+        val chat = _uiState.value.chat ?: return "{}"
+        val messages = _uiState.value.messages
+        val data = mapOf(
+            "title" to chat.title,
+            "model" to chat.model,
+            "messages" to messages.map { mapOf("role" to it.role, "content" to it.content) }
+        )
+        return GsonBuilder().setPrettyPrinting().create().toJson(data)
     }
 
     private fun estimateTokens(text: String): Int {

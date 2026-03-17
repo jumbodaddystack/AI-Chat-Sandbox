@@ -35,7 +35,7 @@ fun TemplatesScreen() {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     imageVector = Icons.Default.ListAlt,
-                    contentDescription = null,
+                    contentDescription = "Templates",
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )

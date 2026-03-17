@@ -1,5 +1,6 @@
 package com.aichat.sandbox.data.remote
 
+import com.aichat.sandbox.BuildConfig
 import com.aichat.sandbox.data.model.*
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
@@ -30,30 +31,35 @@ sealed class StreamEvent {
 @Singleton
 class ApiClient @Inject constructor() {
     private val gson = Gson()
+    private val apiCache = mutableMapOf<String, OpenAiApi>()
 
     private fun buildApi(baseUrl: String, apiKey: String): OpenAiApi {
-        val client = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                val request = chain.request().newBuilder()
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .addHeader("Content-Type", "application/json")
-                    .build()
-                chain.proceed(request)
-            }
-            .addInterceptor(HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BODY
-            })
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS)
-            .build()
+        val cacheKey = "$baseUrl|$apiKey"
+        return apiCache.getOrPut(cacheKey) {
+            val client = OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request().newBuilder()
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .build()
+                    chain.proceed(request)
+                }
+                .addInterceptor(HttpLoggingInterceptor().apply {
+                    level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY
+                            else HttpLoggingInterceptor.Level.NONE
+                })
+                .connectTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .build()
 
-        return Retrofit.Builder()
-            .baseUrl(baseUrl)
-            .client(client)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(OpenAiApi::class.java)
+            Retrofit.Builder()
+                .baseUrl(baseUrl)
+                .client(client)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+                .create(OpenAiApi::class.java)
+        }
     }
 
     suspend fun sendMessage(

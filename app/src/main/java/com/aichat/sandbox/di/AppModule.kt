@@ -22,7 +22,7 @@ object AppModule {
             context,
             AppDatabase::class.java,
             "ai_chat_sandbox.db"
-        ).build()
+        ).fallbackToDestructiveMigration().build()
     }
 
     @Provides
