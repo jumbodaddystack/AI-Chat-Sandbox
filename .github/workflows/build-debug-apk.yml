@@ -41,9 +41,57 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
-      - name: Upload debug APK
+      - name: Stage APK to safe location
+        run: |
+          mkdir -p /tmp/apk-staging
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/apk-staging/app-debug.apk
+
+      - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: /tmp/apk-staging/app-debug.apk
           retention-days: 14
+
+  publish:
+    name: Publish APK to releases branch
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: releases
+          fetch-depth: 0
+
+      - name: Create releases branch if it doesn't exist
+        run: |
+          if ! git ls-remote --exit-code --heads origin releases; then
+            git checkout --orphan releases
+            git rm -rf . || true
+            git commit --allow-empty -m "Initialize releases branch"
+            git push -u origin releases
+          fi
+
+      - name: Download debug APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: debug-apk
+          path: /tmp/apk-staging
+
+      - name: Commit and push APK to releases branch
+        run: |
+          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
+          SHORT_SHA=${GITHUB_SHA::7}
+
+          mkdir -p apks
+          cp /tmp/apk-staging/app-debug.apk "apks/app-debug-${TIMESTAMP}-${SHORT_SHA}.apk"
+          cp /tmp/apk-staging/app-debug.apk apks/app-debug-latest.apk
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apks/
+          git commit -m "Add debug APK from ${GITHUB_REF_NAME} @ ${SHORT_SHA} (${TIMESTAMP})"
+          git push origin releases
