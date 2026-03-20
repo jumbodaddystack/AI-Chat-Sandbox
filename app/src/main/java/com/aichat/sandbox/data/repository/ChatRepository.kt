@@ -65,12 +65,16 @@ class ChatRepository @Inject constructor(
         chatDao.clearChatHistory(chatId)
     }
 
-    suspend fun sendMessage(chat: Chat, messages: List<Message>): ApiResult<com.aichat.sandbox.data.model.ChatCompletionResponse> {
-        val apiKey = preferencesManager.apiKey.first()
-        val baseUrl = preferencesManager.apiBaseUrl.first()
-        return apiClient.sendMessage(baseUrl, apiKey, chat, messages)
+    // Message editing (1.2)
+    suspend fun updateMessageContent(messageId: String, content: String) {
+        chatDao.updateMessageContent(messageId, content)
     }
 
+    suspend fun deleteMessagesFrom(chatId: String, timestamp: Long) {
+        chatDao.deleteMessagesFrom(chatId, timestamp)
+    }
+
+    // Auto-title generation (1.6)
     suspend fun generateTitle(
         model: String,
         userMessage: String,
@@ -84,17 +88,33 @@ class ChatRepository @Inject constructor(
     suspend fun isAutoGenerateTitlesEnabled(): Boolean =
         preferencesManager.autoGenerateTitles.first()
 
+    // Conversation search (1.5)
     suspend fun searchMessages(query: String): List<Message> =
         chatDao.searchMessages(query)
 
     suspend fun searchChats(query: String): List<Chat> =
         chatDao.searchChats(query)
 
-    fun sendMessageStream(chat: Chat, messages: List<Message>): Flow<StreamEvent> {
+    // API calls with retry support (1.4)
+    suspend fun sendMessage(
+        chat: Chat,
+        messages: List<Message>,
+        onRetryAttempt: ((Int) -> Unit)? = null
+    ): ApiResult<com.aichat.sandbox.data.model.ChatCompletionResponse> {
+        val apiKey = preferencesManager.apiKey.first()
+        val baseUrl = preferencesManager.apiBaseUrl.first()
+        return apiClient.sendMessage(baseUrl, apiKey, chat, messages, onRetryAttempt)
+    }
+
+    fun sendMessageStream(
+        chat: Chat,
+        messages: List<Message>,
+        onRetryAttempt: ((Int) -> Unit)? = null
+    ): Flow<StreamEvent> {
         return kotlinx.coroutines.flow.flow {
             val apiKey = preferencesManager.apiKey.first()
             val baseUrl = preferencesManager.apiBaseUrl.first()
-            apiClient.sendMessageStream(baseUrl, apiKey, chat, messages).collect { emit(it) }
+            apiClient.sendMessageStream(baseUrl, apiKey, chat, messages, onRetryAttempt).collect { emit(it) }
         }
     }
 }

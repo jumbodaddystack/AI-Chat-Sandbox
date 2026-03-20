@@ -35,6 +35,7 @@ sealed class StreamEvent {
 class ApiClient @Inject constructor() {
     private val gson = Gson()
     private val apiCache = mutableMapOf<String, OpenAiApi>()
+    private val retryPolicy = RetryPolicy()
 
     private fun buildApi(baseUrl: String, apiKey: String): OpenAiApi {
         val cacheKey = "$baseUrl|$apiKey"
@@ -71,7 +72,8 @@ class ApiClient @Inject constructor() {
         baseUrl: String,
         apiKey: String,
         chat: Chat,
-        messages: List<Message>
+        messages: List<Message>,
+        onRetryAttempt: ((Int) -> Unit)? = null
     ): ApiResult<ChatCompletionResponse> {
         return try {
             val api = buildApi(baseUrl, apiKey)
@@ -86,7 +88,12 @@ class ApiClient @Inject constructor() {
                 frequencyPenalty = chat.frequencyPenalty,
                 stream = false
             )
-            val response = api.createChatCompletion(request)
+            val response = retryWithBackoff(
+                policy = retryPolicy,
+                onRetryAttempt = onRetryAttempt
+            ) {
+                api.createChatCompletion(request)
+            }
             if (response.isSuccessful) {
                 response.body()?.let { ApiResult.Success(it) }
                     ?: ApiResult.Error("Empty response body")
@@ -109,7 +116,8 @@ class ApiClient @Inject constructor() {
         baseUrl: String,
         apiKey: String,
         chat: Chat,
-        messages: List<Message>
+        messages: List<Message>,
+        onRetryAttempt: ((Int) -> Unit)? = null
     ): Flow<StreamEvent> = flow {
         try {
             val api = buildApi(baseUrl, apiKey)
@@ -124,7 +132,12 @@ class ApiClient @Inject constructor() {
                 frequencyPenalty = chat.frequencyPenalty,
                 stream = true
             )
-            val response = api.createChatCompletionStream(request)
+            val response = retryWithBackoff(
+                policy = retryPolicy,
+                onRetryAttempt = onRetryAttempt
+            ) {
+                api.createChatCompletionStream(request)
+            }
             if (response.isSuccessful) {
                 val reader = response.body()?.byteStream()?.bufferedReader()
                     ?: throw Exception("Empty response body")

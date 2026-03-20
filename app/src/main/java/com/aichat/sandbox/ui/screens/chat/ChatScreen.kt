@@ -38,6 +38,7 @@ import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.ui.components.MarkdownText
 import com.aichat.sandbox.ui.components.ModelSelector
 import com.aichat.sandbox.ui.components.SettingsSlider
+import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.ui.theme.AssistantBubble
 import com.aichat.sandbox.ui.theme.UserBubble
 import kotlinx.coroutines.launch
@@ -57,7 +58,14 @@ fun ChatScreen(
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(uiState.messages.size, uiState.streamingContent) {
         if (uiState.messages.isNotEmpty() || uiState.streamingContent.isNotEmpty()) {
-            val targetIndex = uiState.messages.size + if (uiState.streamingContent.isNotEmpty()) 1 else 0
+            var targetIndex = uiState.messages.size
+            // Account for the regenerate button item
+            val lastIsAssistant = uiState.messages.lastOrNull()?.role == MessageRole.ASSISTANT.value
+            if (!uiState.isLoading && lastIsAssistant) targetIndex++
+            // Account for retry indicator
+            if (uiState.retryAttempt > 0) targetIndex++
+            // Account for streaming content
+            if (uiState.streamingContent.isNotEmpty()) targetIndex++
             if (targetIndex > 0) {
                 listState.animateScrollToItem(targetIndex - 1)
             }
@@ -104,8 +112,63 @@ fun ChatScreen(
                     items(uiState.messages, key = { it.id }) { message ->
                         MessageBubble(
                             message = message,
-                            onDelete = { viewModel.deleteMessage(message) }
+                            onDelete = { viewModel.deleteMessage(message) },
+                            onEdit = if (message.role == "user") {
+                                { viewModel.startEditing(message) }
+                            } else null
                         )
+                    }
+                    // Regenerate button (visible when not streaming and last message is from assistant)
+                    if (!uiState.isLoading &&
+                        uiState.messages.lastOrNull()?.role == MessageRole.ASSISTANT.value
+                    ) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.Start
+                            ) {
+                                OutlinedButton(
+                                    onClick = { viewModel.regenerateLastResponse() },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "Regenerate",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Regenerate",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    // Retry indicator
+                    if (uiState.retryAttempt > 0) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Retrying... (attempt ${uiState.retryAttempt + 1})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                     // Streaming message
                     if (uiState.streamingContent.isNotEmpty()) {
@@ -144,8 +207,16 @@ fun ChatScreen(
         // Input bar
         ChatInputBar(
             isLoading = uiState.isLoading,
-            onSend = { viewModel.sendMessage(it) },
-            onStop = { viewModel.stopGenerating() }
+            onSend = { content ->
+                if (uiState.editingMessageId != null) {
+                    viewModel.submitEdit(content)
+                } else {
+                    viewModel.sendMessage(content)
+                }
+            },
+            onStop = { viewModel.stopGenerating() },
+            editingContent = uiState.editingContent,
+            onCancelEdit = { viewModel.cancelEditing() }
         )
     }
 
@@ -294,7 +365,8 @@ private fun ExamplesView(onExampleClick: (String) -> Unit) {
 private fun MessageBubble(
     message: Message,
     isStreaming: Boolean = false,
-    onDelete: () -> Unit = {}
+    onDelete: () -> Unit = {},
+    onEdit: (() -> Unit)? = null
 ) {
     val isUser = message.role == "user"
     val clipboardManager = LocalClipboardManager.current
@@ -345,6 +417,16 @@ private fun MessageBubble(
                 },
                 leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = "Copy") }
             )
+            if (isUser && onEdit != null) {
+                DropdownMenuItem(
+                    text = { Text("Edit") },
+                    onClick = {
+                        onEdit()
+                        showMenu = false
+                    },
+                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = "Edit") }
+                )
+            }
             DropdownMenuItem(
                 text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
                 onClick = {
@@ -377,9 +459,20 @@ private fun MessageBubble(
 private fun ChatInputBar(
     isLoading: Boolean,
     onSend: (String) -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    editingContent: String? = null,
+    onCancelEdit: () -> Unit = {}
 ) {
     var text by remember { mutableStateOf("") }
+
+    // When editing starts, populate the text field
+    LaunchedEffect(editingContent) {
+        if (editingContent != null) {
+            text = editingContent
+        }
+    }
+
+    val isEditing = editingContent != null
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -391,6 +484,24 @@ private fun ChatInputBar(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Bottom
         ) {
+            // Cancel edit button
+            if (isEditing) {
+                IconButton(
+                    onClick = {
+                        text = ""
+                        onCancelEdit()
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Cancel edit",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
             // Text input
             Box(
                 modifier = Modifier
@@ -401,7 +512,7 @@ private fun ChatInputBar(
             ) {
                 if (text.isEmpty()) {
                     Text(
-                        text = "Send a message",
+                        text = if (isEditing) "Edit message" else "Send a message",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                     )
