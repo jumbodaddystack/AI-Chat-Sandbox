@@ -108,8 +108,8 @@ dependencies {
     implementation("io.noties.markwon:html:4.6.2")
     implementation("io.noties.markwon:ext-latex:4.6.2")
     implementation("io.noties.markwon:syntax-highlight:4.6.2")
-    implementation("io.noties.prism4j:prism4j:2.0.0")
-    annotationProcessor("io.noties.prism4j:prism4j-bundler:2.0.0")
+    implementation("io.noties:prism4j:2.0.0")
+    annotationProcessor("io.noties:prism4j-bundler:2.0.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
