@@ -97,6 +97,9 @@ dependencies {
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.0.0")
 
+    // Image loading (Coil for Compose)
+    implementation("io.coil-kt:coil-compose:2.5.0")
+
     // Markdown rendering
     implementation("io.noties.markwon:core:4.6.2")
 

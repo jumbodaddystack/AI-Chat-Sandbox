@@ -1,14 +1,21 @@
 package com.aichat.sandbox.ui.screens.chat
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -20,6 +27,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import android.content.Intent
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
@@ -32,14 +40,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil.compose.AsyncImage
 import com.aichat.sandbox.data.model.ApiProvider
 import com.aichat.sandbox.data.model.ChatSettings
+import com.aichat.sandbox.data.model.ImageMetadata
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.ui.components.MarkdownText
 import com.aichat.sandbox.ui.components.ModelSelector
 import com.aichat.sandbox.ui.components.SettingsSlider
 import com.aichat.sandbox.ui.theme.AssistantBubble
 import com.aichat.sandbox.ui.theme.UserBubble
+import com.google.gson.Gson
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -156,7 +167,10 @@ fun ChatScreen(
             },
             onStop = { viewModel.stopGenerating() },
             editingContent = uiState.editingContent,
-            onCancelEdit = { viewModel.cancelEditing() }
+            onCancelEdit = { viewModel.cancelEditing() },
+            attachedImages = uiState.attachedImages,
+            onAddImage = { uri -> viewModel.addImage(uri) },
+            onRemoveImage = { uri -> viewModel.removeImage(uri) }
         )
     }
 
@@ -326,21 +340,48 @@ private fun MessageBubble(
                 .clickable { showMenu = true }
                 .padding(12.dp)
         ) {
-            if (isUser) {
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    lineHeight = 22.sp
-                )
-            } else {
-                MarkdownText(
-                    text = message.content + if (isStreaming) "▊" else "",
-                    modifier = if (isStreaming) Modifier.semantics {
-                        contentDescription = "Assistant is typing"
-                    } else Modifier,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+            Column {
+                // Display inline image thumbnails for multimodal messages
+                if (isUser && message.contentType == "multimodal" && message.metadata != null) {
+                    val imageMetadata = remember(message.metadata) {
+                        try {
+                            Gson().fromJson(message.metadata, ImageMetadata::class.java)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                    imageMetadata?.images?.forEach { img ->
+                        AsyncImage(
+                            model = img.dataUri,
+                            contentDescription = "Attached image",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 200.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .padding(bottom = 8.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                }
+
+                if (isUser) {
+                    if (message.content.isNotBlank()) {
+                        Text(
+                            text = message.content,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            lineHeight = 22.sp
+                        )
+                    }
+                } else {
+                    MarkdownText(
+                        text = message.content + if (isStreaming) "▊" else "",
+                        modifier = if (isStreaming) Modifier.semantics {
+                            contentDescription = "Assistant is typing"
+                        } else Modifier,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
 
@@ -401,9 +442,19 @@ private fun ChatInputBar(
     onSend: (String) -> Unit,
     onStop: () -> Unit,
     editingContent: String? = null,
-    onCancelEdit: () -> Unit = {}
+    onCancelEdit: () -> Unit = {},
+    attachedImages: List<Uri> = emptyList(),
+    onAddImage: (Uri) -> Unit = {},
+    onRemoveImage: (Uri) -> Unit = {}
 ) {
     var text by remember { mutableStateOf("") }
+
+    // Photo picker launcher (multiple images)
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 4)
+    ) { uris ->
+        uris.forEach { uri -> onAddImage(uri) }
+    }
 
     // When editing starts, populate the text field
     LaunchedEffect(editingContent) {
@@ -413,93 +464,161 @@ private fun ChatInputBar(
     }
 
     val isEditing = editingContent != null
+    val canSend = text.isNotBlank() || attachedImages.isNotEmpty()
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
         shadowElevation = 4.dp
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom
+        Column(
+            modifier = Modifier.fillMaxWidth()
         ) {
-            // Cancel edit button
-            if (isEditing) {
-                IconButton(
-                    onClick = {
-                        text = ""
-                        onCancelEdit()
-                    },
-                    modifier = Modifier.size(36.dp)
+            // Image attachment preview strip
+            if (attachedImages.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Cancel edit",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-
-            // Text input
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 36.dp, max = 120.dp)
-                    .padding(horizontal = 4.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                if (text.isEmpty()) {
-                    Text(
-                        text = if (isEditing) "Edit message" else "Send a message",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
-                }
-                BasicTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontSize = 16.sp
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    maxLines = 5
-                )
-            }
-
-            // Send / Stop button
-            if (isLoading) {
-                IconButton(
-                    onClick = onStop,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Stop,
-                        contentDescription = "Stop",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            } else {
-                IconButton(
-                    onClick = {
-                        if (text.isNotBlank()) {
-                            onSend(text)
-                            text = ""
+                    attachedImages.forEach { uri ->
+                        Box(
+                            modifier = Modifier.size(64.dp)
+                        ) {
+                            AsyncImage(
+                                model = uri,
+                                contentDescription = "Attached image",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(8.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                            // Remove button
+                            IconButton(
+                                onClick = { onRemoveImage(uri) },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(20.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                                        CircleShape
+                                    )
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Remove image",
+                                    tint = MaterialTheme.colorScheme.onError,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
                         }
-                    },
-                    modifier = Modifier.size(36.dp)
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                // Cancel edit button
+                if (isEditing) {
+                    IconButton(
+                        onClick = {
+                            text = ""
+                            onCancelEdit()
+                        },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Cancel edit",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                // Image attachment button
+                if (!isEditing && !isLoading) {
+                    IconButton(
+                        onClick = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Image,
+                            contentDescription = "Attach image",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+
+                // Text input
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 36.dp, max = 120.dp)
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.CenterStart
                 ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = if (text.isNotBlank()) MaterialTheme.colorScheme.onSurface
-                               else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                        modifier = Modifier.size(24.dp)
+                    if (text.isEmpty()) {
+                        Text(
+                            text = if (isEditing) "Edit message" else "Send a message",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                    BasicTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = TextStyle(
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 16.sp
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        maxLines = 5
                     )
+                }
+
+                // Send / Stop button
+                if (isLoading) {
+                    IconButton(
+                        onClick = onStop,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Stop,
+                            contentDescription = "Stop",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                } else {
+                    IconButton(
+                        onClick = {
+                            if (canSend) {
+                                onSend(text)
+                                text = ""
+                            }
+                        },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = if (canSend) MaterialTheme.colorScheme.onSurface
+                                   else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
             }
         }

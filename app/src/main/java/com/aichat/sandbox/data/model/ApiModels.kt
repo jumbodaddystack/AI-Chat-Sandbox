@@ -2,6 +2,22 @@ package com.aichat.sandbox.data.model
 
 import com.google.gson.annotations.SerializedName
 
+// OpenAI Vision API content parts
+data class TextContentPart(
+    val type: String = "text",
+    val text: String
+)
+
+data class ImageUrl(
+    val url: String
+)
+
+data class ImageContentPart(
+    val type: String = "image_url",
+    @SerializedName("image_url")
+    val imageUrl: ImageUrl
+)
+
 // OpenAI API request/response models
 data class ChatCompletionRequest(
     val model: String,
@@ -20,7 +36,8 @@ data class ChatCompletionRequest(
 
 data class ApiMessage(
     val role: String,
-    val content: String
+    // Can be String (text-only) or List<Any> (vision: TextContentPart + ImageContentPart)
+    val content: Any?
 )
 
 data class ChatCompletionResponse(
@@ -58,4 +75,15 @@ data class ApiError(
 
 data class ApiErrorResponse(
     val error: ApiError
+)
+
+// Metadata stored in Message.metadata for multi-modal messages
+data class ImageAttachment(
+    val dataUri: String, // base64 data URI: "data:image/jpeg;base64,..."
+    val width: Int = 0,
+    val height: Int = 0
+)
+
+data class ImageMetadata(
+    val images: List<ImageAttachment> = emptyList()
 )

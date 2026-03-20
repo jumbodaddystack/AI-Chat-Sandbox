@@ -161,7 +161,7 @@ class ApiClient @Inject constructor() {
                     }
                     try {
                         val chunk = gson.fromJson(data, ChatCompletionResponse::class.java)
-                        val content = chunk.choices?.firstOrNull()?.delta?.content
+                        val content = chunk.choices?.firstOrNull()?.delta?.content?.toString()
                         if (content != null) {
                             collector.emit(StreamEvent.Delta(content))
                         }
@@ -183,7 +183,26 @@ class ApiClient @Inject constructor() {
             apiMessages.add(ApiMessage(role = "system", content = chat.systemMessage))
         }
         messages.forEach { msg ->
-            apiMessages.add(ApiMessage(role = msg.role, content = msg.content))
+            if (msg.contentType == "multimodal" && msg.metadata != null) {
+                // Build vision-format content with text and image parts
+                val contentParts = mutableListOf<Any>()
+                if (msg.content.isNotBlank()) {
+                    contentParts.add(TextContentPart(text = msg.content))
+                }
+                try {
+                    val imageList = gson.fromJson(msg.metadata, ImageMetadata::class.java)
+                    imageList?.images?.forEach { imageData ->
+                        contentParts.add(
+                            ImageContentPart(imageUrl = ImageUrl(url = imageData.dataUri))
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w("ApiClient", "Failed to parse image metadata", e)
+                }
+                apiMessages.add(ApiMessage(role = msg.role, content = contentParts))
+            } else {
+                apiMessages.add(ApiMessage(role = msg.role, content = msg.content))
+            }
         }
         return apiMessages
     }
