@@ -24,7 +24,9 @@ data class Message(
     val role: String, // "user", "assistant", "system"
     val content: String,
     val tokenCount: Int = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val contentType: String = "text", // "text" or "multimodal"
+    val metadata: String? = null // JSON blob for image URIs, tool calls, etc.
 )
 
 enum class MessageRole(val value: String) {

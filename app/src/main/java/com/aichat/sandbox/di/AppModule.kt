@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.aichat.sandbox.data.local.AppDatabase
 import com.aichat.sandbox.data.local.ChatDao
 import com.aichat.sandbox.data.local.MIGRATION_1_2
+import com.aichat.sandbox.data.local.MIGRATION_2_3
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -23,7 +24,7 @@ object AppModule {
             context,
             AppDatabase::class.java,
             "ai_chat_sandbox.db"
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     }
 
     @Provides

@@ -1,20 +1,32 @@
 package com.aichat.sandbox.ui.screens.chat
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichat.sandbox.data.model.Chat
+import com.aichat.sandbox.data.model.ImageAttachment
+import com.aichat.sandbox.data.model.ImageMetadata
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.data.model.ModelPricing
 import com.aichat.sandbox.data.remote.ApiResult
 import com.aichat.sandbox.data.remote.StreamEvent
 import com.aichat.sandbox.data.repository.ChatRepository
+import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
 data class ChatUiState(
@@ -27,14 +39,18 @@ data class ChatUiState(
     val showSystemMessageDialog: Boolean = false,
     val retryAttempt: Int = 0,
     val editingMessageId: String? = null,
-    val editingContent: String? = null
+    val editingContent: String? = null,
+    val attachedImages: List<Uri> = emptyList()
 )
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val repository: ChatRepository
+    private val repository: ChatRepository,
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
+
+    private val gson = Gson()
 
     private val chatId: String = savedStateHandle.get<String>("chatId") ?: ""
 
@@ -56,22 +72,53 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun addImage(uri: Uri) {
+        _uiState.update { it.copy(attachedImages = it.attachedImages + uri) }
+    }
+
+    fun removeImage(uri: Uri) {
+        _uiState.update { it.copy(attachedImages = it.attachedImages - uri) }
+    }
+
+    fun clearImages() {
+        _uiState.update { it.copy(attachedImages = emptyList()) }
+    }
+
     fun sendMessage(content: String) {
         val chat = _uiState.value.chat ?: return
-        if (content.isBlank()) return
+        if (content.isBlank() && _uiState.value.attachedImages.isEmpty()) return
         if (content.length > MAX_MESSAGE_LENGTH) {
             _uiState.update { it.copy(error = "Message too long (max ${MAX_MESSAGE_LENGTH / 1000}K characters)") }
             return
         }
 
+        val imageUris = _uiState.value.attachedImages.toList()
+
         viewModelScope.launch {
+            // Encode images to base64 if present
+            val hasImages = imageUris.isNotEmpty()
+            var metadata: String? = null
+            if (hasImages) {
+                val imageAttachments = withContext(Dispatchers.IO) {
+                    imageUris.mapNotNull { uri -> encodeImageToBase64(uri) }
+                }
+                if (imageAttachments.isNotEmpty()) {
+                    metadata = gson.toJson(ImageMetadata(images = imageAttachments))
+                }
+            }
+
             // Save user message
             val userMessage = Message(
                 chatId = chatId,
                 role = MessageRole.USER.value,
-                content = content.trim()
+                content = content.trim(),
+                contentType = if (hasImages && metadata != null) "multimodal" else "text",
+                metadata = metadata
             )
             repository.insertMessage(userMessage)
+
+            // Clear attached images
+            _uiState.update { it.copy(attachedImages = emptyList()) }
 
             val isFirstMessage = _uiState.value.messages.isEmpty()
 
@@ -145,7 +192,7 @@ class ChatViewModel @Inject constructor(
         when (val result = repository.sendMessage(chat, messages, onRetry)) {
             is ApiResult.Success -> {
                 val response = result.data
-                val content = response.choices?.firstOrNull()?.message?.content ?: ""
+                val content = response.choices?.firstOrNull()?.message?.content?.toString() ?: ""
                 val usage = response.usage
 
                 val assistantMessage = Message(
@@ -384,6 +431,45 @@ class ChatViewModel @Inject constructor(
             "messages" to messages.map { mapOf("role" to it.role, "content" to it.content) }
         )
         return GsonBuilder().setPrettyPrinting().create().toJson(data)
+    }
+
+    private fun encodeImageToBase64(uri: Uri): ImageAttachment? {
+        return try {
+            val inputStream = appContext.contentResolver.openInputStream(uri) ?: return null
+            val originalBitmap = BitmapFactory.decodeStream(inputStream)
+            inputStream.close()
+            if (originalBitmap == null) return null
+
+            // Scale down to max 1024px on longest side
+            val maxDim = 1024
+            val scaledBitmap = if (originalBitmap.width > maxDim || originalBitmap.height > maxDim) {
+                val scale = maxDim.toFloat() / maxOf(originalBitmap.width, originalBitmap.height)
+                val newWidth = (originalBitmap.width * scale).toInt()
+                val newHeight = (originalBitmap.height * scale).toInt()
+                Bitmap.createScaledBitmap(originalBitmap, newWidth, newHeight, true).also {
+                    if (it !== originalBitmap) originalBitmap.recycle()
+                }
+            } else {
+                originalBitmap
+            }
+
+            // Compress to JPEG quality 80
+            val outputStream = ByteArrayOutputStream()
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+            val bytes = outputStream.toByteArray()
+            val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            val dataUri = "data:image/jpeg;base64,$base64"
+
+            val attachment = ImageAttachment(
+                dataUri = dataUri,
+                width = scaledBitmap.width,
+                height = scaledBitmap.height
+            )
+            scaledBitmap.recycle()
+            attachment
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun generateAiTitle(chat: Chat, userMessage: String, assistantMessage: String) {

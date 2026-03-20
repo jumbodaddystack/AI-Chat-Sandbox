@@ -21,3 +21,16 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
         """.trimIndent())
     }
 }
+
+/**
+ * Migration from version 2 to 3:
+ * Adds multi-modal support columns to the messages table.
+ * - contentType: "text" or "multimodal" to indicate message type
+ * - metadata: JSON blob storing image URIs and other attachment data
+ */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN contentType TEXT NOT NULL DEFAULT 'text'")
+        db.execSQL("ALTER TABLE messages ADD COLUMN metadata TEXT")
+    }
+}
