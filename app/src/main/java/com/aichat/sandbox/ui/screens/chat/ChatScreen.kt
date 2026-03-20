@@ -67,7 +67,7 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
 
     // Auto-scroll to bottom when new messages arrive
-    LaunchedEffect(uiState.messages.size, uiState.streamingContent) {
+    LaunchedEffect(uiState.messages.size, uiState.streamingContent, uiState.executingTool) {
         if (uiState.messages.isNotEmpty() || uiState.streamingContent.isNotEmpty()) {
             var targetIndex = uiState.messages.size
             // Account for the regenerate button item
@@ -75,6 +75,8 @@ fun ChatScreen(
             if (!uiState.isLoading && lastIsAssistant) targetIndex++
             // Account for retry indicator
             if (uiState.retryAttempt > 0) targetIndex++
+            // Account for tool execution indicator
+            if (uiState.executingTool != null) targetIndex++
             // Account for streaming content
             if (uiState.streamingContent.isNotEmpty()) targetIndex++
             if (targetIndex > 0) {
@@ -121,13 +123,23 @@ fun ChatScreen(
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
                     items(uiState.messages, key = { it.id }) { message ->
-                        MessageBubble(
-                            message = message,
-                            onDelete = { viewModel.deleteMessage(message) },
-                            onEdit = if (message.role == "user") {
-                                { viewModel.startEditing(message) }
-                            } else null
-                        )
+                        when {
+                            message.contentType == "tool_call" -> {
+                                ToolCallBubble(message = message)
+                            }
+                            message.role == "tool" -> {
+                                ToolResultBubble(message = message)
+                            }
+                            else -> {
+                                MessageBubble(
+                                    message = message,
+                                    onDelete = { viewModel.deleteMessage(message) },
+                                    onEdit = if (message.role == "user") {
+                                        { viewModel.startEditing(message) }
+                                    } else null
+                                )
+                            }
+                        }
                     }
                     // Regenerate button (visible when not streaming and last message is from assistant)
                     if (!uiState.isLoading &&
@@ -177,6 +189,29 @@ fun ChatScreen(
                                     text = "Retrying... (attempt ${uiState.retryAttempt + 1})",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    // Tool execution indicator
+                    if (uiState.executingTool != null) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.Start,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Running tool: ${uiState.executingTool}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
                             }
                         }
@@ -251,7 +286,9 @@ fun ChatScreen(
             onFrequencyPenaltyChange = { viewModel.updateFrequencyPenalty(it) },
             onClearHistory = { viewModel.clearHistory() },
             onShareMarkdown = { viewModel.getShareContentAsMarkdown() },
-            onShareJson = { viewModel.getShareContentAsJson() }
+            onShareJson = { viewModel.getShareContentAsJson() },
+            toolsEnabled = uiState.toolsEnabled,
+            onToggleTools = { viewModel.toggleTools() }
         )
     }
 
@@ -492,6 +529,166 @@ private fun MessageBubble(
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun ToolCallBubble(message: Message) {
+    var expanded by remember { mutableStateOf(false) }
+    val toolMeta = remember(message.metadata) {
+        try {
+            message.metadata?.let {
+                Gson().fromJson(it, com.aichat.sandbox.data.model.ToolCallMetadata::class.java)
+            }
+        } catch (_: Exception) { null }
+    }
+    val toolCalls = toolMeta?.toolCalls ?: return
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+    ) {
+        Surface(
+            modifier = Modifier.widthIn(max = 320.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            onClick = { expanded = !expanded }
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Build,
+                        contentDescription = "Tool call",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Tool Call${if (toolCalls.size > 1) "s (${toolCalls.size})" else ""}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Icon(
+                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "Collapse" else "Expand",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                    )
+                }
+
+                // Show tool names as chips
+                toolCalls.forEach { tc ->
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = tc.function.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                // Show arguments when expanded
+                AnimatedVisibility(visible = expanded) {
+                    Column(modifier = Modifier.padding(top = 8.dp)) {
+                        toolCalls.forEach { tc ->
+                            Text(
+                                text = "${tc.function.name}(${tc.function.arguments})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+                                modifier = Modifier
+                                    .background(
+                                        MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .padding(8.dp)
+                                    .fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+                    }
+                }
+
+                // Show text content if present
+                if (message.content.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    MarkdownText(
+                        text = message.content,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolResultBubble(message: Message) {
+    var expanded by remember { mutableStateOf(false) }
+    val toolMeta = remember(message.metadata) {
+        try {
+            message.metadata?.let {
+                Gson().fromJson(it, com.aichat.sandbox.data.model.ToolCallMetadata::class.java)
+            }
+        } catch (_: Exception) { null }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+    ) {
+        Surface(
+            modifier = Modifier.widthIn(max = 320.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f),
+            onClick = { expanded = !expanded }
+        ) {
+            Column(modifier = Modifier.padding(10.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = "Tool result",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.tertiary
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = toolMeta?.toolName ?: "Tool Result",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Icon(
+                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "Collapse" else "Expand",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
+                    )
+                }
+
+                AnimatedVisibility(visible = expanded) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier
+                            .padding(top = 6.dp)
+                            .background(
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                                RoundedCornerShape(6.dp)
+                            )
+                            .padding(8.dp)
+                            .fillMaxWidth()
+                    )
+                }
+            }
         }
     }
 }
@@ -740,7 +937,9 @@ private fun ChatSettingsPanel(
     onFrequencyPenaltyChange: (Float) -> Unit,
     onClearHistory: () -> Unit,
     onShareMarkdown: () -> String = { "" },
-    onShareJson: () -> String = { "" }
+    onShareJson: () -> String = { "" },
+    toolsEnabled: Boolean = true,
+    onToggleTools: () -> Unit = {}
 ) {
     if (chat == null) return
 
@@ -839,6 +1038,32 @@ private fun ChatSettingsPanel(
                 onValueChange = onFrequencyPenaltyChange,
                 displayFormat = { String.format("%.1f", it) }
             )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            // Tools toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Tools",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "Enable function calling (calculator, date/time)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = toolsEnabled,
+                    onCheckedChange = { onToggleTools() }
+                )
+            }
         }
     }
 }

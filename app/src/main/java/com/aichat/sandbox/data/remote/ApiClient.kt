@@ -27,7 +27,8 @@ sealed class ApiResult<out T> {
 
 sealed class StreamEvent {
     data class Delta(val content: String) : StreamEvent()
-    data class Complete(val usage: Usage?) : StreamEvent()
+    data class ToolCallDelta(val toolCalls: List<com.aichat.sandbox.data.model.ToolCall>) : StreamEvent()
+    data class Complete(val usage: Usage?, val toolCalls: List<com.aichat.sandbox.data.model.ToolCall>? = null) : StreamEvent()
     data class Error(val message: String) : StreamEvent()
 }
 
@@ -73,7 +74,8 @@ class ApiClient @Inject constructor() {
         apiKey: String,
         chat: Chat,
         messages: List<Message>,
-        onRetryAttempt: ((Int) -> Unit)? = null
+        onRetryAttempt: ((Int) -> Unit)? = null,
+        tools: List<com.aichat.sandbox.data.model.ToolDefinition>? = null
     ): ApiResult<ChatCompletionResponse> {
         return try {
             val api = buildApi(baseUrl, apiKey)
@@ -86,7 +88,9 @@ class ApiClient @Inject constructor() {
                 maxTokens = chat.maxTokens,
                 presencePenalty = chat.presencePenalty,
                 frequencyPenalty = chat.frequencyPenalty,
-                stream = false
+                stream = false,
+                tools = tools?.ifEmpty { null },
+                toolChoice = if (!tools.isNullOrEmpty()) "auto" else null
             )
             val response = retryWithBackoff(
                 policy = retryPolicy,
@@ -117,7 +121,8 @@ class ApiClient @Inject constructor() {
         apiKey: String,
         chat: Chat,
         messages: List<Message>,
-        onRetryAttempt: ((Int) -> Unit)? = null
+        onRetryAttempt: ((Int) -> Unit)? = null,
+        tools: List<com.aichat.sandbox.data.model.ToolDefinition>? = null
     ): Flow<StreamEvent> = flow {
         try {
             val api = buildApi(baseUrl, apiKey)
@@ -130,7 +135,9 @@ class ApiClient @Inject constructor() {
                 maxTokens = chat.maxTokens,
                 presencePenalty = chat.presencePenalty,
                 frequencyPenalty = chat.frequencyPenalty,
-                stream = true
+                stream = true,
+                tools = tools?.ifEmpty { null },
+                toolChoice = if (!tools.isNullOrEmpty()) "auto" else null
             )
             val response = retryWithBackoff(
                 policy = retryPolicy,
@@ -163,30 +170,83 @@ class ApiClient @Inject constructor() {
     ) {
         reader.use { r ->
             var line: String?
+            // Accumulate tool calls across streaming deltas
+            val toolCallAccumulator = mutableMapOf<Int, ToolCallAccumulator>()
             while (r.readLine().also { line = it } != null) {
                 kotlinx.coroutines.coroutineContext.ensureActive()
                 val l = line ?: continue
                 if (l.startsWith("data: ")) {
                     val data = l.removePrefix("data: ").trim()
                     if (data == "[DONE]") {
-                        collector.emit(StreamEvent.Complete(null))
+                        val toolCalls = buildAccumulatedToolCalls(toolCallAccumulator)
+                        collector.emit(StreamEvent.Complete(null, toolCalls))
                         return
                     }
                     try {
-                        val chunk = gson.fromJson(data, ChatCompletionResponse::class.java)
-                        val content = chunk.choices?.firstOrNull()?.delta?.content?.toString()
+                        val jsonObj = com.google.gson.JsonParser.parseString(data).asJsonObject
+                        val choices = jsonObj.getAsJsonArray("choices")
+                        val delta = choices?.get(0)?.asJsonObject?.getAsJsonObject("delta")
+
+                        // Handle text content delta
+                        val content = delta?.get("content")?.takeIf { !it.isJsonNull }?.asString
                         if (content != null) {
                             collector.emit(StreamEvent.Delta(content))
                         }
-                        if (chunk.usage != null) {
-                            collector.emit(StreamEvent.Complete(chunk.usage))
+
+                        // Handle tool call deltas
+                        val toolCallsArr = delta?.getAsJsonArray("tool_calls")
+                        if (toolCallsArr != null) {
+                            for (tc in toolCallsArr) {
+                                val tcObj = tc.asJsonObject
+                                val index = tcObj.get("index").asInt
+                                val acc = toolCallAccumulator.getOrPut(index) { ToolCallAccumulator() }
+                                tcObj.get("id")?.takeIf { !it.isJsonNull }?.asString?.let { acc.id = it }
+                                tcObj.get("type")?.takeIf { !it.isJsonNull }?.asString?.let { acc.type = it }
+                                val funcObj = tcObj.getAsJsonObject("function")
+                                if (funcObj != null) {
+                                    funcObj.get("name")?.takeIf { !it.isJsonNull }?.asString?.let { acc.functionName = it }
+                                    funcObj.get("arguments")?.takeIf { !it.isJsonNull }?.asString?.let { acc.arguments.append(it) }
+                                }
+                            }
+                        }
+
+                        // Handle usage in final chunk
+                        val usage = jsonObj.getAsJsonObject("usage")
+                        if (usage != null) {
+                            val parsedUsage = gson.fromJson(usage, Usage::class.java)
+                            val toolCalls = buildAccumulatedToolCalls(toolCallAccumulator)
+                            collector.emit(StreamEvent.Complete(parsedUsage, toolCalls))
                         }
                     } catch (e: JsonSyntaxException) {
                         Log.w("ApiClient", "Skipping malformed stream chunk: ${data.take(100)}", e)
                     }
                 }
             }
-            collector.emit(StreamEvent.Complete(null))
+            val toolCalls = buildAccumulatedToolCalls(toolCallAccumulator)
+            collector.emit(StreamEvent.Complete(null, toolCalls))
+        }
+    }
+
+    private data class ToolCallAccumulator(
+        var id: String = "",
+        var type: String = "function",
+        var functionName: String = "",
+        var arguments: StringBuilder = StringBuilder()
+    )
+
+    private fun buildAccumulatedToolCalls(
+        accumulator: Map<Int, ToolCallAccumulator>
+    ): List<com.aichat.sandbox.data.model.ToolCall>? {
+        if (accumulator.isEmpty()) return null
+        return accumulator.entries.sortedBy { it.key }.map { (_, acc) ->
+            com.aichat.sandbox.data.model.ToolCall(
+                id = acc.id,
+                type = acc.type,
+                function = com.aichat.sandbox.data.model.FunctionCall(
+                    name = acc.functionName,
+                    arguments = acc.arguments.toString()
+                )
+            )
         }
     }
 
@@ -232,25 +292,58 @@ class ApiClient @Inject constructor() {
             apiMessages.add(ApiMessage(role = "system", content = chat.systemMessage))
         }
         messages.forEach { msg ->
-            if (msg.contentType == "multimodal" && msg.metadata != null) {
-                // Build vision-format content with text and image parts
-                val contentParts = mutableListOf<Any>()
-                if (msg.content.isNotBlank()) {
-                    contentParts.add(TextContentPart(text = msg.content))
-                }
-                try {
-                    val imageList = gson.fromJson(msg.metadata, ImageMetadata::class.java)
-                    imageList?.images?.forEach { imageData ->
-                        contentParts.add(
-                            ImageContentPart(imageUrl = ImageUrl(url = imageData.dataUri))
-                        )
+            when {
+                // Tool result message
+                msg.role == "tool" && msg.metadata != null -> {
+                    try {
+                        val toolMeta = gson.fromJson(msg.metadata, ToolCallMetadata::class.java)
+                        apiMessages.add(ApiMessage(
+                            role = "tool",
+                            content = msg.content,
+                            toolCallId = toolMeta.toolCallId,
+                            name = toolMeta.toolName
+                        ))
+                    } catch (e: Exception) {
+                        Log.w("ApiClient", "Failed to parse tool metadata", e)
+                        apiMessages.add(ApiMessage(role = msg.role, content = msg.content))
                     }
-                } catch (e: Exception) {
-                    Log.w("ApiClient", "Failed to parse image metadata", e)
                 }
-                apiMessages.add(ApiMessage(role = msg.role, content = contentParts))
-            } else {
-                apiMessages.add(ApiMessage(role = msg.role, content = msg.content))
+                // Assistant message with tool calls
+                msg.role == "assistant" && msg.contentType == "tool_call" && msg.metadata != null -> {
+                    try {
+                        val toolMeta = gson.fromJson(msg.metadata, ToolCallMetadata::class.java)
+                        apiMessages.add(ApiMessage(
+                            role = "assistant",
+                            content = msg.content.ifBlank { null },
+                            toolCalls = toolMeta.toolCalls
+                        ))
+                    } catch (e: Exception) {
+                        Log.w("ApiClient", "Failed to parse tool call metadata", e)
+                        apiMessages.add(ApiMessage(role = msg.role, content = msg.content))
+                    }
+                }
+                // Multimodal message with images
+                msg.contentType == "multimodal" && msg.metadata != null -> {
+                    val contentParts = mutableListOf<Any>()
+                    if (msg.content.isNotBlank()) {
+                        contentParts.add(TextContentPart(text = msg.content))
+                    }
+                    try {
+                        val imageList = gson.fromJson(msg.metadata, ImageMetadata::class.java)
+                        imageList?.images?.forEach { imageData ->
+                            contentParts.add(
+                                ImageContentPart(imageUrl = ImageUrl(url = imageData.dataUri))
+                            )
+                        }
+                    } catch (e: Exception) {
+                        Log.w("ApiClient", "Failed to parse image metadata", e)
+                    }
+                    apiMessages.add(ApiMessage(role = msg.role, content = contentParts))
+                }
+                // Standard text message
+                else -> {
+                    apiMessages.add(ApiMessage(role = msg.role, content = msg.content))
+                }
             }
         }
         return apiMessages

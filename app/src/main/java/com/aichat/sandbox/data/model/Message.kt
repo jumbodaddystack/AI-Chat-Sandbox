@@ -32,5 +32,6 @@ data class Message(
 enum class MessageRole(val value: String) {
     USER("user"),
     ASSISTANT("assistant"),
-    SYSTEM("system")
+    SYSTEM("system"),
+    TOOL("tool")
 }
