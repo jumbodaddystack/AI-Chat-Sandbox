@@ -25,7 +25,9 @@ data class ChatUiState(
     val error: String? = null,
     val showSettingsPanel: Boolean = false,
     val showSystemMessageDialog: Boolean = false,
-    val retryAttempt: Int = 0
+    val retryAttempt: Int = 0,
+    val editingMessageId: String? = null,
+    val editingContent: String? = null
 )
 
 @HiltViewModel
@@ -228,6 +230,34 @@ class ChatViewModel @Inject constructor(
                     }
                 }
             }
+        }
+    }
+
+    fun startEditing(message: Message) {
+        _uiState.update { it.copy(editingMessageId = message.id, editingContent = message.content) }
+    }
+
+    fun cancelEditing() {
+        _uiState.update { it.copy(editingMessageId = null, editingContent = null) }
+    }
+
+    fun submitEdit(newContent: String) {
+        val chat = _uiState.value.chat ?: return
+        val editingId = _uiState.value.editingMessageId ?: return
+        if (newContent.isBlank()) return
+
+        val editedMessage = _uiState.value.messages.find { it.id == editingId } ?: return
+
+        viewModelScope.launch {
+            // Delete all messages at or after the edited message's timestamp
+            // (this removes the old version and any subsequent assistant replies)
+            repository.deleteMessagesFrom(chatId, editedMessage.createdAt)
+
+            // Clear editing state
+            _uiState.update { it.copy(editingMessageId = null, editingContent = null) }
+
+            // Send the edited content as a new message (reuses existing sendMessage flow)
+            sendMessage(newContent.trim())
         }
     }
 
