@@ -1,0 +1,505 @@
+AI CHAT SANDBOX - COMPREHENSIVE IMPROVEMENT PLAN
+==================================================
+
+ARCHITECTURE SUMMARY
+--------------------
+The app has a clean Android architecture: Room entities (Chat, Message) with a
+single ChatDao, a ChatRepository wrapping the DAO and ApiClient, Hilt DI via
+AppModule, DataStore preferences, and Compose UI with navigation. The API layer
+uses Retrofit with OkHttp SSE streaming, piped through Kotlin Flows. The
+codebase is small (~27 Kotlin files), well-structured, and ready for expansion.
+
+
+================================================================================
+TIER 1: FOUNDATION & DAILY-DRIVER ESSENTIALS (Weeks 1-4)
+================================================================================
+
+These fix correctness issues, prevent data loss, and implement features users
+will reach for every single session.
+
+
+1.1 SAFE DATABASE MIGRATIONS (Critical - Day 1)
+------------------------------------------------
+Problem: AppModule.kt line 25 uses fallbackToDestructiveMigration(). Every
+schema change wipes user data.
+
+Implementation:
+- Remove fallbackToDestructiveMigration() from AppModule.kt
+- Set exportSchema = true in AppDatabase and configure the room.schemaLocation
+  KSP argument in build.gradle.kts
+- Add a Migration(1, 2) object for every schema change going forward
+- Place migrations in a new file data/local/Migrations.kt and register them
+  with .addMigrations(MIGRATION_1_2, ...) on the builder
+- Bundle all upcoming schema changes into a single MIGRATION_1_2 using
+  ALTER TABLE statements
+
+Files: AppModule.kt, AppDatabase.kt, new Migrations.kt
+
+
+1.2 MESSAGE EDITING & RESEND
+-----------------------------
+Problem: Users cannot correct a typo or rephrase a prompt without deleting
+and retyping.
+
+Implementation:
+- Add an "Edit" option to the DropdownMenu in MessageBubble (user messages only)
+- When tapped, populate the ChatInputBar text field with the message content
+  and set editingMessageId on ChatUiState
+- On send while editing: delete all messages after the edited message
+  (inclusive of the old assistant reply), update the edited message content
+  via ChatDao.updateMessage(), then fire sendMessage() with truncated history
+- Add DAO query: DELETE FROM messages WHERE chatId = :chatId AND
+  createdAt >= :timestamp
+
+Files: ChatDao.kt, ChatViewModel.kt, ChatScreen.kt
+
+
+1.3 RESPONSE REGENERATION
+--------------------------
+Problem: No way to ask for a different response without manually re-sending.
+
+Implementation:
+- Add a "Regenerate" icon button below the last assistant message bubble
+  (visible only when not streaming and last message is from assistant)
+- In ChatViewModel, add regenerateLastResponse(): delete the last assistant
+  message, then call sendMessage() using the remaining message history
+- Reuses existing streaming logic and composes with stopGenerating()
+
+Files: ChatViewModel.kt, ChatScreen.kt
+
+
+1.4 RETRY LOGIC WITH EXPONENTIAL BACKOFF
+-----------------------------------------
+Problem: A single network hiccup kills the request. The streaming fallback
+to non-streaming is the only resilience.
+
+Implementation:
+- Create data/remote/RetryPolicy.kt with retryWithBackoff() utility
+  (maxAttempts=3, initialDelayMs=1000)
+- Wrap createChatCompletion() and createChatCompletionStream() calls in
+  ApiClient with this retry policy
+- Only retry on 429, 500, 502, 503, 529 status codes
+- Parse Retry-After header when present
+- Surface retry attempts in UI via retryAttempt field on ChatUiState
+
+Files: New RetryPolicy.kt, ApiClient.kt, ChatViewModel.kt
+
+
+1.5 CONVERSATION SEARCH
+------------------------
+Problem: No way to find a past conversation or search within messages.
+
+Implementation:
+- Add FTS4 support to Room via @Fts4(contentEntity = Message) entity
+  called MessageFts
+- Add DAO queries joining messages with MessageFts for full-text search
+- Add a SearchBar (Material3) at the top of ChatListScreen
+- Create SearchViewModel that queries FTS and returns results grouped by chat
+- Results show matching snippet with chat title, tapping navigates to chat
+  and scrolls to the message
+
+Files: New MessageFts.kt, ChatDao.kt, AppDatabase.kt, ChatListScreen.kt,
+       new SearchViewModel.kt
+
+
+1.6 AUTO-TITLE GENERATION VIA AI
+---------------------------------
+Problem: Titles are just the first 40 characters of the first message.
+
+Implementation:
+- After first assistant response completes, fire a separate lightweight API
+  call (cheapest model) with prompt to generate a 3-6 word title
+- Add generateTitle() in ChatRepository using a hardcoded cheap model
+- Add autoGenerateTitles preference in PreferencesManager (default true)
+- Keep the first-40-chars logic as immediate placeholder until AI title arrives
+
+Files: ChatViewModel.kt, ChatRepository.kt, ApiClient.kt, PreferencesManager.kt
+
+
+================================================================================
+TIER 2: POWER USER FEATURES (Weeks 5-8)
+================================================================================
+
+Features that make power users say "I cannot go back."
+
+
+2.1 TOOL USE / FUNCTION CALLING
+--------------------------------
+Problem: No support for tool/function calling protocols.
+
+A. Data Model Changes:
+- Extend ApiMessage to support OpenAI tools format
+- Replace simple content: String with content: Any? (String or List of blocks)
+- Add tool_calls and tool_call_id fields
+- Create ToolDefinition, ToolCall, FunctionCall data classes
+- Extend ChatCompletionRequest with tools and tool_choice fields
+
+B. Tool Execution Engine:
+- Create data/tools/ToolRegistry.kt singleton mapping names to executors
+- Define ToolExecutor interface with suspend execute() method
+- Built-in tools: WebSearchTool, CalculatorTool, CurrentDateTimeTool,
+  ReadClipboardTool
+
+C. Conversation Loop:
+- After receiving assistant response with tool_calls, enter execution loop:
+  1. Save assistant message with tool_calls, display with "Tool Call" chip
+  2. Execute each tool call via ToolRegistry
+  3. Insert tool result messages (role=tool) into conversation
+  4. Send updated conversation back to API
+  5. Repeat until assistant responds without tool_calls
+- Safety limit: maxToolRounds = 10
+
+D. Message Entity Extension:
+- Add metadata column (JSON blob) to Message entity for tool call data
+
+E. UI:
+- Render tool calls as collapsible cards with AnimatedVisibility
+- Add "Tools" toggle in chat settings panel
+- Add tool configuration screen in Settings
+
+Files: New ToolModels.kt, ToolRegistry.kt, ToolExecutor.kt, tool
+       implementations, ApiModels.kt, ApiClient.kt, ChatViewModel.kt,
+       ChatScreen.kt, Message.kt
+
+
+2.2 CONVERSATION TEMPLATES
+---------------------------
+Problem: The Templates tab is a placeholder.
+
+Implementation:
+- Create Template Room entity with fields for name, description,
+  systemMessage, model, temperature, etc.
+- Add TemplateDao with CRUD operations
+- Pre-populate with built-in templates on first launch: "Code Review",
+  "Creative Writing", "Technical Explanation", "Translation", etc.
+- TemplatesScreen shows templates in grid grouped by category
+- Tapping creates a new Chat pre-configured with template settings
+- Allow saving custom templates from existing chats
+- Allow editing/deleting custom templates (protect built-ins)
+
+Files: New Template.kt, TemplateDao.kt, AppDatabase.kt, TemplatesViewModel.kt,
+       TemplatesScreen.kt, ChatScreen.kt
+
+
+2.3 CHAT ORGANIZATION: PINNING, ARCHIVING, FOLDERS/TAGS
+--------------------------------------------------------
+Problem: A flat chronological list becomes unusable after 50+ conversations.
+
+Implementation:
+- Add columns to Chat: isPinned, isArchived, folderId, tags
+- Create Folder entity with id, name, color, sortOrder
+- Update ChatDao with filtered queries
+- Update ChatListScreen:
+  - Pinned chats in sticky section at top
+  - Swipe gestures: right to pin/unpin, left to archive
+  - Folder sidebar or dropdown filter
+  - Bottom sheet for tagging
+  - Archived section accessible from menu
+- ChatListViewModel gets filter state enum
+
+Files: Chat.kt, new Folder.kt, ChatDao.kt, ChatListScreen.kt,
+       ChatListViewModel.kt, AppDatabase.kt
+
+
+2.4 CONVERSATION BRANCHING / FORKING
+-------------------------------------
+Problem: Linear conversations force users to choose a single path.
+
+Implementation:
+- Add parentMessageId and branchIndex columns to Message
+- When user edits mid-conversation, create a new branch instead of deleting
+- UI shows branch navigation arrows on messages with siblings
+- ChatDao needs query to find sibling messages by parentId
+- ChatViewModel maintains activeBranch map tracking selected branch at each fork
+- Displayed messages computed by walking tree following active branches
+- This is the single most differentiating power-user feature
+
+Files: Message.kt, ChatDao.kt, ChatViewModel.kt, ChatScreen.kt
+
+
+2.5 MULTI-MODAL INPUT (IMAGE ATTACHMENT)
+-----------------------------------------
+Problem: GPT-4o and Claude support image input, but the app only sends text.
+
+Implementation:
+- Extend ApiMessage.content to support vision format (TextPart, ImagePart)
+- Add image attachment button to ChatInputBar (gallery and camera)
+- Encode images as base64 data URIs, compress to max 1024px, JPEG quality 80
+- Store image references in Message.metadata JSON column
+- Display inline thumbnails using AsyncImage (add Coil dependency)
+- Add contentType column to Message
+
+Files: ApiModels.kt, ChatScreen.kt, Message.kt, ChatViewModel.kt,
+       ApiClient.kt, build.gradle.kts
+
+
+================================================================================
+TIER 3: UX POLISH & DELIGHT (Weeks 9-12)
+================================================================================
+
+
+3.1 ENHANCED MARKDOWN RENDERING
+--------------------------------
+Problem: Current MarkdownText.kt uses bare Markwon with no plugins.
+
+Implementation:
+- Add Markwon plugin dependencies: strikethrough, tables, tasklist, html,
+  syntax-highlight with Prism4j
+- Build MarkwonProvider singleton with all plugins configured
+- Code blocks: Prism4j with dark/light adaptive theme, support for common
+  languages (kotlin, java, python, javascript, json, xml, sql, bash)
+- Add "Copy code" button overlay on code blocks
+- Add LaTeX support via markwon ext-latex
+- Update MarkdownText.kt to use MarkwonProvider
+
+Files: MarkdownText.kt, new MarkwonProvider.kt, build.gradle.kts, AppModule.kt
+
+
+3.2 HAPTIC FEEDBACK & MICRO-ANIMATIONS
+---------------------------------------
+Implementation:
+- Haptic feedback on message send, stop generation, copy
+- Typing indicator animation (three bouncing dots) when loading but no
+  streaming content yet
+- animateItemPlacement() on LazyColumn items
+- Fade-in animation on new message bubbles
+- "Scroll to bottom" FAB when user scrolls up
+
+Files: ChatScreen.kt, new ui/components/TypingIndicator.kt
+
+
+3.3 IMPROVED INPUT BAR
+-----------------------
+Implementation:
+- Replace BasicTextField with OutlinedTextField or custom bordered variant
+- Add live character/token count indicator
+- Add attachment button for images
+- Long-press send button for "Send with options" menu
+- Support pasting images from clipboard
+
+Files: ChatScreen.kt
+
+
+3.4 THEME CUSTOMIZATION
+------------------------
+Implementation:
+- Accent color selection in Settings (8-10 presets)
+- AMOLED black mode (pure black background) as third theme option
+- Dynamic color preference for Android 12+ (Material You)
+- Derive bubble colors from selected accent color instead of hardcoded values
+
+Files: Theme.kt, PreferencesManager.kt, SettingsScreen.kt, MainActivity.kt
+
+
+================================================================================
+TIER 4: SMART / AI-META FEATURES (Weeks 13-16)
+================================================================================
+
+
+4.1 CONVERSATION SUMMARIZATION
+-------------------------------
+Implementation:
+- "Summarize" action in chat settings and chat list long-press menu
+- Send full conversation to API with summarization prompt
+- Store summary in new summary column on Chat
+- Display summaries as subtitle in ChatListItem
+- Auto-summarize when conversation exceeds N messages (configurable)
+- Use summaries for context compression when approaching context limit
+- Add contextStrategy enum (FULL, SUMMARIZED, SLIDING_WINDOW) to Chat
+
+Files: Chat.kt, ChatViewModel.kt, ChatRepository.kt, ChatListScreen.kt
+
+
+4.2 PROMPT ENHANCEMENT / REWRITE
+---------------------------------
+Implementation:
+- "Magic wand" button in input bar
+- Sends draft to API with rewrite prompt
+- Shows enhanced prompt with diff-like highlighting via AnnotatedString
+- User can accept (send) or reject (undo)
+
+Files: ChatViewModel.kt, ChatScreen.kt
+
+
+4.3 COST DASHBOARD & ANALYTICS
+-------------------------------
+Implementation:
+- New AnalyticsScreen accessible from Settings
+- Query aggregate data: total tokens/cost by model, messages per day,
+  average response time
+- Add responseTimeMs column to Message for assistant messages
+- Display using Compose Canvas charts: bar chart of cost per model,
+  line chart of daily usage
+- "Money saved vs ChatGPT Pro" comparison
+
+Files: New AnalyticsData.kt, new AnalyticsScreen.kt, ChatDao.kt,
+       Message.kt, Navigation.kt
+
+
+4.4 SMART CONTEXT MANAGEMENT
+-----------------------------
+Problem: Current implementation sends ALL messages every time.
+
+Implementation:
+- Implement token budget system in ApiClient.buildApiMessages():
+  1. Always include system message
+  2. Always include last N messages (default 4)
+  3. Fill remaining budget oldest to newest
+  4. Prepend truncation note when needed
+- Use tiktoken-java for accurate OpenAI token counting
+- Add token budget indicator in chat settings panel
+- Integrate with conversation summarization for truncated portions
+
+Files: ApiClient.kt, ChatViewModel.kt, build.gradle.kts
+
+
+================================================================================
+TIER 5: IMAGE GENERATION & VOICE (Weeks 17-20)
+================================================================================
+
+
+5.1 DALL-E IMAGE GENERATION
+----------------------------
+Implementation:
+- Add Retrofit method for OpenAI Images API
+- Create request/response models
+- ImagesScreen with prompt input, size/quality selectors, gallery grid
+- Download and share buttons per image
+- ImageGeneration Room entity for storage
+- Support inline generation via tool calling in chat
+
+Files: OpenAiApi.kt, new ImageModels.kt, ImagesScreen.kt,
+       new ImagesViewModel.kt, build.gradle.kts
+
+
+5.2 VOICE INPUT
+----------------
+Implementation:
+- Microphone button in ChatInputBar
+- Use Android SpeechRecognizer API (no external dependency)
+- Tap-and-hold: start recognition, show waveform, transcribe, insert text
+- Optional: OpenAI Whisper API for higher quality
+- Recording indicator animation (pulsing dot + waveform)
+
+Files: ChatScreen.kt, new VoiceInput.kt, OpenAiApi.kt, ApiClient.kt
+
+
+5.3 VOICE OUTPUT (TTS)
+-----------------------
+Implementation:
+- "Read aloud" button on assistant message bubbles
+- Use Android built-in TextToSpeech engine
+- Optional: OpenAI TTS API for higher quality
+- Playback indicator with stop/pause controls
+
+Files: ChatScreen.kt, new TtsClient.kt, OpenAiApi.kt
+
+
+================================================================================
+TIER 6: RELIABILITY, TESTING & INFRASTRUCTURE (Ongoing from Week 1)
+================================================================================
+
+
+6.1 TESTING STRATEGY
+---------------------
+Unit Tests:
+- ChatViewModelTest: test send, regenerate, edit flows with fake repository
+- ApiClientTest: test SSE parsing with mock BufferedReader, test retry logic
+- ChatRepositoryTest: test with in-memory Room database
+- ModelPricingTest: assertion tests for cost calculations
+- RetryPolicyTest: test backoff timing and limits
+
+Integration Tests:
+- ChatDaoTest: Room instrumented tests
+- End-to-end Compose tests: create chat, send message, verify display
+
+Dependencies: kotlinx-coroutines-test, mockk, turbine, mockwebserver
+
+Files: New test source sets under app/src/test/ and app/src/androidTest/
+
+
+6.2 ERROR HANDLING IMPROVEMENTS
+--------------------------------
+- Create sealed AppError hierarchy: NetworkError, AuthError, RateLimitError,
+  ModelError, ParseError
+- Map API error codes to AppError in ApiClient
+- Show user-friendly error messages instead of raw API strings
+- Add network connectivity observer with offline banner
+- Distinguish connect timeout vs read timeout errors
+
+Files: New AppError.kt, ApiClient.kt, ChatViewModel.kt, ChatScreen.kt
+
+
+6.3 CONVERSATION IMPORT
+------------------------
+- Support importing from ChatGPT export format (JSON) and own JSON export
+- "Import" button in chat list screen
+- Use ActivityResultContracts.GetContent to pick file
+- Parse JSON, create Chat and Message entities, insert into database
+
+Files: ChatListScreen.kt, ChatListViewModel.kt, ChatRepository.kt
+
+
+6.4 PROGUARD / R8 RULES
+------------------------
+- App has isMinifyEnabled = true but likely no custom ProGuard rules
+- Add keep rules for: Gson serialized classes, Retrofit interfaces,
+  Room entities, Hilt generated code
+
+Files: app/proguard-rules.pro
+
+
+================================================================================
+PRIORITY ORDERING
+================================================================================
+
+P0 (Do First):
+  - Safe DB Migrations (1.1)      - Critical, small effort, prevents data loss
+  - Retry Logic (1.4)             - High impact, small effort, basic reliability
+
+P1 (Core UX):
+  - Message Edit & Resend (1.2)   - High impact, medium effort
+  - Response Regeneration (1.3)   - High impact, small effort
+  - Auto-Title (1.6)              - Medium impact, small effort, big polish win
+  - Enhanced Markdown (3.1)       - High impact, medium effort
+
+P2 (Scale & Power):
+  - Conversation Search (1.5)     - High impact, medium effort
+  - Tool Use (2.1)                - Very high impact, large effort
+  - Templates (2.2)               - Medium impact, fills empty tab
+  - Chat Organization (2.3)       - Medium impact, essential at scale
+
+P3 (Differentiation):
+  - Branching (2.4)               - Very high impact, large effort
+  - Multi-Modal (2.5)             - High impact, medium effort
+  - Smart Context (4.4)           - High impact, prevents cost blowout
+  - Summarization (4.1)           - Medium impact, extends smart context
+
+P4 (Polish & Extras):
+  - Image Generation (5.1)        - Medium impact, fills empty tab
+  - Voice I/O (5.2, 5.3)          - Medium impact, mobile differentiator
+  - Analytics (4.3)               - Low-medium impact
+  - Prompt Enhancement (4.2)      - Medium impact, delightful
+
+Ongoing:
+  - Testing (6.1)                 - Start from week 1, build incrementally
+
+
+================================================================================
+CRITICAL FILES FOR IMPLEMENTATION
+================================================================================
+
+- app/src/main/java/com/aichat/sandbox/data/model/ApiModels.kt
+  Must be extended for tool calling, multi-modal, and all new API features
+
+- app/src/main/java/com/aichat/sandbox/data/remote/ApiClient.kt
+  Core networking hub: retry logic, tool calls, context management
+
+- app/src/main/java/com/aichat/sandbox/ui/screens/chat/ChatViewModel.kt
+  Central orchestrator for edit/resend, regeneration, tool execution, branching
+
+- app/src/main/java/com/aichat/sandbox/data/model/Message.kt
+  Room entity needing new columns for nearly every Tier 1-2 feature
+
+- app/src/main/java/com/aichat/sandbox/di/AppModule.kt
+  Immediate fix needed (destructive migration), plus all new DI registrations
