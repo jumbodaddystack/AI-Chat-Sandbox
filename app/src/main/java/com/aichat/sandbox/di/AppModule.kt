@@ -6,6 +6,7 @@ import com.aichat.sandbox.data.local.AppDatabase
 import com.aichat.sandbox.data.local.ChatDao
 import com.aichat.sandbox.data.local.MIGRATION_1_2
 import com.aichat.sandbox.data.local.MIGRATION_2_3
+import com.aichat.sandbox.ui.components.MarkwonProvider
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -30,5 +31,11 @@ object AppModule {
     @Provides
     fun provideChatDao(database: AppDatabase): ChatDao {
         return database.chatDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideMarkwonProvider(): MarkwonProvider {
+        return MarkwonProvider()
     }
 }
