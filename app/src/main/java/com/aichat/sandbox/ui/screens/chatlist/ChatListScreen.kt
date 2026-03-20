@@ -5,10 +5,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,45 +30,123 @@ import java.util.*
 fun ChatListScreen(
     onChatClick: (String) -> Unit,
     onNewChat: (String) -> Unit,
-    viewModel: ChatListViewModel = hiltViewModel()
+    viewModel: ChatListViewModel = hiltViewModel(),
+    searchViewModel: SearchViewModel = hiltViewModel()
 ) {
     val chats by viewModel.chats.collectAsState()
+    val searchState by searchViewModel.uiState.collectAsState()
+    var isSearchActive by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        // Search bar
+        SearchBarSection(
+            query = searchState.query,
+            isActive = isSearchActive,
+            onQueryChange = { query ->
+                isSearchActive = query.isNotEmpty()
+                searchViewModel.search(query)
+            },
+            onClear = {
+                isSearchActive = false
+                searchViewModel.clearSearch()
+            }
+        )
+
         // New Chat button
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { viewModel.createNewChat(onNewChat) }
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(vertical = 4.dp)
+        if (!isSearchActive) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { viewModel.createNewChat(onNewChat) }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                color = MaterialTheme.colorScheme.background
             ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "New chat",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = "New chat",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "New chat",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = "New chat",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
 
-        if (chats.isEmpty()) {
+        if (isSearchActive) {
+            // Search results
+            if (searchState.isSearching) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                }
+            } else if (searchState.results.isEmpty() && searchState.query.isNotBlank()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "No results",
+                            modifier = Modifier.size(48.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "No results found",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    searchState.results.forEach { result ->
+                        item(key = "header_${result.chat.id}") {
+                            SearchResultHeader(chat = result.chat, onClick = { onChatClick(result.chat.id) })
+                        }
+                        items(
+                            result.matchingMessages.take(3),
+                            key = { "msg_${it.id}" }
+                        ) { message ->
+                            SearchResultMessage(
+                                message = message,
+                                query = searchState.query,
+                                onClick = { onChatClick(result.chat.id) }
+                            )
+                        }
+                        if (result.matchingMessages.size > 3) {
+                            item(key = "more_${result.chat.id}") {
+                                Text(
+                                    text = "+${result.matchingMessages.size - 3} more matches",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .padding(start = 52.dp, bottom = 8.dp)
+                                        .clickable { onChatClick(result.chat.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (chats.isEmpty()) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -102,6 +183,140 @@ fun ChatListScreen(
             }
         }
     }
+}
+
+@Composable
+private fun SearchBarSection(
+    query: String,
+    isActive: Boolean,
+    onQueryChange: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = "Search",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            TextField(
+                value = query,
+                onValueChange = onQueryChange,
+                placeholder = {
+                    Text(
+                        "Search conversations...",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                modifier = Modifier.weight(1f),
+                textStyle = MaterialTheme.typography.bodyMedium,
+                singleLine = true,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                    unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                    focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                    unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
+                )
+            )
+            if (isActive) {
+                IconButton(
+                    onClick = onClear,
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Clear search",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchResultHeader(
+    chat: Chat,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Chat,
+                contentDescription = "Chat",
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = chat.title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchResultMessage(
+    message: com.aichat.sandbox.data.model.Message,
+    query: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 52.dp, end = 16.dp, top = 2.dp, bottom = 2.dp)
+        ) {
+            Text(
+                text = buildSnippet(message.content, query),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private fun buildSnippet(content: String, query: String): String {
+    val lowerContent = content.lowercase()
+    val lowerQuery = query.lowercase().trim()
+    val index = lowerContent.indexOf(lowerQuery)
+    if (index < 0) return content.take(100)
+
+    val start = (index - 30).coerceAtLeast(0)
+    val end = (index + lowerQuery.length + 30).coerceAtMost(content.length)
+    val prefix = if (start > 0) "..." else ""
+    val suffix = if (end < content.length) "..." else ""
+    return "$prefix${content.substring(start, end)}$suffix"
 }
 
 @Composable

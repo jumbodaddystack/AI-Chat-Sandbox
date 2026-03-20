@@ -43,9 +43,37 @@ interface ChatDao {
     @Query("SELECT COUNT(*) FROM messages WHERE chatId = :chatId")
     suspend fun getMessageCount(chatId: String): Int
 
+    // Message editing (1.2)
     @Query("UPDATE messages SET content = :content WHERE id = :messageId")
     suspend fun updateMessageContent(messageId: String, content: String)
 
     @Query("DELETE FROM messages WHERE chatId = :chatId AND createdAt >= :timestamp")
     suspend fun deleteMessagesFrom(chatId: String, timestamp: Long)
+
+    // Full-text search (1.5)
+    @Query("""
+        SELECT m.* FROM messages m
+        JOIN messages_fts ON messages_fts.rowid = m.rowid
+        WHERE messages_fts MATCH :query
+        ORDER BY m.createdAt DESC
+    """)
+    suspend fun searchMessages(query: String): List<Message>
+
+    @Query("""
+        SELECT DISTINCT c.* FROM chats c
+        INNER JOIN messages m ON m.chatId = c.id
+        INNER JOIN messages_fts ON messages_fts.rowid = m.rowid
+        WHERE messages_fts MATCH :query
+        ORDER BY c.updatedAt DESC
+    """)
+    suspend fun searchChats(query: String): List<Chat>
+
+    @Query("""
+        SELECT snippet(messages_fts, '', '', '...', -1, 40) FROM messages_fts
+        WHERE messages_fts.rowid = :messageRowId AND messages_fts MATCH :query
+    """)
+    suspend fun getSnippet(messageRowId: Long, query: String): String?
+
+    @Query("SELECT rowid FROM messages WHERE id = :messageId")
+    suspend fun getMessageRowId(messageId: String): Long?
 }

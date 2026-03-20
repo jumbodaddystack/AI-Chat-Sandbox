@@ -37,6 +37,7 @@ data class ChatUiState(
     val error: String? = null,
     val showSettingsPanel: Boolean = false,
     val showSystemMessageDialog: Boolean = false,
+    val retryAttempt: Int = 0,
     val editingMessageId: String? = null,
     val editingContent: String? = null,
     val attachedImages: List<Uri> = emptyList()
@@ -119,13 +120,15 @@ class ChatViewModel @Inject constructor(
             // Clear attached images
             _uiState.update { it.copy(attachedImages = emptyList()) }
 
-            // Update chat title if it's the first message
-            if (_uiState.value.messages.isEmpty()) {
+            val isFirstMessage = _uiState.value.messages.isEmpty()
+
+            // Update chat title with placeholder if it's the first message
+            if (isFirstMessage) {
                 val title = content.trim().take(40)
                 repository.updateChat(chat.copy(title = title))
             }
 
-            _uiState.update { it.copy(isLoading = true, error = null, streamingContent = "") }
+            _uiState.update { it.copy(isLoading = true, error = null, streamingContent = "", retryAttempt = 0) }
 
             // Get all messages including the new one
             val allMessages = _uiState.value.messages + userMessage
@@ -133,34 +136,43 @@ class ChatViewModel @Inject constructor(
             // Use streaming
             streamJob = viewModelScope.launch {
                 val streamContent = StringBuilder()
-                repository.sendMessageStream(chat, allMessages).collect { event ->
+                val onRetry: (Int) -> Unit = { attempt ->
+                    _uiState.update { it.copy(retryAttempt = attempt) }
+                }
+                repository.sendMessageStream(chat, allMessages, onRetry).collect { event ->
                     when (event) {
                         is StreamEvent.Delta -> {
                             streamContent.append(event.content)
                             _uiState.update { it.copy(streamingContent = streamContent.toString()) }
                         }
                         is StreamEvent.Complete -> {
+                            val assistantContent = streamContent.toString()
                             val assistantMessage = Message(
                                 chatId = chatId,
                                 role = MessageRole.ASSISTANT.value,
-                                content = streamContent.toString(),
-                                tokenCount = event.usage?.totalTokens ?: estimateTokens(streamContent.toString())
+                                content = assistantContent,
+                                tokenCount = event.usage?.totalTokens ?: estimateTokens(assistantContent)
                             )
                             repository.insertMessage(assistantMessage)
 
                             // Update token count and cost
-                            val totalTokens = (event.usage?.totalTokens ?: estimateTokens(streamContent.toString()))
+                            val totalTokens = (event.usage?.totalTokens ?: estimateTokens(assistantContent))
                             val cost = estimateCost(chat.model, event.usage?.promptTokens ?: 0, event.usage?.completionTokens ?: 0)
                             repository.updateChat(chat.copy(
                                 totalTokens = chat.totalTokens + totalTokens,
                                 totalCost = chat.totalCost + cost
                             ))
 
-                            _uiState.update { it.copy(isLoading = false, streamingContent = "") }
+                            _uiState.update { it.copy(isLoading = false, streamingContent = "", retryAttempt = 0) }
+
+                            // Auto-generate title after first assistant response
+                            if (isFirstMessage && assistantContent.isNotBlank()) {
+                                generateAiTitle(chat, content.trim(), assistantContent)
+                            }
                         }
                         is StreamEvent.Error -> {
                             // If streaming fails, fall back to non-streaming
-                            handleNonStreamingFallback(chat, allMessages)
+                            handleNonStreamingFallback(chat, allMessages, isFirstMessage, content.trim())
                         }
                     }
                 }
@@ -168,8 +180,16 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun handleNonStreamingFallback(chat: Chat, messages: List<Message>) {
-        when (val result = repository.sendMessage(chat, messages)) {
+    private suspend fun handleNonStreamingFallback(
+        chat: Chat,
+        messages: List<Message>,
+        isFirstMessage: Boolean = false,
+        userContent: String = ""
+    ) {
+        val onRetry: (Int) -> Unit = { attempt ->
+            _uiState.update { it.copy(retryAttempt = attempt) }
+        }
+        when (val result = repository.sendMessage(chat, messages, onRetry)) {
             is ApiResult.Success -> {
                 val response = result.data
                 val content = response.choices?.firstOrNull()?.message?.content?.toString() ?: ""
@@ -190,10 +210,15 @@ class ChatViewModel @Inject constructor(
                     totalCost = chat.totalCost + cost
                 ))
 
-                _uiState.update { it.copy(isLoading = false, streamingContent = "") }
+                _uiState.update { it.copy(isLoading = false, streamingContent = "", retryAttempt = 0) }
+
+                // Auto-generate title after first assistant response
+                if (isFirstMessage && content.isNotBlank()) {
+                    generateAiTitle(chat, userContent, content)
+                }
             }
             is ApiResult.Error -> {
-                _uiState.update { it.copy(isLoading = false, error = result.message, streamingContent = "") }
+                _uiState.update { it.copy(isLoading = false, error = result.message, streamingContent = "", retryAttempt = 0) }
             }
             is ApiResult.Loading -> {}
         }
@@ -214,6 +239,63 @@ class ChatViewModel @Inject constructor(
             }
         }
         _uiState.update { it.copy(isLoading = false, streamingContent = "") }
+    }
+
+    fun regenerateLastResponse() {
+        val chat = _uiState.value.chat ?: return
+        val messages = _uiState.value.messages
+        if (messages.isEmpty()) return
+
+        // Find the last assistant message
+        val lastMessage = messages.last()
+        if (lastMessage.role != MessageRole.ASSISTANT.value) return
+
+        viewModelScope.launch {
+            // Delete the last assistant message
+            repository.deleteMessage(lastMessage)
+
+            // Re-send using the remaining message history (which ends with the user message)
+            val remainingMessages = messages.dropLast(1)
+            if (remainingMessages.isEmpty()) return@launch
+
+            _uiState.update { it.copy(isLoading = true, error = null, streamingContent = "", retryAttempt = 0) }
+
+            streamJob = viewModelScope.launch {
+                val streamContent = StringBuilder()
+                val onRetry: (Int) -> Unit = { attempt ->
+                    _uiState.update { it.copy(retryAttempt = attempt) }
+                }
+                repository.sendMessageStream(chat, remainingMessages, onRetry).collect { event ->
+                    when (event) {
+                        is StreamEvent.Delta -> {
+                            streamContent.append(event.content)
+                            _uiState.update { it.copy(streamingContent = streamContent.toString()) }
+                        }
+                        is StreamEvent.Complete -> {
+                            val assistantMessage = Message(
+                                chatId = chatId,
+                                role = MessageRole.ASSISTANT.value,
+                                content = streamContent.toString(),
+                                tokenCount = event.usage?.totalTokens ?: estimateTokens(streamContent.toString())
+                            )
+                            repository.insertMessage(assistantMessage)
+
+                            val totalTokens = (event.usage?.totalTokens ?: estimateTokens(streamContent.toString()))
+                            val cost = estimateCost(chat.model, event.usage?.promptTokens ?: 0, event.usage?.completionTokens ?: 0)
+                            repository.updateChat(chat.copy(
+                                totalTokens = chat.totalTokens + totalTokens,
+                                totalCost = chat.totalCost + cost
+                            ))
+
+                            _uiState.update { it.copy(isLoading = false, streamingContent = "", retryAttempt = 0) }
+                        }
+                        is StreamEvent.Error -> {
+                            handleNonStreamingFallback(chat, remainingMessages)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun startEditing(message: Message) {
@@ -387,6 +469,22 @@ class ChatViewModel @Inject constructor(
             attachment
         } catch (e: Exception) {
             null
+        }
+    }
+
+    private fun generateAiTitle(chat: Chat, userMessage: String, assistantMessage: String) {
+        viewModelScope.launch {
+            try {
+                if (!repository.isAutoGenerateTitlesEnabled()) return@launch
+                val title = repository.generateTitle(chat.model, userMessage, assistantMessage)
+                if (!title.isNullOrBlank()) {
+                    // Re-fetch the latest chat state to avoid overwriting other updates
+                    val currentChat = _uiState.value.chat ?: return@launch
+                    repository.updateChat(currentChat.copy(title = title.take(60)))
+                }
+            } catch (_: Exception) {
+                // Silently fail - placeholder title remains
+            }
         }
     }
 
