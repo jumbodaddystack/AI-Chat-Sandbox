@@ -38,6 +38,7 @@ import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.ui.components.MarkdownText
 import com.aichat.sandbox.ui.components.ModelSelector
 import com.aichat.sandbox.ui.components.SettingsSlider
+import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.ui.theme.AssistantBubble
 import com.aichat.sandbox.ui.theme.UserBubble
 import kotlinx.coroutines.launch
@@ -57,7 +58,14 @@ fun ChatScreen(
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(uiState.messages.size, uiState.streamingContent) {
         if (uiState.messages.isNotEmpty() || uiState.streamingContent.isNotEmpty()) {
-            val targetIndex = uiState.messages.size + if (uiState.streamingContent.isNotEmpty()) 1 else 0
+            var targetIndex = uiState.messages.size
+            // Account for the regenerate button item
+            val lastIsAssistant = uiState.messages.lastOrNull()?.role == MessageRole.ASSISTANT.value
+            if (!uiState.isLoading && lastIsAssistant) targetIndex++
+            // Account for retry indicator
+            if (uiState.retryAttempt > 0) targetIndex++
+            // Account for streaming content
+            if (uiState.streamingContent.isNotEmpty()) targetIndex++
             if (targetIndex > 0) {
                 listState.animateScrollToItem(targetIndex - 1)
             }
@@ -106,6 +114,58 @@ fun ChatScreen(
                             message = message,
                             onDelete = { viewModel.deleteMessage(message) }
                         )
+                    }
+                    // Regenerate button (visible when not streaming and last message is from assistant)
+                    if (!uiState.isLoading &&
+                        uiState.messages.lastOrNull()?.role == MessageRole.ASSISTANT.value
+                    ) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.Start
+                            ) {
+                                OutlinedButton(
+                                    onClick = { viewModel.regenerateLastResponse() },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "Regenerate",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Regenerate",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    // Retry indicator
+                    if (uiState.retryAttempt > 0) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Retrying... (attempt ${uiState.retryAttempt + 1})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                     // Streaming message
                     if (uiState.streamingContent.isNotEmpty()) {

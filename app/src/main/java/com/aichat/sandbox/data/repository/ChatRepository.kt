@@ -65,17 +65,25 @@ class ChatRepository @Inject constructor(
         chatDao.clearChatHistory(chatId)
     }
 
-    suspend fun sendMessage(chat: Chat, messages: List<Message>): ApiResult<com.aichat.sandbox.data.model.ChatCompletionResponse> {
+    suspend fun sendMessage(
+        chat: Chat,
+        messages: List<Message>,
+        onRetryAttempt: ((Int) -> Unit)? = null
+    ): ApiResult<com.aichat.sandbox.data.model.ChatCompletionResponse> {
         val apiKey = preferencesManager.apiKey.first()
         val baseUrl = preferencesManager.apiBaseUrl.first()
-        return apiClient.sendMessage(baseUrl, apiKey, chat, messages)
+        return apiClient.sendMessage(baseUrl, apiKey, chat, messages, onRetryAttempt)
     }
 
-    fun sendMessageStream(chat: Chat, messages: List<Message>): Flow<StreamEvent> {
+    fun sendMessageStream(
+        chat: Chat,
+        messages: List<Message>,
+        onRetryAttempt: ((Int) -> Unit)? = null
+    ): Flow<StreamEvent> {
         return kotlinx.coroutines.flow.flow {
             val apiKey = preferencesManager.apiKey.first()
             val baseUrl = preferencesManager.apiBaseUrl.first()
-            apiClient.sendMessageStream(baseUrl, apiKey, chat, messages).collect { emit(it) }
+            apiClient.sendMessageStream(baseUrl, apiKey, chat, messages, onRetryAttempt).collect { emit(it) }
         }
     }
 }
