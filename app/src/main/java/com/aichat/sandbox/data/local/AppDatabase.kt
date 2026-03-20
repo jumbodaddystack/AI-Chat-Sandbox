@@ -7,8 +7,8 @@ import com.aichat.sandbox.data.model.Message
 
 @Database(
     entities = [Chat::class, Message::class],
-    version = 1,
-    exportSchema = false
+    version = 2,
+    exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao

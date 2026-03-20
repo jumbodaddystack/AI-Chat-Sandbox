@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.aichat.sandbox.data.local.AppDatabase
 import com.aichat.sandbox.data.local.ChatDao
+import com.aichat.sandbox.data.local.MIGRATION_1_2
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -22,7 +23,7 @@ object AppModule {
             context,
             AppDatabase::class.java,
             "ai_chat_sandbox.db"
-        ).fallbackToDestructiveMigration().build()
+        ).addMigrations(MIGRATION_1_2).build()
     }
 
     @Provides

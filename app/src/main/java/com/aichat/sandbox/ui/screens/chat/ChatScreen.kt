@@ -104,7 +104,10 @@ fun ChatScreen(
                     items(uiState.messages, key = { it.id }) { message ->
                         MessageBubble(
                             message = message,
-                            onDelete = { viewModel.deleteMessage(message) }
+                            onDelete = { viewModel.deleteMessage(message) },
+                            onEdit = if (message.role == "user") {
+                                { viewModel.startEditing(message) }
+                            } else null
                         )
                     }
                     // Streaming message
@@ -144,8 +147,16 @@ fun ChatScreen(
         // Input bar
         ChatInputBar(
             isLoading = uiState.isLoading,
-            onSend = { viewModel.sendMessage(it) },
-            onStop = { viewModel.stopGenerating() }
+            onSend = { content ->
+                if (uiState.editingMessageId != null) {
+                    viewModel.submitEdit(content)
+                } else {
+                    viewModel.sendMessage(content)
+                }
+            },
+            onStop = { viewModel.stopGenerating() },
+            editingContent = uiState.editingContent,
+            onCancelEdit = { viewModel.cancelEditing() }
         )
     }
 
@@ -294,7 +305,8 @@ private fun ExamplesView(onExampleClick: (String) -> Unit) {
 private fun MessageBubble(
     message: Message,
     isStreaming: Boolean = false,
-    onDelete: () -> Unit = {}
+    onDelete: () -> Unit = {},
+    onEdit: (() -> Unit)? = null
 ) {
     val isUser = message.role == "user"
     val clipboardManager = LocalClipboardManager.current
@@ -345,6 +357,16 @@ private fun MessageBubble(
                 },
                 leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = "Copy") }
             )
+            if (isUser && onEdit != null) {
+                DropdownMenuItem(
+                    text = { Text("Edit") },
+                    onClick = {
+                        onEdit()
+                        showMenu = false
+                    },
+                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = "Edit") }
+                )
+            }
             DropdownMenuItem(
                 text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
                 onClick = {
@@ -377,9 +399,20 @@ private fun MessageBubble(
 private fun ChatInputBar(
     isLoading: Boolean,
     onSend: (String) -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    editingContent: String? = null,
+    onCancelEdit: () -> Unit = {}
 ) {
     var text by remember { mutableStateOf("") }
+
+    // When editing starts, populate the text field
+    LaunchedEffect(editingContent) {
+        if (editingContent != null) {
+            text = editingContent
+        }
+    }
+
+    val isEditing = editingContent != null
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -391,6 +424,24 @@ private fun ChatInputBar(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Bottom
         ) {
+            // Cancel edit button
+            if (isEditing) {
+                IconButton(
+                    onClick = {
+                        text = ""
+                        onCancelEdit()
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Cancel edit",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
             // Text input
             Box(
                 modifier = Modifier
@@ -401,7 +452,7 @@ private fun ChatInputBar(
             ) {
                 if (text.isEmpty()) {
                     Text(
-                        text = "Send a message",
+                        text = if (isEditing) "Edit message" else "Send a message",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                     )
