@@ -5,13 +5,19 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
  * Migration from version 1 to 2:
- * No schema changes in this migration — this establishes the safe migration
- * infrastructure. Future schema changes should be added as new Migration objects.
+ * - Establishes safe migration infrastructure (replaces fallbackToDestructiveMigration)
+ * - Creates FTS4 virtual table for full-text search on messages (1.5)
  */
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
-        // Version 2 has no schema changes from version 1.
-        // This migration exists to move away from fallbackToDestructiveMigration()
-        // and establish the safe migration pattern for all future changes.
+        // Create FTS4 virtual table for full-text search on messages
+        db.execSQL("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS `messages_fts`
+            USING FTS4(`content`, content=`messages`)
+        """.trimIndent())
+        // Populate FTS table with existing messages
+        db.execSQL("""
+            INSERT INTO messages_fts(messages_fts) VALUES('rebuild')
+        """.trimIndent())
     }
 }

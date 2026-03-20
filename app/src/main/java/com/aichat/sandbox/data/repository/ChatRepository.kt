@@ -65,6 +65,7 @@ class ChatRepository @Inject constructor(
         chatDao.clearChatHistory(chatId)
     }
 
+    // Message editing (1.2)
     suspend fun updateMessageContent(messageId: String, content: String) {
         chatDao.updateMessageContent(messageId, content)
     }
@@ -73,6 +74,28 @@ class ChatRepository @Inject constructor(
         chatDao.deleteMessagesFrom(chatId, timestamp)
     }
 
+    // Auto-title generation (1.6)
+    suspend fun generateTitle(
+        model: String,
+        userMessage: String,
+        assistantMessage: String
+    ): String? {
+        val apiKey = preferencesManager.apiKey.first()
+        val baseUrl = preferencesManager.apiBaseUrl.first()
+        return apiClient.generateTitle(baseUrl, apiKey, model, userMessage, assistantMessage)
+    }
+
+    suspend fun isAutoGenerateTitlesEnabled(): Boolean =
+        preferencesManager.autoGenerateTitles.first()
+
+    // Conversation search (1.5)
+    suspend fun searchMessages(query: String): List<Message> =
+        chatDao.searchMessages(query)
+
+    suspend fun searchChats(query: String): List<Chat> =
+        chatDao.searchChats(query)
+
+    // API calls with retry support (1.4)
     suspend fun sendMessage(
         chat: Chat,
         messages: List<Message>,

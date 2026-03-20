@@ -190,6 +190,42 @@ class ApiClient @Inject constructor() {
         }
     }
 
+    suspend fun generateTitle(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        userMessage: String,
+        assistantMessage: String
+    ): String? {
+        return try {
+            val api = buildApi(baseUrl, apiKey)
+            val messages = listOf(
+                ApiMessage(
+                    role = "system",
+                    content = "Generate a concise 3-6 word title for this conversation. Return ONLY the title, no quotes, no punctuation at the end."
+                ),
+                ApiMessage(role = "user", content = userMessage),
+                ApiMessage(role = "assistant", content = assistantMessage.take(500))
+            )
+            val request = ChatCompletionRequest(
+                model = model,
+                messages = messages,
+                temperature = 0.7f,
+                maxTokens = 20,
+                stream = false
+            )
+            val response = api.createChatCompletion(request)
+            if (response.isSuccessful) {
+                response.body()?.choices?.firstOrNull()?.message?.content?.trim()
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.w("ApiClient", "Failed to generate title", e)
+            null
+        }
+    }
+
     private fun buildApiMessages(chat: Chat, messages: List<Message>): List<ApiMessage> {
         val apiMessages = mutableListOf<ApiMessage>()
         if (chat.systemMessage.isNotBlank()) {

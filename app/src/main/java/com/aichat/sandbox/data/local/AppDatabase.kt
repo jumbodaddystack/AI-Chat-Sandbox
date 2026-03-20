@@ -4,9 +4,10 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.data.model.Message
+import com.aichat.sandbox.data.model.MessageFts
 
 @Database(
-    entities = [Chat::class, Message::class],
+    entities = [Chat::class, Message::class, MessageFts::class],
     version = 2,
     exportSchema = true
 )

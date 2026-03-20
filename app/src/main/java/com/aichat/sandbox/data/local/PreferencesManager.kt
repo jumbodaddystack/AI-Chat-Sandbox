@@ -33,6 +33,7 @@ class PreferencesManager @Inject constructor(
         val DEFAULT_PRESENCE_PENALTY = floatPreferencesKey("default_presence_penalty")
         val DEFAULT_FREQUENCY_PENALTY = floatPreferencesKey("default_frequency_penalty")
         val DARK_MODE = booleanPreferencesKey("dark_mode")
+        val AUTO_GENERATE_TITLES = booleanPreferencesKey("auto_generate_titles")
 
         fun isValidApiBaseUrl(url: String): Boolean {
             return try {
@@ -59,6 +60,7 @@ class PreferencesManager @Inject constructor(
     val defaultPresencePenalty: Flow<Float> = dataStore.data.map { it[DEFAULT_PRESENCE_PENALTY] ?: ChatSettings.Defaults.PRESENCE_PENALTY }
     val defaultFrequencyPenalty: Flow<Float> = dataStore.data.map { it[DEFAULT_FREQUENCY_PENALTY] ?: ChatSettings.Defaults.FREQUENCY_PENALTY }
     val darkMode: Flow<Boolean> = dataStore.data.map { it[DARK_MODE] ?: ChatSettings.Defaults.DARK_MODE }
+    val autoGenerateTitles: Flow<Boolean> = dataStore.data.map { it[AUTO_GENERATE_TITLES] ?: true }
 
     suspend fun setApiKey(key: String) {
         try {
@@ -132,6 +134,14 @@ class PreferencesManager @Inject constructor(
             dataStore.edit { it[DARK_MODE] = enabled }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save dark mode preference", e)
+        }
+    }
+
+    suspend fun setAutoGenerateTitles(enabled: Boolean) {
+        try {
+            dataStore.edit { it[AUTO_GENERATE_TITLES] = enabled }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save auto-generate titles preference", e)
         }
     }
 }
