@@ -14,9 +14,11 @@ import com.aichat.sandbox.data.model.ImageMetadata
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.data.model.ModelPricing
+import com.aichat.sandbox.data.model.ToolCallMetadata
 import com.aichat.sandbox.data.remote.ApiResult
 import com.aichat.sandbox.data.remote.StreamEvent
 import com.aichat.sandbox.data.repository.ChatRepository
+import com.aichat.sandbox.data.tools.ToolRegistry
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -40,13 +42,16 @@ data class ChatUiState(
     val retryAttempt: Int = 0,
     val editingMessageId: String? = null,
     val editingContent: String? = null,
-    val attachedImages: List<Uri> = emptyList()
+    val attachedImages: List<Uri> = emptyList(),
+    val toolsEnabled: Boolean = true,
+    val executingTool: String? = null // name of tool currently being executed
 )
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: ChatRepository,
+    private val toolRegistry: ToolRegistry,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -133,20 +138,85 @@ class ChatViewModel @Inject constructor(
             // Get all messages including the new one
             val allMessages = _uiState.value.messages + userMessage
 
-            // Use streaming
-            streamJob = viewModelScope.launch {
-                val streamContent = StringBuilder()
-                val onRetry: (Int) -> Unit = { attempt ->
-                    _uiState.update { it.copy(retryAttempt = attempt) }
-                }
-                repository.sendMessageStream(chat, allMessages, onRetry).collect { event ->
-                    when (event) {
-                        is StreamEvent.Delta -> {
-                            streamContent.append(event.content)
-                            _uiState.update { it.copy(streamingContent = streamContent.toString()) }
-                        }
-                        is StreamEvent.Complete -> {
-                            val assistantContent = streamContent.toString()
+            // Start the streaming + tool loop
+            streamWithToolLoop(chat, allMessages, isFirstMessage, content.trim())
+        }
+    }
+
+    /**
+     * Streams a response from the API. If the response contains tool calls,
+     * executes them and sends the results back, repeating until the assistant
+     * responds with plain text or the safety limit is reached.
+     */
+    private fun streamWithToolLoop(
+        chat: Chat,
+        initialMessages: List<Message>,
+        isFirstMessage: Boolean = false,
+        userContent: String = "",
+        toolRound: Int = 0
+    ) {
+        val tools = if (_uiState.value.toolsEnabled && toolRegistry.hasTools())
+            toolRegistry.getToolDefinitions() else null
+
+        streamJob = viewModelScope.launch {
+            val streamContent = StringBuilder()
+            val onRetry: (Int) -> Unit = { attempt ->
+                _uiState.update { it.copy(retryAttempt = attempt) }
+            }
+            repository.sendMessageStream(chat, initialMessages, onRetry, tools).collect { event ->
+                when (event) {
+                    is StreamEvent.Delta -> {
+                        streamContent.append(event.content)
+                        _uiState.update { it.copy(streamingContent = streamContent.toString()) }
+                    }
+                    is StreamEvent.ToolCallDelta -> {
+                        // Tool call deltas are accumulated inside processStream
+                    }
+                    is StreamEvent.Complete -> {
+                        val assistantContent = streamContent.toString()
+                        val toolCalls = event.toolCalls
+
+                        if (!toolCalls.isNullOrEmpty() && toolRound < MAX_TOOL_ROUNDS) {
+                            // Save assistant message with tool_calls metadata
+                            val toolCallMeta = gson.toJson(ToolCallMetadata(toolCalls = toolCalls))
+                            val assistantMessage = Message(
+                                chatId = chatId,
+                                role = MessageRole.ASSISTANT.value,
+                                content = assistantContent,
+                                contentType = "tool_call",
+                                metadata = toolCallMeta,
+                                tokenCount = event.usage?.totalTokens ?: estimateTokens(assistantContent)
+                            )
+                            repository.insertMessage(assistantMessage)
+                            _uiState.update { it.copy(streamingContent = "") }
+
+                            // Execute each tool call and insert result messages
+                            val toolResultMessages = mutableListOf<Message>()
+                            for (tc in toolCalls) {
+                                _uiState.update { it.copy(executingTool = tc.function.name) }
+                                val result = toolRegistry.executeTool(tc.function.name, tc.function.arguments)
+                                val toolResultMeta = gson.toJson(ToolCallMetadata(
+                                    toolCallId = tc.id,
+                                    toolName = tc.function.name,
+                                    toolResult = result
+                                ))
+                                val toolMessage = Message(
+                                    chatId = chatId,
+                                    role = MessageRole.TOOL.value,
+                                    content = result,
+                                    contentType = "tool_result",
+                                    metadata = toolResultMeta
+                                )
+                                repository.insertMessage(toolMessage)
+                                toolResultMessages.add(toolMessage)
+                            }
+                            _uiState.update { it.copy(executingTool = null) }
+
+                            // Continue the loop with updated messages
+                            val updatedMessages = _uiState.value.messages
+                            streamWithToolLoop(chat, updatedMessages, isFirstMessage, userContent, toolRound + 1)
+                        } else {
+                            // Normal completion (no tool calls or limit reached)
                             val assistantMessage = Message(
                                 chatId = chatId,
                                 role = MessageRole.ASSISTANT.value,
@@ -155,7 +225,6 @@ class ChatViewModel @Inject constructor(
                             )
                             repository.insertMessage(assistantMessage)
 
-                            // Update token count and cost
                             val totalTokens = (event.usage?.totalTokens ?: estimateTokens(assistantContent))
                             val cost = estimateCost(chat.model, event.usage?.promptTokens ?: 0, event.usage?.completionTokens ?: 0)
                             repository.updateChat(chat.copy(
@@ -163,17 +232,15 @@ class ChatViewModel @Inject constructor(
                                 totalCost = chat.totalCost + cost
                             ))
 
-                            _uiState.update { it.copy(isLoading = false, streamingContent = "", retryAttempt = 0) }
+                            _uiState.update { it.copy(isLoading = false, streamingContent = "", retryAttempt = 0, executingTool = null) }
 
-                            // Auto-generate title after first assistant response
                             if (isFirstMessage && assistantContent.isNotBlank()) {
-                                generateAiTitle(chat, content.trim(), assistantContent)
+                                generateAiTitle(chat, userContent, assistantContent)
                             }
                         }
-                        is StreamEvent.Error -> {
-                            // If streaming fails, fall back to non-streaming
-                            handleNonStreamingFallback(chat, allMessages, isFirstMessage, content.trim())
-                        }
+                    }
+                    is StreamEvent.Error -> {
+                        handleNonStreamingFallback(chat, initialMessages, isFirstMessage, userContent)
                     }
                 }
             }
@@ -189,7 +256,9 @@ class ChatViewModel @Inject constructor(
         val onRetry: (Int) -> Unit = { attempt ->
             _uiState.update { it.copy(retryAttempt = attempt) }
         }
-        when (val result = repository.sendMessage(chat, messages, onRetry)) {
+        val tools = if (_uiState.value.toolsEnabled && toolRegistry.hasTools())
+            toolRegistry.getToolDefinitions() else null
+        when (val result = repository.sendMessage(chat, messages, onRetry, tools)) {
             is ApiResult.Success -> {
                 val response = result.data
                 val content = response.choices?.firstOrNull()?.message?.content?.toString() ?: ""
@@ -210,7 +279,7 @@ class ChatViewModel @Inject constructor(
                     totalCost = chat.totalCost + cost
                 ))
 
-                _uiState.update { it.copy(isLoading = false, streamingContent = "", retryAttempt = 0) }
+                _uiState.update { it.copy(isLoading = false, streamingContent = "", retryAttempt = 0, executingTool = null) }
 
                 // Auto-generate title after first assistant response
                 if (isFirstMessage && content.isNotBlank()) {
@@ -218,7 +287,7 @@ class ChatViewModel @Inject constructor(
                 }
             }
             is ApiResult.Error -> {
-                _uiState.update { it.copy(isLoading = false, error = result.message, streamingContent = "", retryAttempt = 0) }
+                _uiState.update { it.copy(isLoading = false, error = result.message, streamingContent = "", retryAttempt = 0, executingTool = null) }
             }
             is ApiResult.Loading -> {}
         }
@@ -238,7 +307,7 @@ class ChatViewModel @Inject constructor(
                 repository.insertMessage(assistantMessage)
             }
         }
-        _uiState.update { it.copy(isLoading = false, streamingContent = "") }
+        _uiState.update { it.copy(isLoading = false, streamingContent = "", executingTool = null) }
     }
 
     fun regenerateLastResponse() {
@@ -260,41 +329,7 @@ class ChatViewModel @Inject constructor(
 
             _uiState.update { it.copy(isLoading = true, error = null, streamingContent = "", retryAttempt = 0) }
 
-            streamJob = viewModelScope.launch {
-                val streamContent = StringBuilder()
-                val onRetry: (Int) -> Unit = { attempt ->
-                    _uiState.update { it.copy(retryAttempt = attempt) }
-                }
-                repository.sendMessageStream(chat, remainingMessages, onRetry).collect { event ->
-                    when (event) {
-                        is StreamEvent.Delta -> {
-                            streamContent.append(event.content)
-                            _uiState.update { it.copy(streamingContent = streamContent.toString()) }
-                        }
-                        is StreamEvent.Complete -> {
-                            val assistantMessage = Message(
-                                chatId = chatId,
-                                role = MessageRole.ASSISTANT.value,
-                                content = streamContent.toString(),
-                                tokenCount = event.usage?.totalTokens ?: estimateTokens(streamContent.toString())
-                            )
-                            repository.insertMessage(assistantMessage)
-
-                            val totalTokens = (event.usage?.totalTokens ?: estimateTokens(streamContent.toString()))
-                            val cost = estimateCost(chat.model, event.usage?.promptTokens ?: 0, event.usage?.completionTokens ?: 0)
-                            repository.updateChat(chat.copy(
-                                totalTokens = chat.totalTokens + totalTokens,
-                                totalCost = chat.totalCost + cost
-                            ))
-
-                            _uiState.update { it.copy(isLoading = false, streamingContent = "", retryAttempt = 0) }
-                        }
-                        is StreamEvent.Error -> {
-                            handleNonStreamingFallback(chat, remainingMessages)
-                        }
-                    }
-                }
-            }
+            streamWithToolLoop(chat, remainingMessages)
         }
     }
 
@@ -496,7 +531,12 @@ class ChatViewModel @Inject constructor(
         return ModelPricing.forModel(model).estimateCost(promptTokens, completionTokens)
     }
 
+    fun toggleTools() {
+        _uiState.update { it.copy(toolsEnabled = !it.toolsEnabled) }
+    }
+
     companion object {
         const val MAX_MESSAGE_LENGTH = 100_000
+        const val MAX_TOOL_ROUNDS = 10
     }
 }

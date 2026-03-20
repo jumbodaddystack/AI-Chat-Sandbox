@@ -99,22 +99,24 @@ class ChatRepository @Inject constructor(
     suspend fun sendMessage(
         chat: Chat,
         messages: List<Message>,
-        onRetryAttempt: ((Int) -> Unit)? = null
+        onRetryAttempt: ((Int) -> Unit)? = null,
+        tools: List<com.aichat.sandbox.data.model.ToolDefinition>? = null
     ): ApiResult<com.aichat.sandbox.data.model.ChatCompletionResponse> {
         val apiKey = preferencesManager.apiKey.first()
         val baseUrl = preferencesManager.apiBaseUrl.first()
-        return apiClient.sendMessage(baseUrl, apiKey, chat, messages, onRetryAttempt)
+        return apiClient.sendMessage(baseUrl, apiKey, chat, messages, onRetryAttempt, tools)
     }
 
     fun sendMessageStream(
         chat: Chat,
         messages: List<Message>,
-        onRetryAttempt: ((Int) -> Unit)? = null
+        onRetryAttempt: ((Int) -> Unit)? = null,
+        tools: List<com.aichat.sandbox.data.model.ToolDefinition>? = null
     ): Flow<StreamEvent> {
         return kotlinx.coroutines.flow.flow {
             val apiKey = preferencesManager.apiKey.first()
             val baseUrl = preferencesManager.apiBaseUrl.first()
-            apiClient.sendMessageStream(baseUrl, apiKey, chat, messages, onRetryAttempt).collect { emit(it) }
+            apiClient.sendMessageStream(baseUrl, apiKey, chat, messages, onRetryAttempt, tools).collect { emit(it) }
         }
     }
 }

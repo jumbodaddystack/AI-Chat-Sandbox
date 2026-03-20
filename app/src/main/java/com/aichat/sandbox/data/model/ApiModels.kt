@@ -31,13 +31,21 @@ data class ChatCompletionRequest(
     val presencePenalty: Float? = null,
     @SerializedName("frequency_penalty")
     val frequencyPenalty: Float? = null,
-    val stream: Boolean = false
+    val stream: Boolean = false,
+    val tools: List<ToolDefinition>? = null,
+    @SerializedName("tool_choice")
+    val toolChoice: Any? = null // "auto", "none", or specific tool object
 )
 
 data class ApiMessage(
     val role: String,
     // Can be String (text-only) or List<Any> (vision: TextContentPart + ImageContentPart)
-    val content: Any?
+    val content: Any? = null,
+    @SerializedName("tool_calls")
+    val toolCalls: List<ToolCall>? = null,
+    @SerializedName("tool_call_id")
+    val toolCallId: String? = null,
+    val name: String? = null // function name for tool result messages
 )
 
 data class ChatCompletionResponse(
