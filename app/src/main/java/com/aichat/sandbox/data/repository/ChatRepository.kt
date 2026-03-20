@@ -71,6 +71,25 @@ class ChatRepository @Inject constructor(
         return apiClient.sendMessage(baseUrl, apiKey, chat, messages)
     }
 
+    suspend fun generateTitle(
+        model: String,
+        userMessage: String,
+        assistantMessage: String
+    ): String? {
+        val apiKey = preferencesManager.apiKey.first()
+        val baseUrl = preferencesManager.apiBaseUrl.first()
+        return apiClient.generateTitle(baseUrl, apiKey, model, userMessage, assistantMessage)
+    }
+
+    suspend fun isAutoGenerateTitlesEnabled(): Boolean =
+        preferencesManager.autoGenerateTitles.first()
+
+    suspend fun searchMessages(query: String): List<Message> =
+        chatDao.searchMessages(query)
+
+    suspend fun searchChats(query: String): List<Chat> =
+        chatDao.searchChats(query)
+
     fun sendMessageStream(chat: Chat, messages: List<Message>): Flow<StreamEvent> {
         return kotlinx.coroutines.flow.flow {
             val apiKey = preferencesManager.apiKey.first()

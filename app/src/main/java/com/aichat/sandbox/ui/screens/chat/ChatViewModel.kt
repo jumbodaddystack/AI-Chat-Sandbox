@@ -70,8 +70,10 @@ class ChatViewModel @Inject constructor(
             )
             repository.insertMessage(userMessage)
 
-            // Update chat title if it's the first message
-            if (_uiState.value.messages.isEmpty()) {
+            val isFirstMessage = _uiState.value.messages.isEmpty()
+
+            // Update chat title with placeholder if it's the first message
+            if (isFirstMessage) {
                 val title = content.trim().take(40)
                 repository.updateChat(chat.copy(title = title))
             }
@@ -91,16 +93,17 @@ class ChatViewModel @Inject constructor(
                             _uiState.update { it.copy(streamingContent = streamContent.toString()) }
                         }
                         is StreamEvent.Complete -> {
+                            val assistantContent = streamContent.toString()
                             val assistantMessage = Message(
                                 chatId = chatId,
                                 role = MessageRole.ASSISTANT.value,
-                                content = streamContent.toString(),
-                                tokenCount = event.usage?.totalTokens ?: estimateTokens(streamContent.toString())
+                                content = assistantContent,
+                                tokenCount = event.usage?.totalTokens ?: estimateTokens(assistantContent)
                             )
                             repository.insertMessage(assistantMessage)
 
                             // Update token count and cost
-                            val totalTokens = (event.usage?.totalTokens ?: estimateTokens(streamContent.toString()))
+                            val totalTokens = (event.usage?.totalTokens ?: estimateTokens(assistantContent))
                             val cost = estimateCost(chat.model, event.usage?.promptTokens ?: 0, event.usage?.completionTokens ?: 0)
                             repository.updateChat(chat.copy(
                                 totalTokens = chat.totalTokens + totalTokens,
@@ -108,10 +111,15 @@ class ChatViewModel @Inject constructor(
                             ))
 
                             _uiState.update { it.copy(isLoading = false, streamingContent = "") }
+
+                            // Auto-generate title after first assistant response
+                            if (isFirstMessage && assistantContent.isNotBlank()) {
+                                generateAiTitle(chat, content.trim(), assistantContent)
+                            }
                         }
                         is StreamEvent.Error -> {
                             // If streaming fails, fall back to non-streaming
-                            handleNonStreamingFallback(chat, allMessages)
+                            handleNonStreamingFallback(chat, allMessages, isFirstMessage, content.trim())
                         }
                     }
                 }
@@ -119,7 +127,12 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun handleNonStreamingFallback(chat: Chat, messages: List<Message>) {
+    private suspend fun handleNonStreamingFallback(
+        chat: Chat,
+        messages: List<Message>,
+        isFirstMessage: Boolean = false,
+        userContent: String = ""
+    ) {
         when (val result = repository.sendMessage(chat, messages)) {
             is ApiResult.Success -> {
                 val response = result.data
@@ -142,6 +155,11 @@ class ChatViewModel @Inject constructor(
                 ))
 
                 _uiState.update { it.copy(isLoading = false, streamingContent = "") }
+
+                // Auto-generate title after first assistant response
+                if (isFirstMessage && content.isNotBlank()) {
+                    generateAiTitle(chat, userContent, content)
+                }
             }
             is ApiResult.Error -> {
                 _uiState.update { it.copy(isLoading = false, error = result.message, streamingContent = "") }
@@ -272,6 +290,22 @@ class ChatViewModel @Inject constructor(
             "messages" to messages.map { mapOf("role" to it.role, "content" to it.content) }
         )
         return GsonBuilder().setPrettyPrinting().create().toJson(data)
+    }
+
+    private fun generateAiTitle(chat: Chat, userMessage: String, assistantMessage: String) {
+        viewModelScope.launch {
+            try {
+                if (!repository.isAutoGenerateTitlesEnabled()) return@launch
+                val title = repository.generateTitle(chat.model, userMessage, assistantMessage)
+                if (!title.isNullOrBlank()) {
+                    // Re-fetch the latest chat state to avoid overwriting other updates
+                    val currentChat = _uiState.value.chat ?: return@launch
+                    repository.updateChat(currentChat.copy(title = title.take(60)))
+                }
+            } catch (_: Exception) {
+                // Silently fail - placeholder title remains
+            }
+        }
     }
 
     private fun estimateTokens(text: String): Int {
