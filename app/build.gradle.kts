@@ -111,9 +111,10 @@ dependencies {
     implementation("io.noties.markwon:ext-tasklist:4.6.2")
     implementation("io.noties.markwon:html:4.6.2")
     implementation("io.noties.markwon:ext-latex:4.6.2")
-    implementation("io.noties.markwon:syntax-highlight:4.6.2")
-    implementation("io.noties:prism4j:2.0.0")
-    annotationProcessor("io.noties:prism4j-bundler:2.0.0")
+    // Syntax highlighting disabled - prism4j annotation processor not compatible with KSP-only builds
+    // implementation("io.noties.markwon:syntax-highlight:4.6.2")
+    // implementation("io.noties:prism4j:2.0.0")
+    // annotationProcessor("io.noties:prism4j-bundler:2.0.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

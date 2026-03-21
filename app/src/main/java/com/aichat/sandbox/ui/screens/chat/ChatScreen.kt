@@ -982,7 +982,7 @@ private fun ChatSettingsPanel(
                 Text("Share as JSON")
             }
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Divider(modifier = Modifier.padding(vertical = 8.dp))
 
             // Model selector
             ModelSelector(
@@ -1039,7 +1039,7 @@ private fun ChatSettingsPanel(
                 displayFormat = { String.format("%.1f", it) }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            Divider(modifier = Modifier.padding(vertical = 8.dp))
 
             // Tools toggle
             Row(
