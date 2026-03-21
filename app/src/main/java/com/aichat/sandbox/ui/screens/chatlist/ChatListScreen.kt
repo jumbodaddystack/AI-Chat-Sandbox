@@ -85,7 +85,7 @@ fun ChatListScreen(
             }
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
 
         if (isSearchActive) {
             // Search results

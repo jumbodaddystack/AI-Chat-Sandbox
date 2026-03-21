@@ -6,6 +6,7 @@ import com.aichat.sandbox.data.model.*
 import com.google.gson.Gson
 import com.google.gson.JsonSyntaxException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -173,7 +174,7 @@ class ApiClient @Inject constructor() {
             // Accumulate tool calls across streaming deltas
             val toolCallAccumulator = mutableMapOf<Int, ToolCallAccumulator>()
             while (r.readLine().also { line = it } != null) {
-                kotlinx.coroutines.coroutineContext.ensureActive()
+                currentCoroutineContext().ensureActive()
                 val l = line ?: continue
                 if (l.startsWith("data: ")) {
                     val data = l.removePrefix("data: ").trim()
@@ -276,7 +277,7 @@ class ApiClient @Inject constructor() {
             )
             val response = api.createChatCompletion(request)
             if (response.isSuccessful) {
-                response.body()?.choices?.firstOrNull()?.message?.content?.trim()
+                (response.body()?.choices?.firstOrNull()?.message?.content as? String)?.trim()
             } else {
                 null
             }
