@@ -49,12 +49,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: releases
           fetch-depth: 0
 
-      - name: Create releases branch if it doesn't exist
+      - name: Switch to releases branch
         run: |
-          if ! git ls-remote --exit-code --heads origin releases; then
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin releases; then
+            git checkout releases
+          else
             git checkout --orphan releases
             git rm -rf . || true
             git commit --allow-empty -m "Initialize releases branch"
@@ -76,8 +79,6 @@ jobs:
           cp /tmp/apk-staging/app-debug.apk "apks/app-debug-${TIMESTAMP}-${SHORT_SHA}.apk"
           cp /tmp/apk-staging/app-debug.apk apks/app-debug-latest.apk
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add apks/
           git commit -m "Add debug APK from ${GITHUB_REF_NAME} @ ${SHORT_SHA} (${TIMESTAMP})"
           git push origin releases
