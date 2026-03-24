@@ -90,6 +90,7 @@ fun ChatScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .imePadding()
     ) {
         // Top bar
         ChatTopBar(
