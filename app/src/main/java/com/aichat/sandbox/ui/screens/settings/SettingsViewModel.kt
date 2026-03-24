@@ -3,6 +3,7 @@ package com.aichat.sandbox.ui.screens.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichat.sandbox.data.local.PreferencesManager
+import com.aichat.sandbox.data.model.ApiProvider
 import com.aichat.sandbox.data.model.ChatSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -19,7 +20,8 @@ data class SettingsUiState(
     val defaultMaxTokens: Int = ChatSettings.Defaults.MAX_TOKENS,
     val defaultPresencePenalty: Float = ChatSettings.Defaults.PRESENCE_PENALTY,
     val defaultFrequencyPenalty: Float = ChatSettings.Defaults.FREQUENCY_PENALTY,
-    val darkMode: Boolean = ChatSettings.Defaults.DARK_MODE
+    val darkMode: Boolean = ChatSettings.Defaults.DARK_MODE,
+    val customModels: Map<String, List<String>> = emptyMap()
 )
 
 @HiltViewModel
@@ -70,6 +72,11 @@ class SettingsViewModel @Inject constructor(
                 }
             }.collect()
         }
+        viewModelScope.launch {
+            preferencesManager.customModels.collect { customModels ->
+                _uiState.update { it.copy(customModels = customModels) }
+            }
+        }
     }
 
     fun setApiKey(key: String) {
@@ -112,5 +119,35 @@ class SettingsViewModel @Inject constructor(
 
     fun setDarkMode(enabled: Boolean) {
         viewModelScope.launch { preferencesManager.setDarkMode(enabled) }
+    }
+
+    fun addCustomModel(model: String) {
+        // Determine provider from the current base URL
+        val provider = detectProvider(uiState.value.apiBaseUrl)
+        viewModelScope.launch { preferencesManager.addCustomModel(provider, model) }
+    }
+
+    fun removeCustomModel(model: String) {
+        val provider = detectProvider(uiState.value.apiBaseUrl)
+        viewModelScope.launch { preferencesManager.removeCustomModel(provider, model) }
+    }
+
+    private fun detectProvider(baseUrl: String): String {
+        return when {
+            baseUrl.contains("openai.com") -> "OpenAI"
+            baseUrl.contains("anthropic.com") -> "Anthropic"
+            baseUrl.contains("googleapis.com") || baseUrl.contains("google") -> "Google"
+            else -> "Custom"
+        }
+    }
+
+    fun getAllModels(): List<String> {
+        val builtIn = ApiProvider.defaults.flatMap { it.models }
+        val custom = uiState.value.customModels.values.flatten()
+        return builtIn + custom.filter { it !in builtIn }
+    }
+
+    fun getCustomModelsFlat(): List<String> {
+        return uiState.value.customModels.values.flatten()
     }
 }

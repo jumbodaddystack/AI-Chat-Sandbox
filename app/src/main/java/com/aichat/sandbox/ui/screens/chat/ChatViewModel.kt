@@ -15,6 +15,7 @@ import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.data.model.ModelPricing
 import com.aichat.sandbox.data.model.ToolCallMetadata
+import com.aichat.sandbox.data.local.PreferencesManager
 import com.aichat.sandbox.data.remote.ApiResult
 import com.aichat.sandbox.data.remote.StreamEvent
 import com.aichat.sandbox.data.repository.ChatRepository
@@ -52,6 +53,7 @@ class ChatViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: ChatRepository,
     private val toolRegistry: ToolRegistry,
+    private val preferencesManager: PreferencesManager,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -64,6 +66,9 @@ class ChatViewModel @Inject constructor(
 
     private var streamJob: Job? = null
 
+    private val _customModels = MutableStateFlow<List<String>>(emptyList())
+    val customModels: StateFlow<List<String>> = _customModels.asStateFlow()
+
     init {
         viewModelScope.launch {
             repository.getChatById(chatId).collect { chat ->
@@ -73,6 +78,11 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             repository.getMessagesForChat(chatId).collect { messages ->
                 _uiState.update { it.copy(messages = messages) }
+            }
+        }
+        viewModelScope.launch {
+            preferencesManager.customModels.collect { modelsMap ->
+                _customModels.value = modelsMap.values.flatten()
             }
         }
     }
@@ -533,6 +543,21 @@ class ChatViewModel @Inject constructor(
 
     fun toggleTools() {
         _uiState.update { it.copy(toolsEnabled = !it.toolsEnabled) }
+    }
+
+    fun addCustomModel(model: String) {
+        viewModelScope.launch { preferencesManager.addCustomModel("Custom", model) }
+    }
+
+    fun removeCustomModel(model: String) {
+        viewModelScope.launch {
+            // Try to remove from all providers
+            val modelsMap = _customModels.value
+            preferencesManager.removeCustomModel("Custom", model)
+            preferencesManager.removeCustomModel("OpenAI", model)
+            preferencesManager.removeCustomModel("Anthropic", model)
+            preferencesManager.removeCustomModel("Google", model)
+        }
     }
 
     companion object {

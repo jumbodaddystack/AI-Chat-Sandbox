@@ -16,7 +16,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.aichat.sandbox.data.model.ApiProvider
 import com.aichat.sandbox.data.model.ChatSettings
 import com.aichat.sandbox.ui.components.ModelSelector
 import com.aichat.sandbox.ui.components.SettingsSlider
@@ -28,7 +27,8 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var showApiKey by remember { mutableStateOf(false) }
-    val allModels = ApiProvider.defaults.flatMap { it.models }
+    val allModels = viewModel.getAllModels()
+    val customModels = viewModel.getCustomModelsFlat()
 
     Column(
         modifier = Modifier
@@ -102,7 +102,10 @@ fun SettingsScreen(
             label = "Default Model",
             selectedModel = uiState.defaultModel,
             models = allModels,
-            onModelSelected = { viewModel.setDefaultModel(it) }
+            onModelSelected = { viewModel.setDefaultModel(it) },
+            customModels = customModels,
+            onAddCustomModel = { viewModel.addCustomModel(it) },
+            onRemoveCustomModel = { viewModel.removeCustomModel(it) }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
