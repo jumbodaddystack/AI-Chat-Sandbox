@@ -8,7 +8,7 @@ data class ChatSettings(
     val frequencyPenalty: Float = Defaults.FREQUENCY_PENALTY
 ) {
     object Defaults {
-        const val MODEL = "gpt-4o"
+        const val MODEL = "gpt-4.1"
         const val TEMPERATURE = 0.1f
         const val TOP_P = 1.0f
         const val MAX_TOKENS = 131072
@@ -30,27 +30,37 @@ data class ApiProvider(
             name = "OpenAI",
             baseUrl = "https://api.openai.com/v1/",
             models = listOf(
+                "gpt-4.1",
+                "gpt-4.1-mini",
+                "gpt-4.1-nano",
                 "gpt-4o",
                 "gpt-4o-mini",
-                "gpt-4-turbo",
-                "gpt-4",
-                "gpt-3.5-turbo",
-                "o1-preview",
-                "o1-mini"
+                "o3",
+                "o3-mini",
+                "o4-mini"
             )
         )
         val Anthropic = ApiProvider(
             name = "Anthropic",
             baseUrl = "https://api.anthropic.com/v1/",
             models = listOf(
-                "claude-opus-4-20250514",
-                "claude-sonnet-4-20250514",
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
                 "claude-haiku-4-5-20251001",
-                "claude-3-5-sonnet-20241022",
-                "claude-3-opus-20240229"
+                "claude-sonnet-4-20250514",
+                "claude-opus-4-20250514"
+            )
+        )
+        val Google = ApiProvider(
+            name = "Google",
+            baseUrl = "https://generativelanguage.googleapis.com/v1beta/",
+            models = listOf(
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-2.0-flash"
             )
         )
 
-        val defaults = listOf(OpenAI, Anthropic)
+        val defaults = listOf(OpenAI, Anthropic, Google)
     }
 }

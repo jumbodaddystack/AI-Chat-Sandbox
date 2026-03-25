@@ -62,6 +62,7 @@ fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val customModels by viewModel.customModels.collectAsState()
     val chat = uiState.chat
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -89,6 +90,7 @@ fun ChatScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .imePadding()
     ) {
         // Top bar
         ChatTopBar(
@@ -288,7 +290,10 @@ fun ChatScreen(
             onShareMarkdown = { viewModel.getShareContentAsMarkdown() },
             onShareJson = { viewModel.getShareContentAsJson() },
             toolsEnabled = uiState.toolsEnabled,
-            onToggleTools = { viewModel.toggleTools() }
+            onToggleTools = { viewModel.toggleTools() },
+            customModels = customModels,
+            onAddCustomModel = { viewModel.addCustomModel(it) },
+            onRemoveCustomModel = { viewModel.removeCustomModel(it) }
         )
     }
 
@@ -939,11 +944,15 @@ private fun ChatSettingsPanel(
     onShareMarkdown: () -> String = { "" },
     onShareJson: () -> String = { "" },
     toolsEnabled: Boolean = true,
-    onToggleTools: () -> Unit = {}
+    onToggleTools: () -> Unit = {},
+    customModels: List<String> = emptyList(),
+    onAddCustomModel: ((String) -> Unit)? = null,
+    onRemoveCustomModel: ((String) -> Unit)? = null
 ) {
     if (chat == null) return
 
-    val allModels = ApiProvider.defaults.flatMap { it.models }
+    val builtInModels = ApiProvider.defaults.flatMap { it.models }
+    val allModels = builtInModels + customModels.filter { it !in builtInModels }
     val context = LocalContext.current
 
     ModalBottomSheet(
@@ -989,7 +998,10 @@ private fun ChatSettingsPanel(
                 label = "Model",
                 selectedModel = chat.model,
                 models = allModels,
-                onModelSelected = onModelChange
+                onModelSelected = onModelChange,
+                customModels = customModels,
+                onAddCustomModel = onAddCustomModel,
+                onRemoveCustomModel = onRemoveCustomModel
             )
 
             Spacer(modifier = Modifier.height(16.dp))

@@ -9,6 +9,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import com.aichat.sandbox.data.model.ChatSettings
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import java.net.URI
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -34,6 +36,9 @@ class PreferencesManager @Inject constructor(
         val DEFAULT_FREQUENCY_PENALTY = floatPreferencesKey("default_frequency_penalty")
         val DARK_MODE = booleanPreferencesKey("dark_mode")
         val AUTO_GENERATE_TITLES = booleanPreferencesKey("auto_generate_titles")
+        val CUSTOM_MODELS = stringPreferencesKey("custom_models")
+
+        private val gson = Gson()
 
         fun isValidApiBaseUrl(url: String): Boolean {
             return try {
@@ -61,6 +66,55 @@ class PreferencesManager @Inject constructor(
     val defaultFrequencyPenalty: Flow<Float> = dataStore.data.map { it[DEFAULT_FREQUENCY_PENALTY] ?: ChatSettings.Defaults.FREQUENCY_PENALTY }
     val darkMode: Flow<Boolean> = dataStore.data.map { it[DARK_MODE] ?: ChatSettings.Defaults.DARK_MODE }
     val autoGenerateTitles: Flow<Boolean> = dataStore.data.map { it[AUTO_GENERATE_TITLES] ?: true }
+
+    val customModels: Flow<Map<String, List<String>>> = dataStore.data.map { prefs ->
+        val json = prefs[CUSTOM_MODELS] ?: "{}"
+        try {
+            val type = object : TypeToken<Map<String, List<String>>>() {}.type
+            gson.fromJson<Map<String, List<String>>>(json, type) ?: emptyMap()
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    suspend fun addCustomModel(provider: String, model: String) {
+        try {
+            dataStore.edit { prefs ->
+                val json = prefs[CUSTOM_MODELS] ?: "{}"
+                val type = object : TypeToken<MutableMap<String, MutableList<String>>>() {}.type
+                val map: MutableMap<String, MutableList<String>> = try {
+                    gson.fromJson(json, type) ?: mutableMapOf()
+                } catch (e: Exception) {
+                    mutableMapOf()
+                }
+                val list = map.getOrPut(provider) { mutableListOf() }
+                if (!list.contains(model)) {
+                    list.add(model)
+                }
+                prefs[CUSTOM_MODELS] = gson.toJson(map)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to add custom model", e)
+        }
+    }
+
+    suspend fun removeCustomModel(provider: String, model: String) {
+        try {
+            dataStore.edit { prefs ->
+                val json = prefs[CUSTOM_MODELS] ?: "{}"
+                val type = object : TypeToken<MutableMap<String, MutableList<String>>>() {}.type
+                val map: MutableMap<String, MutableList<String>> = try {
+                    gson.fromJson(json, type) ?: mutableMapOf()
+                } catch (e: Exception) {
+                    mutableMapOf()
+                }
+                map[provider]?.remove(model)
+                prefs[CUSTOM_MODELS] = gson.toJson(map)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove custom model", e)
+        }
+    }
 
     suspend fun setApiKey(key: String) {
         try {
