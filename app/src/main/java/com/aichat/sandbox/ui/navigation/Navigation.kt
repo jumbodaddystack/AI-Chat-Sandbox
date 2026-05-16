@@ -3,6 +3,7 @@ package com.aichat.sandbox.ui.navigation
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Settings
@@ -22,11 +23,15 @@ import androidx.navigation.navArgument
 import com.aichat.sandbox.ui.screens.chat.ChatScreen
 import com.aichat.sandbox.ui.screens.chatlist.ChatListScreen
 import com.aichat.sandbox.ui.screens.images.ImagesScreen
+import com.aichat.sandbox.ui.screens.notes.NOTE_ID_NEW
+import com.aichat.sandbox.ui.screens.notes.NoteEditorScreen
+import com.aichat.sandbox.ui.screens.notes.NotesListScreen
 import com.aichat.sandbox.ui.screens.settings.SettingsScreen
 import com.aichat.sandbox.ui.screens.templates.TemplatesScreen
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
     data object ChatList : Screen("chat_list", "Chat", Icons.Filled.Chat)
+    data object Notes : Screen("notes", "Notes", Icons.Filled.EditNote)
     data object Templates : Screen("templates", "Templates", Icons.Filled.ListAlt)
     data object Images : Screen("images", "Images", Icons.Filled.Image)
     data object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
@@ -34,6 +39,7 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
 
 val bottomNavItems = listOf(
     Screen.ChatList,
+    Screen.Notes,
     Screen.Templates,
     Screen.Images,
     Screen.Settings
@@ -102,6 +108,24 @@ fun AppNavigation() {
                 val chatId = backStackEntry.arguments?.getString("chatId") ?: return@composable
                 ChatScreen(
                     chatId = chatId,
+                    onNavigateBack = { navController.popBackStack() }
+                )
+            }
+            composable(Screen.Notes.route) {
+                NotesListScreen(
+                    onNoteClick = { noteId ->
+                        navController.navigate("note/$noteId")
+                    },
+                    onNewNote = {
+                        navController.navigate("note/$NOTE_ID_NEW")
+                    }
+                )
+            }
+            composable(
+                route = "note/{noteId}",
+                arguments = listOf(navArgument("noteId") { type = NavType.StringType })
+            ) {
+                NoteEditorScreen(
                     onNavigateBack = { navController.popBackStack() }
                 )
             }
