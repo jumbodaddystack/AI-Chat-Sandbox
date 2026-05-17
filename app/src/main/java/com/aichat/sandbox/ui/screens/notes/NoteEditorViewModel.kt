@@ -23,6 +23,7 @@ const val NOTE_ID_NEW = "new"
 private const val DEFAULT_TITLE = "Untitled"
 private const val DEFAULT_BACKGROUND_STYLE = "plain"
 private const val CURRENT_SCHEMA_VERSION = 1
+private const val UNDO_STACK_CAP = 200
 
 @HiltViewModel
 class NoteEditorViewModel @Inject constructor(
@@ -47,6 +48,18 @@ class NoteEditorViewModel @Inject constructor(
 
     private var nextInkZIndex: Int = 0
     private var nextHighlighterZIndex: Int = HIGHLIGHTER_Z_BASE
+
+    // In-memory undo / redo log. Capped to keep a long session bounded; the
+    // oldest action is dropped silently when [UNDO_STACK_CAP] is exceeded.
+    // Not persisted across editor exit (v1 scope).
+    private val past = ArrayDeque<EditorAction>()
+    private val future = ArrayDeque<EditorAction>()
+
+    private val _canUndo = MutableStateFlow(false)
+    val canUndo: StateFlow<Boolean> = _canUndo.asStateFlow()
+
+    private val _canRedo = MutableStateFlow(false)
+    val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
 
     init {
         if (routeArg != NOTE_ID_NEW) {
@@ -78,19 +91,55 @@ class NoteEditorViewModel @Inject constructor(
      * order — the user's ink never gets obscured by a highlighter drawn later.
      */
     fun addItem(item: NoteItem) {
-        items.add(
-            item.copy(
-                noteId = resolvedNoteId,
-                zIndex = zIndexFor(item.tool),
-            )
+        val prepared = item.copy(
+            noteId = resolvedNoteId,
+            zIndex = zIndexFor(item.tool),
         )
+        apply(EditorAction.AddItems(listOf(prepared)))
     }
 
     /** Remove items matching [ids] (issued by the eraser swipe). */
     fun removeItems(ids: List<String>) {
         if (ids.isEmpty()) return
         val set = ids.toHashSet()
-        items.removeAll { it.id in set }
+        val matched = items.filter { it.id in set }
+        if (matched.isEmpty()) return
+        apply(EditorAction.RemoveItems(matched))
+    }
+
+    /**
+     * Run [action] against [items], record it on the undo log, and discard
+     * any redo history (a new branch invalidates the old future).
+     *
+     * Must be invoked from the main thread — `SnapshotStateList` throws on
+     * background mutation. Touch handlers in `DrawingSurface` already run on
+     * the UI thread, so callers don't need to dispatch.
+     */
+    fun apply(action: EditorAction) {
+        action.applyTo(items)
+        past.addLast(action)
+        while (past.size > UNDO_STACK_CAP) past.removeFirst()
+        future.clear()
+        updateUndoRedoState()
+    }
+
+    fun undo() {
+        val action = past.removeLastOrNull() ?: return
+        action.invert().applyTo(items)
+        future.addLast(action)
+        updateUndoRedoState()
+    }
+
+    fun redo() {
+        val action = future.removeLastOrNull() ?: return
+        action.applyTo(items)
+        past.addLast(action)
+        updateUndoRedoState()
+    }
+
+    private fun updateUndoRedoState() {
+        _canUndo.value = past.isNotEmpty()
+        _canRedo.value = future.isNotEmpty()
     }
 
     /**
