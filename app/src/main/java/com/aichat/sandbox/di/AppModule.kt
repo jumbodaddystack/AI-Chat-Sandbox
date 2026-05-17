@@ -47,8 +47,9 @@ object AppModule {
     fun provideNoteRepository(
         @ApplicationContext context: Context,
         noteDao: NoteDao,
+        handwritingOcr: HandwritingOcr,
     ): NoteRepository {
-        return NoteRepository(context, noteDao)
+        return NoteRepository(context, noteDao, handwritingOcr)
     }
 
     @Provides
