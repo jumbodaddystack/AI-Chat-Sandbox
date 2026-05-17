@@ -1,6 +1,8 @@
 package com.aichat.sandbox.ui.screens.notes
 
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.ui.components.notes.StrokeTransform
+import com.aichat.sandbox.ui.components.notes.TextItemCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -154,6 +156,83 @@ class UndoRedoTest {
         stack.undo(); stack.undo(); stack.undo()
         assertEquals(listOf("a"), stack.ids())
         assertFalse(stack.canUndo)
+    }
+
+    @Test
+    fun updateTextActionRewritesBodyAndIsReversible() {
+        val original = TextItemCodec.encode(
+            TextItemCodec.newAt(worldX = 10f, worldY = 20f, body = "hello"),
+        )
+        val item = NoteItem(
+            id = "t",
+            noteId = "note",
+            zIndex = 0,
+            kind = TextItemCodec.KIND,
+            tool = null,
+            colorArgb = 0xFF000000.toInt(),
+            baseWidthPx = 0f,
+            payload = original,
+        )
+        val items = mutableListOf(item)
+
+        EditorAction.UpdateText("t", "hello", "hello world").applyTo(items)
+        val afterApply = TextItemCodec.decode(items[0].payload)
+        assertEquals("hello world", afterApply.body)
+        // Matrix is preserved — only the body changes.
+        assertEquals(10f, afterApply.matrix[2], 0f)
+        assertEquals(20f, afterApply.matrix[5], 0f)
+
+        EditorAction.UpdateText("t", "hello", "hello world").invert().applyTo(items)
+        val afterInvert = TextItemCodec.decode(items[0].payload)
+        assertEquals("hello", afterInvert.body)
+    }
+
+    @Test
+    fun updateTextSkipsItemsWithStaleId() {
+        val item = NoteItem(
+            id = "stroke",
+            noteId = "note",
+            zIndex = 0,
+            kind = "stroke",
+            tool = "pen",
+            colorArgb = 0,
+            baseWidthPx = 4f,
+            payload = ByteArray(0),
+        )
+        val items = mutableListOf(item)
+        // Action targets a text item id that doesn't exist; must be a safe
+        // no-op (the redo branch could legitimately point at pruned ids).
+        EditorAction.UpdateText("ghost", "a", "b").applyTo(items)
+        assertEquals(1, items.size)
+        assertSame(item, items[0])
+    }
+
+    @Test
+    fun transformItemsAppliesAffineToTextMatrix() {
+        val source = TextItemCodec.newAt(0f, 0f, "x")
+        val item = NoteItem(
+            id = "t",
+            noteId = "note",
+            zIndex = 0,
+            kind = TextItemCodec.KIND,
+            tool = null,
+            colorArgb = 0,
+            baseWidthPx = 0f,
+            payload = TextItemCodec.encode(source),
+        )
+        val items = mutableListOf(item)
+
+        val translate = StrokeTransform.translation(7f, -3f)
+        EditorAction.TransformItems(listOf("t"), translate).applyTo(items)
+        val moved = TextItemCodec.decode(items[0].payload)
+        assertEquals(7f, moved.matrix[2], 0f)
+        assertEquals(-3f, moved.matrix[5], 0f)
+
+        // Invert by the same matrix returns to origin.
+        EditorAction.TransformItems(listOf("t"), translate).invert().applyTo(items)
+        val back = TextItemCodec.decode(items[0].payload)
+        assertEquals(0f, back.matrix[2], 1e-4f)
+        assertEquals(0f, back.matrix[5], 1e-4f)
     }
 
     private fun stroke(id: String): NoteItem = NoteItem(

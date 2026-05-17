@@ -10,9 +10,8 @@ import androidx.compose.runtime.snapshots.SnapshotStateMap
 /**
  * Tool roster for the notes editor (sub-phase 1.6).
  *
- * [TEXT] is a reserved value — it appears in the palette only once
- * sub-phase 1.9 lands. Today it is flagged `enabledInPalette = false` so
- * the UI greys it out.
+ * [TEXT] became selectable in sub-phase 1.9 — tapping the canvas with it
+ * active drops a text item and opens an inline Compose editor.
  */
 enum class Tool(
     val id: String,
@@ -25,12 +24,13 @@ enum class Tool(
     ERASER_STROKE("eraser_stroke", "Eraser"),
     ERASER_AREA("eraser_area", "Area eraser"),
     LASSO("lasso", "Lasso"),
-    TEXT("text", "Text", enabledInPalette = false),
+    TEXT("text", "Text"),
     ;
 
     val isInk: Boolean get() = this == PEN || this == HIGHLIGHTER || this == PENCIL
     val isEraser: Boolean get() = this == ERASER_STROKE || this == ERASER_AREA
     val isLasso: Boolean get() = this == LASSO
+    val isText: Boolean get() = this == TEXT
 }
 
 /**

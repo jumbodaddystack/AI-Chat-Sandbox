@@ -12,6 +12,8 @@ import com.aichat.sandbox.ui.components.notes.HitTest
 import com.aichat.sandbox.ui.components.notes.StrokeCodec
 import com.aichat.sandbox.ui.components.notes.StrokeRenderer
 import com.aichat.sandbox.ui.components.notes.StrokeTransform
+import com.aichat.sandbox.ui.components.notes.TextItemCodec
+import com.aichat.sandbox.ui.components.notes.TextItemRenderer
 import com.aichat.sandbox.ui.components.notes.ToolPaletteState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,6 +85,22 @@ class NoteEditorViewModel @Inject constructor(
 
     private val _selectionMatrix = MutableStateFlow(StrokeTransform.IDENTITY)
     val selectionMatrix: StateFlow<FloatArray> = _selectionMatrix.asStateFlow()
+
+    // ── Text editor target (sub-phase 1.9) ───────────────────────────────
+    //
+    // Two modes:
+    //  - NewAt: the user tapped empty canvas with the TEXT tool. No item
+    //    exists in [items] yet — it lands on commit, only if the body is
+    //    non-empty. This keeps "tap, then cancel" from polluting undo.
+    //  - Existing: the user tapped on an existing text item. The item is
+    //    already in [items]; on commit we diff the body and record an
+    //    [EditorAction.UpdateText] (or `RemoveItems` when the body emptied).
+
+    private val _textEditTarget = MutableStateFlow<TextEditTarget?>(null)
+    val textEditTarget: StateFlow<TextEditTarget?> = _textEditTarget.asStateFlow()
+
+    /** Live draft body — Compose `BasicTextField` writes this on every keystroke. */
+    private var textEditDraftBody: String = ""
 
     init {
         if (routeArg != NOTE_ID_NEW) {
@@ -187,13 +205,27 @@ class NoteEditorViewModel @Inject constructor(
         val matched = ArrayList<String>()
         val bounds = ArrayList<FloatArray>()
         for (item in items) {
-            if (item.kind != STROKE_KIND) continue
-            val samples = StrokeCodec.decode(item.payload)
-            val sampleCount = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
-            val itemBounds = HitTest.boundsOf(samples, sampleCount) ?: continue
-            val hit = LassoController.strokeIntersectsPolygon(
-                samples, sampleCount, itemBounds, polygon, vertexCount, polyBounds,
-            )
+            val hit: Boolean
+            val itemBounds: FloatArray
+            when (item.kind) {
+                STROKE_KIND -> {
+                    val samples = StrokeCodec.decode(item.payload)
+                    val sampleCount = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+                    val b = HitTest.boundsOf(samples, sampleCount) ?: continue
+                    itemBounds = b
+                    hit = LassoController.strokeIntersectsPolygon(
+                        samples, sampleCount, b, polygon, vertexCount, polyBounds,
+                    )
+                }
+                TextItemCodec.KIND -> {
+                    val b = TextItemRenderer.boundsOf(item) ?: continue
+                    itemBounds = b
+                    hit = TextItemRenderer.intersectsPolygon(
+                        item, polygon, vertexCount, polyBounds,
+                    )
+                }
+                else -> continue
+            }
             if (hit) {
                 matched.add(item.id)
                 bounds.add(itemBounds)
@@ -297,14 +329,146 @@ class NoteEditorViewModel @Inject constructor(
 
     fun hasClipboardContent(): Boolean = !NoteClipboard.isEmpty()
 
+    // ── Text editor (sub-phase 1.9) ──────────────────────────────────────
+
+    /**
+     * Surface dispatched a tap with the TEXT tool active. If the tap lands on
+     * an existing text item we open it for editing; otherwise we start a new
+     * draft at the tapped world point.
+     *
+     * "Hit" is a simple bounding-box check — text bounds account for the
+     * item's stored affine so rotated / scaled labels are caught correctly.
+     * The most-recently-painted (highest zIndex) match wins so overlapping
+     * labels are routed predictably.
+     */
+    fun onTextToolTap(worldX: Float, worldY: Float) {
+        // Commit whatever was being edited before we open a new target —
+        // otherwise the user's previous draft would silently disappear.
+        commitTextEdit()
+        val hit = findTopmostTextItemAt(worldX, worldY)
+        if (hit != null) {
+            val decoded = TextItemCodec.decode(hit.payload)
+            textEditDraftBody = decoded.body
+            _textEditTarget.value = TextEditTarget.Existing(
+                itemId = hit.id,
+                initialBody = decoded.body,
+                worldX = decoded.matrix[2],
+                worldY = decoded.matrix[5],
+                fontSize = decoded.fontSize,
+                alignment = decoded.alignment,
+            )
+            // Tapping a text item under TEXT tool implies edit, not select —
+            // clear the lasso selection so the overlay doesn't get in the way.
+            clearSelection()
+        } else {
+            textEditDraftBody = ""
+            _textEditTarget.value = TextEditTarget.NewAt(
+                worldX = worldX,
+                worldY = worldY,
+                fontSize = TextItemCodec.DEFAULT_FONT_SIZE_PX,
+                alignment = TextItemCodec.ALIGN_LEFT,
+            )
+            clearSelection()
+        }
+    }
+
+    /** Live body update from the Compose `BasicTextField`. */
+    fun onTextEditBodyChanged(body: String) {
+        textEditDraftBody = body
+    }
+
+    /**
+     * Commit the active text edit, if any. Idempotent — safe to call when no
+     * target is active. Behaviour by mode:
+     *
+     *  - **NewAt** with empty body → cancel (no item ever materialises).
+     *  - **NewAt** with non-empty body → `AddItems(textItem)` lands one new item.
+     *  - **Existing** with empty body → `RemoveItems(item)`.
+     *  - **Existing** with body changed → `UpdateText(id, old, new)`.
+     *  - **Existing** unchanged → no action; the overlay just closes.
+     */
+    fun commitTextEdit() {
+        val target = _textEditTarget.value ?: return
+        val body = textEditDraftBody
+        _textEditTarget.value = null
+        textEditDraftBody = ""
+        when (target) {
+            is TextEditTarget.NewAt -> {
+                if (body.isEmpty()) return
+                val payload = TextItemCodec.newAt(
+                    worldX = target.worldX,
+                    worldY = target.worldY,
+                    body = body,
+                    fontSize = target.fontSize,
+                    alignment = target.alignment,
+                )
+                val item = NoteItem(
+                    noteId = resolvedNoteId,
+                    // Text items share the "ink" z-tier so they paint above
+                    // highlighter strokes, consistent with how a real label
+                    // sits on top of yellow marker.
+                    zIndex = nextInkZIndex++,
+                    kind = TextItemCodec.KIND,
+                    tool = null,
+                    colorArgb = TEXT_DEFAULT_COLOR,
+                    baseWidthPx = 0f,
+                    payload = TextItemCodec.encode(payload),
+                )
+                apply(EditorAction.AddItems(listOf(item)))
+            }
+            is TextEditTarget.Existing -> {
+                val item = items.firstOrNull { it.id == target.itemId } ?: return
+                if (body.isEmpty()) {
+                    apply(EditorAction.RemoveItems(listOf(item)))
+                    return
+                }
+                if (body == target.initialBody) return
+                apply(EditorAction.UpdateText(target.itemId, target.initialBody, body))
+            }
+        }
+    }
+
+    /**
+     * Drop the active edit without persisting changes. New drafts vanish;
+     * existing items keep whatever body was last committed to the DB. Used
+     * when the editor is dismissed without an explicit commit path.
+     */
+    fun cancelTextEdit() {
+        if (_textEditTarget.value == null) return
+        _textEditTarget.value = null
+        textEditDraftBody = ""
+    }
+
+    private fun findTopmostTextItemAt(worldX: Float, worldY: Float): NoteItem? {
+        var best: NoteItem? = null
+        var bestZ = Int.MIN_VALUE
+        for (item in items) {
+            if (item.kind != TextItemCodec.KIND) continue
+            val bounds = TextItemRenderer.boundsOf(item) ?: continue
+            if (worldX < bounds[0] || worldX > bounds[2]) continue
+            if (worldY < bounds[1] || worldY > bounds[3]) continue
+            if (item.zIndex >= bestZ) {
+                best = item
+                bestZ = item.zIndex
+            }
+        }
+        return best
+    }
+
     private fun duplicate(source: NoteItem, paste: Boolean): NoteItem {
         val offset = if (paste) PASTE_OFFSET_WORLD else DUPLICATE_OFFSET_WORLD
         val shifted = StrokeTransform.translation(offset, offset)
-        val newPayload = if (source.kind == STROKE_KIND) {
-            val samples = StrokeCodec.decode(source.payload)
-            StrokeCodec.encode(StrokeTransform.applyToSamples(shifted, samples))
-        } else {
-            source.payload.copyOf()
+        val newPayload = when (source.kind) {
+            STROKE_KIND -> {
+                val samples = StrokeCodec.decode(source.payload)
+                StrokeCodec.encode(StrokeTransform.applyToSamples(shifted, samples))
+            }
+            TextItemCodec.KIND -> {
+                val decoded = TextItemCodec.decode(source.payload)
+                val newMatrix = StrokeTransform.multiply(shifted, decoded.matrix)
+                TextItemCodec.encode(TextItemCodec.withMatrix(decoded, newMatrix))
+            }
+            else -> source.payload.copyOf()
         }
         return source.copy(
             id = UUID.randomUUID().toString(),
@@ -320,10 +484,16 @@ class NoteEditorViewModel @Inject constructor(
         val rects = ArrayList<FloatArray>(ids.size)
         for (item in items) {
             if (item.id !in ids) continue
-            if (item.kind != STROKE_KIND) continue
-            val samples = StrokeCodec.decode(item.payload)
-            val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
-            HitTest.boundsOf(samples, count)?.let { rects.add(it) }
+            val rect = when (item.kind) {
+                STROKE_KIND -> {
+                    val samples = StrokeCodec.decode(item.payload)
+                    val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+                    HitTest.boundsOf(samples, count)
+                }
+                TextItemCodec.KIND -> TextItemRenderer.boundsOf(item)
+                else -> null
+            }
+            rect?.let { rects.add(it) }
         }
         return LassoController.unionBounds(rects)
     }
@@ -386,5 +556,44 @@ class NoteEditorViewModel @Inject constructor(
 
         /** Offset applied when pasting from the clipboard. */
         private const val PASTE_OFFSET_WORLD = 24f
+
+        /**
+         * Default text colour. Text items use the same per-tool color slot as
+         * strokes but until a color picker for text lands (later sub-phase)
+         * everything goes black.
+         */
+        private const val TEXT_DEFAULT_COLOR: Int = 0xFF000000.toInt()
     }
+}
+
+/**
+ * Open text-edit target driven by the TEXT tool. Two flavours so the editor
+ * overlay can render in screen space and the commit path knows whether to
+ * `AddItems` a brand-new item or apply an `UpdateText` to an existing one.
+ */
+sealed interface TextEditTarget {
+    /** Screen-positioning origin (world coords). */
+    val worldX: Float
+    val worldY: Float
+    val fontSize: Float
+    val alignment: Byte
+    val initialBody: String
+
+    data class NewAt(
+        override val worldX: Float,
+        override val worldY: Float,
+        override val fontSize: Float,
+        override val alignment: Byte,
+    ) : TextEditTarget {
+        override val initialBody: String get() = ""
+    }
+
+    data class Existing(
+        val itemId: String,
+        override val initialBody: String,
+        override val worldX: Float,
+        override val worldY: Float,
+        override val fontSize: Float,
+        override val alignment: Byte,
+    ) : TextEditTarget
 }
