@@ -58,6 +58,11 @@ class NoteEditorViewModel @Inject constructor(
         _note.update { it.copy(title = title) }
     }
 
+    fun setBackgroundStyle(style: String) {
+        if (_note.value.backgroundStyle == style) return
+        _note.update { it.copy(backgroundStyle = style) }
+    }
+
     /**
      * Append a freshly drawn item to the in-memory list. The DrawingSurface emits items
      * without a note id or zIndex; this method assigns both before storage.

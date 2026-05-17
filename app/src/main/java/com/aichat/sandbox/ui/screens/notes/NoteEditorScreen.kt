@@ -5,14 +5,21 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.aichat.sandbox.ui.components.notes.BackgroundLayer
 import com.aichat.sandbox.ui.components.notes.DrawingSurfaceView
 import kotlinx.coroutines.launch
 
@@ -24,6 +31,7 @@ fun NoteEditorScreen(
 ) {
     val note by viewModel.note.collectAsState()
     val scope = rememberCoroutineScope()
+    var menuExpanded by remember { mutableStateOf(false) }
 
     fun saveAndExit() {
         scope.launch {
@@ -58,7 +66,26 @@ fun NoteEditorScreen(
                         ),
                         modifier = Modifier.fillMaxWidth()
                     )
-                }
+                },
+                actions = {
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.MoreVert,
+                                contentDescription = "More",
+                            )
+                        }
+                        BackgroundStyleMenu(
+                            expanded = menuExpanded,
+                            current = note.backgroundStyle,
+                            onDismiss = { menuExpanded = false },
+                            onSelect = { style ->
+                                viewModel.setBackgroundStyle(style)
+                                menuExpanded = false
+                            },
+                        )
+                    }
+                },
             )
         }
     ) { padding ->
@@ -70,9 +97,47 @@ fun NoteEditorScreen(
         ) {
             DrawingSurfaceView(
                 items = viewModel.items,
+                backgroundStyle = note.backgroundStyle,
                 onStrokeCommitted = viewModel::addItem,
                 modifier = Modifier.fillMaxSize(),
             )
         }
     }
 }
+
+@Composable
+private fun BackgroundStyleMenu(
+    expanded: Boolean,
+    current: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        Text(
+            text = "Background",
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        backgroundChoices.forEach { (style, label) ->
+            DropdownMenuItem(
+                text = { Text(label) },
+                onClick = { onSelect(style) },
+                trailingIcon = {
+                    if (style == current) {
+                        Icon(
+                            imageVector = Icons.Filled.Check,
+                            contentDescription = "Selected",
+                        )
+                    }
+                },
+            )
+        }
+    }
+}
+
+private val backgroundChoices = listOf(
+    BackgroundLayer.STYLE_PLAIN to "Plain",
+    BackgroundLayer.STYLE_DOT to "Dot grid",
+    BackgroundLayer.STYLE_LINE to "Lines",
+    BackgroundLayer.STYLE_GRAPH to "Graph",
+)
