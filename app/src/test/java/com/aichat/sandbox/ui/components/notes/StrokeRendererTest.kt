@@ -72,4 +72,28 @@ class StrokeRendererTest {
         // pencil, half pressure, flat tilt → base * (0.4 + 0.3) * 2.5 = 7.0.
         assertEquals(7.0f, StrokeRenderer.widthAt(4f, 0.5f, halfPi, "pencil"), 1e-5f)
     }
+
+    @Test
+    fun alphaAtPassesThroughForNonPencil() {
+        assertEquals(255, StrokeRenderer.alphaAt(255, "pen", halfPi))
+        assertEquals(76, StrokeRenderer.alphaAt(76, "highlighter", halfPi))
+        assertEquals(200, StrokeRenderer.alphaAt(200, null, halfPi))
+    }
+
+    @Test
+    fun alphaAtFadesPencilOnTilt() {
+        // Upright pencil — full base alpha.
+        assertEquals(200, StrokeRenderer.alphaAt(200, "pencil", 0f))
+        // Flat pencil — down 50%.
+        assertEquals(100, StrokeRenderer.alphaAt(200, "pencil", halfPi))
+        // Half-tilted — between the two endpoints.
+        val mid = StrokeRenderer.alphaAt(200, "pencil", halfPi / 2f)
+        assertTrue("mid alpha $mid should be between 100 and 200", mid in 101..199)
+    }
+
+    @Test
+    fun alphaAtClampsTiltOutsideRange() {
+        assertEquals(200, StrokeRenderer.alphaAt(200, "pencil", -1f))
+        assertEquals(100, StrokeRenderer.alphaAt(200, "pencil", Math.PI.toFloat()))
+    }
 }

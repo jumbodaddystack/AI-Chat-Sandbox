@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.data.repository.NoteRepository
+import com.aichat.sandbox.ui.components.notes.StrokeRenderer
+import com.aichat.sandbox.ui.components.notes.ToolPaletteState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +42,11 @@ class NoteEditorViewModel @Inject constructor(
 
     val items: SnapshotStateList<NoteItem> = mutableStateListOf()
 
-    private var nextZIndex: Int = 0
+    /** Tool palette state — selection, per-tool color / width, area-eraser radius. */
+    val palette: ToolPaletteState = ToolPaletteState()
+
+    private var nextInkZIndex: Int = 0
+    private var nextHighlighterZIndex: Int = HIGHLIGHTER_Z_BASE
 
     init {
         if (routeArg != NOTE_ID_NEW) {
@@ -49,7 +55,7 @@ class NoteEditorViewModel @Inject constructor(
                 val loaded = repository.getItems(routeArg)
                 items.clear()
                 items.addAll(loaded)
-                nextZIndex = (loaded.maxOfOrNull { it.zIndex } ?: -1) + 1
+                refreshZIndexCounters(loaded)
             }
         }
     }
@@ -66,14 +72,25 @@ class NoteEditorViewModel @Inject constructor(
     /**
      * Append a freshly drawn item to the in-memory list. The DrawingSurface emits items
      * without a note id or zIndex; this method assigns both before storage.
+     *
+     * z-index policy: highlighter strokes sit in a negative range so they
+     * always render *under* pen / pencil strokes regardless of insertion
+     * order — the user's ink never gets obscured by a highlighter drawn later.
      */
     fun addItem(item: NoteItem) {
         items.add(
             item.copy(
                 noteId = resolvedNoteId,
-                zIndex = nextZIndex++,
+                zIndex = zIndexFor(item.tool),
             )
         )
+    }
+
+    /** Remove items matching [ids] (issued by the eraser swipe). */
+    fun removeItems(ids: List<String>) {
+        if (ids.isEmpty()) return
+        val set = ids.toHashSet()
+        items.removeAll { it.id in set }
     }
 
     /**
@@ -92,6 +109,21 @@ class NoteEditorViewModel @Inject constructor(
         return toPersist.id
     }
 
+    private fun zIndexFor(tool: String?): Int =
+        if (tool == StrokeRenderer.TOOL_HIGHLIGHTER) nextHighlighterZIndex++
+        else nextInkZIndex++
+
+    private fun refreshZIndexCounters(loaded: List<NoteItem>) {
+        val maxHl = loaded
+            .filter { it.tool == StrokeRenderer.TOOL_HIGHLIGHTER }
+            .maxOfOrNull { it.zIndex }
+        val maxInk = loaded
+            .filter { it.tool != StrokeRenderer.TOOL_HIGHLIGHTER }
+            .maxOfOrNull { it.zIndex }
+        nextHighlighterZIndex = (maxHl ?: (HIGHLIGHTER_Z_BASE - 1)) + 1
+        nextInkZIndex = (maxInk ?: -1) + 1
+    }
+
     private fun emptyNote(id: String) = Note(
         id = id,
         title = "",
@@ -104,4 +136,12 @@ class NoteEditorViewModel @Inject constructor(
         thumbnailPath = null,
         ocrText = null,
     )
+
+    companion object {
+        /**
+         * Highlighter strokes start at a large negative index so a note can
+         * accumulate ~1M highlighter items before colliding with the ink tier.
+         */
+        const val HIGHLIGHTER_Z_BASE = -1_000_000
+    }
 }
