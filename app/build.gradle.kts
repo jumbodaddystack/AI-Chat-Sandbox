@@ -78,6 +78,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 
+    // Stylus input: one-frame look-ahead for ink (sub-phase 1.4).
+    implementation("androidx.input:input-motionprediction:1.0.0-beta05")
+
     // Room
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
