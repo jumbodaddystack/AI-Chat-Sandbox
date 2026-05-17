@@ -17,6 +17,7 @@ import com.aichat.sandbox.data.notes.HandwritingOcr
 import com.aichat.sandbox.data.notes.HandwritingOcr.OcrModelState
 import com.aichat.sandbox.data.notes.NoteAiService
 import com.aichat.sandbox.data.notes.NoteExporter
+import com.aichat.sandbox.data.notes.PdfLayout
 import com.aichat.sandbox.data.repository.ChatRepository
 import com.aichat.sandbox.data.repository.NoteRepository
 import com.aichat.sandbox.ui.components.notes.HitTest
@@ -1038,6 +1039,39 @@ class NoteEditorViewModel @Inject constructor(
         save()
         return noteExporter.exportPng(note = _note.value, items = items.toList())
     }
+
+    /**
+     * Persist the current note and export it as a PDF (sub-phase 4.2).
+     *
+     * Same save-first contract as [sharePng] so the receiving app sees the
+     * latest geometry. [layout] picks between fit-one-page and
+     * tile-across-pages; [pageSize] is the user's confirmed paper format
+     * from [ExportPdfDialog]. Margins default to half an inch (per
+     * [PdfLayout.DEFAULT_MARGIN_PT]) — exposed as a hook in case a future
+     * pref wants to override.
+     */
+    suspend fun sharePdf(
+        layout: PdfLayout.Mode,
+        pageSize: PdfLayout.PageSize,
+    ): Uri {
+        commitTextEdit()
+        save()
+        return noteExporter.exportPdf(
+            note = _note.value,
+            items = items.toList(),
+            layout = layout,
+            pageSize = pageSize,
+        )
+    }
+
+    /**
+     * Geometry bounds used by [ExportPdfDialog] to compute its live page-count
+     * preview. Returns the default paper rect for empty notes so the dialog
+     * still renders a coherent caption (one page).
+     */
+    fun computeBoundsForExport(): FloatArray =
+        com.aichat.sandbox.data.notes.NoteRasterizer.computeBounds(items.toList())
+            ?: NoteExporter.defaultPaperBounds()
 
     suspend fun save(): String {
         val current = _note.value

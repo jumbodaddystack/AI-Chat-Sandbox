@@ -120,6 +120,93 @@ object NoteRasterizer {
         return render(items, bounds, maxEdgePx, backgroundStyle)
     }
 
+    /**
+     * Paint the paper colour + grid pattern onto [canvas] in world units,
+     * clipped to [worldBounds]. Used by the PDF export pipeline (sub-phase
+     * 4.2) where a canvas transform is already in effect — drawing in world
+     * coords avoids re-deriving page-space math for every tile.
+     *
+     * [effectiveScale] is the world→canvas scale that will be applied when
+     * the strokes paint; we use it to drop the grid when the on-device
+     * spacing would render as solid ink. Defaults to `1f` (tile mode); pass
+     * the fit-page scale in [Mode.FIT_ONE_PAGE].
+     */
+    fun drawBackgroundInWorld(
+        canvas: Canvas,
+        backgroundStyle: String,
+        worldBounds: FloatArray,
+        effectiveScale: Float = 1f,
+    ) {
+        require(worldBounds.size == 4) { "worldBounds must be [minX, minY, maxX, maxY]" }
+        // Paper fill is drawn first so even degenerate / empty notes export a
+        // white background instead of a transparent PDF page.
+        val paper = Paint().apply {
+            isAntiAlias = false
+            color = PAPER_COLOR
+            style = Paint.Style.FILL
+        }
+        canvas.drawRect(worldBounds[0], worldBounds[1], worldBounds[2], worldBounds[3], paper)
+        if (backgroundStyle == BackgroundLayer.STYLE_PLAIN) return
+        val canvasSpacing = GRID_SPACING_WORLD * effectiveScale
+        if (canvasSpacing < MIN_GRID_BITMAP_SPACING_PX) return
+
+        val paint = Paint().apply {
+            isAntiAlias = true
+            color = GRID_COLOR
+            strokeWidth = 1f / effectiveScale.coerceAtLeast(0.0001f)
+        }
+        val firstX = floor(worldBounds[0] / GRID_SPACING_WORLD) * GRID_SPACING_WORLD
+        val firstY = floor(worldBounds[1] / GRID_SPACING_WORLD) * GRID_SPACING_WORLD
+        // Convert the on-device dot radius back into world units so it prints
+        // visually consistent with the bitmap path regardless of scale.
+        val dotRadiusWorld = DOT_RADIUS_PX / effectiveScale.coerceAtLeast(0.0001f)
+        when (backgroundStyle) {
+            BackgroundLayer.STYLE_DOT -> {
+                paint.style = Paint.Style.FILL
+                var wy = firstY
+                while (wy <= worldBounds[3]) {
+                    if (wy >= worldBounds[1]) {
+                        var wx = firstX
+                        while (wx <= worldBounds[2]) {
+                            if (wx >= worldBounds[0]) {
+                                canvas.drawCircle(wx, wy, dotRadiusWorld, paint)
+                            }
+                            wx += GRID_SPACING_WORLD
+                        }
+                    }
+                    wy += GRID_SPACING_WORLD
+                }
+            }
+            BackgroundLayer.STYLE_LINE -> {
+                paint.style = Paint.Style.STROKE
+                var wy = firstY
+                while (wy <= worldBounds[3]) {
+                    if (wy >= worldBounds[1]) {
+                        canvas.drawLine(worldBounds[0], wy, worldBounds[2], wy, paint)
+                    }
+                    wy += GRID_SPACING_WORLD
+                }
+            }
+            BackgroundLayer.STYLE_GRAPH -> {
+                paint.style = Paint.Style.STROKE
+                var wy = firstY
+                while (wy <= worldBounds[3]) {
+                    if (wy >= worldBounds[1]) {
+                        canvas.drawLine(worldBounds[0], wy, worldBounds[2], wy, paint)
+                    }
+                    wy += GRID_SPACING_WORLD
+                }
+                var wx = firstX
+                while (wx <= worldBounds[2]) {
+                    if (wx >= worldBounds[0]) {
+                        canvas.drawLine(wx, worldBounds[1], wx, worldBounds[3], paint)
+                    }
+                    wx += GRID_SPACING_WORLD
+                }
+            }
+        }
+    }
+
     /** PNG-encode [bitmap]. Quality is ignored by PNG but kept for symmetry. */
     fun toPng(bitmap: Bitmap, quality: Int = 100): ByteArray {
         val out = ByteArrayOutputStream()
@@ -166,7 +253,15 @@ object NoteRasterizer {
         else -> null
     }
 
-    private fun drawItems(canvas: Canvas, items: List<NoteItem>) {
+    /**
+     * Draw [items] onto [canvas] in the order they should paint. The caller is
+     * responsible for any world→canvas transform: if a canvas matrix is in
+     * effect we paint in world units, otherwise items land at their raw
+     * coordinates. Exposed so callers that draw onto a non-bitmap target
+     * (the PDF export pipeline in 4.2 in particular) can reuse the per-item
+     * paint configuration without duplicating the decode loop.
+     */
+    fun drawItems(canvas: Canvas, items: List<NoteItem>) {
         val sorted = items.sortedBy { it.zIndex }
         val paint = Paint()
         val path = Path()
