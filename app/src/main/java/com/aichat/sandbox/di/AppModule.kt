@@ -8,6 +8,7 @@ import com.aichat.sandbox.data.local.MIGRATION_1_2
 import com.aichat.sandbox.data.local.MIGRATION_2_3
 import com.aichat.sandbox.data.local.MIGRATION_3_4
 import com.aichat.sandbox.data.local.NoteDao
+import com.aichat.sandbox.data.notes.HandwritingOcr
 import com.aichat.sandbox.data.repository.NoteRepository
 import com.aichat.sandbox.ui.components.MarkwonProvider
 import dagger.Module
@@ -54,5 +55,11 @@ object AppModule {
     @Singleton
     fun provideMarkwonProvider(): MarkwonProvider {
         return MarkwonProvider()
+    }
+
+    @Provides
+    @Singleton
+    fun provideHandwritingOcr(): HandwritingOcr {
+        return HandwritingOcr()
     }
 }
