@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,7 +31,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +44,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -61,9 +68,9 @@ import androidx.compose.ui.unit.dp
  * appended to the active turn's bubble; the lazy list auto-scrolls to the
  * latest turn as it grows.
  *
- * Reply actions (Copy / Insert / Send to chat), canned prompt chips, and the
- * in-sheet model picker land in sub-phases 2.7 and 2.8. This sub-phase ships
- * the wiring: open / type / stream / cancel / close.
+ * Canned prompt chips and the scope chip landed in sub-phase 2.7. The full
+ * reply-action row (Copy / Insert / Send to chat for every Done turn) and
+ * the in-sheet model picker arrive in sub-phase 2.8.
  */
 @Composable
 fun AiSideSheet(
@@ -72,6 +79,9 @@ fun AiSideSheet(
     onSubmit: () -> Unit,
     onCancel: () -> Unit,
     onClose: () -> Unit,
+    onCannedPrompt: (CannedPrompt) -> Unit,
+    onClearScope: () -> Unit,
+    onInsertConvertResult: (turnId: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
@@ -136,6 +146,9 @@ fun AiSideSheet(
                     onSubmit = onSubmit,
                     onCancel = onCancel,
                     onClose = onClose,
+                    onCannedPrompt = onCannedPrompt,
+                    onClearScope = onClearScope,
+                    onInsertConvertResult = onInsertConvertResult,
                 )
             }
         }
@@ -149,6 +162,9 @@ private fun SheetContent(
     onSubmit: () -> Unit,
     onCancel: () -> Unit,
     onClose: () -> Unit,
+    onCannedPrompt: (CannedPrompt) -> Unit,
+    onClearScope: () -> Unit,
+    onInsertConvertResult: (turnId: String) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SheetHeader(
@@ -158,9 +174,18 @@ private fun SheetContent(
         HorizontalDivider()
         ConversationList(
             turns = state.turns,
+            onInsertConvertResult = onInsertConvertResult,
             modifier = Modifier.weight(1f),
         )
         HorizontalDivider()
+        ScopeAndCannedPromptRow(
+            scopeLabel = state.scopeLabel,
+            hasSelection = state.pendingSelection != null,
+            convertEnabled = state.pendingSelection != null && !state.isStreaming,
+            isStreaming = state.isStreaming,
+            onCannedPrompt = onCannedPrompt,
+            onClearScope = onClearScope,
+        )
         SheetFooter(
             inputText = state.inputText,
             isStreaming = state.isStreaming,
@@ -205,6 +230,7 @@ private fun SheetHeader(
 @Composable
 private fun ConversationList(
     turns: List<AskTurn>,
+    onInsertConvertResult: (turnId: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -240,17 +266,42 @@ private fun ConversationList(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(turns, key = { it.id }) { turn ->
-            TurnBubble(turn = turn)
+            TurnBubble(turn = turn, onInsertConvertResult = onInsertConvertResult)
         }
     }
 }
 
 @Composable
-private fun TurnBubble(turn: AskTurn) {
+private fun TurnBubble(
+    turn: AskTurn,
+    onInsertConvertResult: (turnId: String) -> Unit,
+) {
     Column(modifier = Modifier.fillMaxWidth()) {
         PromptBubble(prompt = turn.prompt, selectionSummary = turn.selectionSummary)
         Spacer(modifier = Modifier.height(4.dp))
         ReplyBubble(turn = turn)
+        // Sub-phase 2.7 preview: only Convert-to-text replies get an inline
+        // action right now. The general reply-action row (Copy / Insert /
+        // Send to chat for every Done turn) lands in 2.8.
+        if (turn.isConvertResult &&
+            turn.state is TurnState.Done &&
+            turn.replyBuffer.isNotEmpty()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Start,
+            ) {
+                TextButton(onClick = { onInsertConvertResult(turn.id) }) {
+                    Icon(
+                        imageVector = Icons.Filled.TextFields,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Insert as text box")
+                }
+            }
+        }
     }
 }
 
@@ -352,6 +403,60 @@ private fun TypingIndicator() {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * Scope chip + canned-prompt row (sub-phase 2.7). Sits above the input
+ * field. The scope chip ("Whole note" or "3 strokes selected") tap-clears
+ * the frozen selection so the user can pivot mid-conversation. Canned
+ * prompts fire on a single tap; Convert-to-text is only enabled when there
+ * is a selection in scope.
+ */
+@Composable
+private fun ScopeAndCannedPromptRow(
+    scopeLabel: String,
+    hasSelection: Boolean,
+    convertEnabled: Boolean,
+    isStreaming: Boolean,
+    onCannedPrompt: (CannedPrompt) -> Unit,
+    onClearScope: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        FilterChip(
+            selected = hasSelection,
+            onClick = { if (hasSelection) onClearScope() },
+            label = { Text(scopeLabel, style = MaterialTheme.typography.labelMedium) },
+            enabled = hasSelection,
+            colors = FilterChipDefaults.filterChipColors(),
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            items(CannedPrompt.ASK_PROMPTS, key = { it.name }) { prompt ->
+                AssistChip(
+                    onClick = { onCannedPrompt(prompt) },
+                    enabled = !isStreaming,
+                    label = { Text(prompt.label) },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+            // Convert-to-text last so the order matches the lasso menu and
+            // it visually trails the ask prompts as the "different kind" one.
+            items(listOf(CannedPrompt.CONVERT_TO_TEXT), key = { it.name }) { prompt ->
+                AssistChip(
+                    onClick = { onCannedPrompt(prompt) },
+                    enabled = convertEnabled,
+                    label = { Text(prompt.label) },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+        }
     }
 }
 

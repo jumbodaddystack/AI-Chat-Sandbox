@@ -10,6 +10,7 @@ import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.data.notes.AiChunk
 import com.aichat.sandbox.data.notes.AskRequest
+import com.aichat.sandbox.data.notes.HandwritingOcr
 import com.aichat.sandbox.data.notes.HandwritingOcr.OcrModelState
 import com.aichat.sandbox.data.notes.NoteAiService
 import com.aichat.sandbox.data.repository.NoteRepository
@@ -45,6 +46,7 @@ class NoteEditorViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: NoteRepository,
     private val aiService: NoteAiService,
+    private val handwritingOcr: HandwritingOcr,
     private val preferencesManager: PreferencesManager,
 ) : ViewModel() {
 
@@ -512,6 +514,30 @@ class NoteEditorViewModel @Inject constructor(
     }
 
     /**
+     * Lasso "Ask" entry point (sub-phase 2.7). Snapshots the items matching
+     * the current selection into the sheet's frozen scope so subsequent
+     * background changes to the canvas selection don't drift the scope chip.
+     * Falls back to whole-note scope when nothing is selected (e.g. defensive
+     * call after a lasso cleared itself).
+     */
+    fun openAiSheetForSelection() {
+        val ids = _selection.value
+        val snapshot = if (ids.isEmpty()) null else items.filter { it.id in ids }
+        openAiSheet(snapshot)
+    }
+
+    /**
+     * Drop the frozen selection scope without closing the sheet. The chip
+     * row's "Whole note" pill calls this so the user can pivot the in-flight
+     * conversation from "these strokes" to "this whole note" without losing
+     * prior turns.
+     */
+    fun clearAiSheetScope() {
+        if (_aiSheetState.value.pendingSelection == null) return
+        _aiSheetState.update { it.copy(pendingSelection = null) }
+    }
+
+    /**
      * Hide the sheet without losing the conversation. Reopening restores the
      * turn list so the user can resume reading. Streaming jobs keep running
      * — closing the sheet is not the same as cancelling.
@@ -555,6 +581,164 @@ class NoteEditorViewModel @Inject constructor(
         streamingJobs[turnId] = viewModelScope.launch {
             runStream(turnId = turnId, prompt = prompt, selection = selection)
         }
+    }
+
+    /**
+     * Fire a canned prompt by enum (sub-phase 2.7). [CannedPrompt.CONVERT_TO_TEXT]
+     * routes through the OCR fast path; everything else maps to a
+     * one-tap template and goes through the standard ask pipeline.
+     *
+     * The convert-to-text path silently no-ops when there are no strokes
+     * in scope; the UI is expected to gate the chip in that case, but the
+     * guard here keeps the VM honest if a caller forgets.
+     */
+    fun submitCannedPrompt(canned: CannedPrompt) {
+        if (canned == CannedPrompt.CONVERT_TO_TEXT) {
+            launchConvertToText()
+            return
+        }
+        if (_aiSheetState.value.isStreaming) return
+        _aiSheetState.update { it.copy(inputText = canned.template) }
+        submitAiPrompt()
+    }
+
+    /**
+     * Convert-to-text fast path (sub-phase 2.7).
+     *
+     * Bypasses [NoteAiService] entirely — handwriting OCR runs on the
+     * in-scope strokes and the recognized text is dropped into the
+     * conversation as a finished `Done` turn marked [AskTurn.isConvertResult],
+     * which surfaces a preview "Insert as text box" action on the bubble.
+     * Empty / unrecognizable input lands as an `Error` turn rather than a
+     * blank `Done` so the user sees what happened.
+     *
+     * Works offline (no network call). If no selection is active, the entire
+     * note's strokes are used so the toolbar Convert can still recover the
+     * full transcription.
+     */
+    fun launchConvertToText() {
+        val snapshot = _aiSheetState.value
+        if (snapshot.isStreaming) return
+        val scope = snapshot.pendingSelection ?: items.toList()
+        val strokes = scope.filter { it.kind == STROKE_KIND }
+        val summary = snapshot.pendingSelection?.let { summarizeSelection(it) }
+        val turnId = UUID.randomUUID().toString()
+        val turn = AskTurn(
+            id = turnId,
+            prompt = CannedPrompt.CONVERT_TO_TEXT.label,
+            selectionSummary = summary,
+            replyBuffer = "",
+            state = TurnState.Streaming,
+            isConvertResult = true,
+        )
+        _aiSheetState.update { current ->
+            current.copy(
+                isOpen = true,
+                turns = current.turns + turn,
+                inputText = "",
+            )
+        }
+        if (strokes.isEmpty()) {
+            mutateTurn(turnId) { t -> t.copy(state = TurnState.Error(NO_HANDWRITING_MESSAGE)) }
+            return
+        }
+        streamingJobs[turnId] = viewModelScope.launch {
+            try {
+                val result = handwritingOcr.recognize(strokes)
+                val text = result.text
+                if (text.isBlank()) {
+                    mutateTurn(turnId) { t -> t.copy(state = TurnState.Error(NO_HANDWRITING_MESSAGE)) }
+                } else {
+                    mutateTurn(turnId) { t -> t.copy(replyBuffer = text, state = TurnState.Done) }
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                mutateTurn(turnId) { current ->
+                    current.copy(state = TurnState.Error(t.message ?: "OCR failed"))
+                }
+            } finally {
+                streamingJobs.remove(turnId)
+            }
+        }
+    }
+
+    /**
+     * Convert-to-text fast path triggered from the lasso menu (sub-phase 2.7).
+     * Opens the sheet (if it isn't already), freezes the current canvas
+     * selection as the scope, and kicks the OCR job — all in one call so the
+     * lasso button is a single tap.
+     */
+    fun launchConvertSelectionToText() {
+        val ids = _selection.value
+        if (ids.isEmpty()) return
+        val snapshot = items.filter { it.id in ids }
+        if (snapshot.isEmpty()) return
+        // Capture the scope first so the running turn picks it up via state.
+        openAiSheet(snapshot)
+        launchConvertToText()
+    }
+
+    /**
+     * Drop a `Done` Convert-to-text reply onto the canvas as a new text item.
+     * Goes through [EditorAction.AddItems] so undo / redo round-trips. Sized
+     * at the codec's default font and anchored at the centre of the frozen
+     * selection bounds, or `(0, 0)` world when scope is the whole note.
+     *
+     * This is the sub-phase 2.7 preview of the broader reply-action row that
+     * lands in 2.8; the general "Insert as text box" for arbitrary replies
+     * arrives there.
+     */
+    fun insertConvertResultAsTextBox(turnId: String) {
+        val state = _aiSheetState.value
+        val turn = state.turns.firstOrNull { it.id == turnId } ?: return
+        if (turn.state !is TurnState.Done || !turn.isConvertResult) return
+        val body = turn.replyBuffer
+        if (body.isEmpty()) return
+        val (worldX, worldY) = anchorPointForInsert(state.pendingSelection)
+        val payload = TextItemCodec.newAt(
+            worldX = worldX,
+            worldY = worldY,
+            body = body,
+            fontSize = TextItemCodec.DEFAULT_FONT_SIZE_PX,
+            alignment = TextItemCodec.ALIGN_LEFT,
+        )
+        val item = NoteItem(
+            noteId = resolvedNoteId,
+            zIndex = nextInkZIndex++,
+            kind = TextItemCodec.KIND,
+            tool = null,
+            colorArgb = TEXT_DEFAULT_COLOR,
+            baseWidthPx = 0f,
+            payload = TextItemCodec.encode(payload),
+        )
+        apply(EditorAction.AddItems(listOf(item)))
+        closeAiSheet()
+    }
+
+    private fun anchorPointForInsert(scope: List<NoteItem>?): Pair<Float, Float> {
+        if (scope.isNullOrEmpty()) return 0f to 0f
+        val rects = ArrayList<FloatArray>(scope.size)
+        for (item in scope) {
+            val rect = when (item.kind) {
+                STROKE_KIND -> {
+                    val samples = StrokeCodec.decode(item.payload)
+                    val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+                    HitTest.boundsOf(samples, count)
+                }
+                TextItemCodec.KIND -> TextItemRenderer.boundsOf(item)
+                else -> null
+            }
+            rect?.let { rects.add(it) }
+        }
+        val union = LassoController.unionBounds(rects) ?: return 0f to 0f
+        // Anchor at the centre of the selection bounds; TextItemCodec.newAt
+        // treats this as the text origin (top-left), so the resulting label
+        // hangs off the centre of the recognized strokes — close enough for
+        // a v1 preview, viewport-aware centring is 2.8 polish.
+        val cx = (union[0] + union[2]) * 0.5f
+        val cy = (union[1] + union[3]) * 0.5f
+        return cx to cy
     }
 
     /**
@@ -784,6 +968,9 @@ class NoteEditorViewModel @Inject constructor(
 
         /** Shown on a turn that was cancelled by the user mid-stream. */
         private const val CANCEL_MESSAGE: String = "Cancelled."
+
+        /** Shown when Convert-to-text can't recover any words. */
+        private const val NO_HANDWRITING_MESSAGE: String = "Couldn't recognize handwriting."
     }
 }
 
