@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
@@ -31,6 +33,8 @@ fun NoteEditorScreen(
     viewModel: NoteEditorViewModel = hiltViewModel(),
 ) {
     val note by viewModel.note.collectAsState()
+    val canUndo by viewModel.canUndo.collectAsState()
+    val canRedo by viewModel.canRedo.collectAsState()
     val scope = rememberCoroutineScope()
     var menuExpanded by remember { mutableStateOf(false) }
 
@@ -69,6 +73,18 @@ fun NoteEditorScreen(
                     )
                 },
                 actions = {
+                    IconButton(onClick = viewModel::undo, enabled = canUndo) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Undo,
+                            contentDescription = "Undo",
+                        )
+                    }
+                    IconButton(onClick = viewModel::redo, enabled = canRedo) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Redo,
+                            contentDescription = "Redo",
+                        )
+                    }
                     Box {
                         IconButton(onClick = { menuExpanded = true }) {
                             Icon(
