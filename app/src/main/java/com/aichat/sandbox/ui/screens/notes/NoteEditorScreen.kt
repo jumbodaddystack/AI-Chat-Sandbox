@@ -62,6 +62,7 @@ fun NoteEditorScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
+    var pdfDialogVisible by remember { mutableStateOf(false) }
     var viewportController by remember { mutableStateOf<ViewportController?>(null) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -159,6 +160,10 @@ fun NoteEditorScreen(
                                     )
                                 }
                             },
+                            onSharePdf = {
+                                menuExpanded = false
+                                pdfDialogVisible = true
+                            },
                         )
                     }
                 },
@@ -240,6 +245,26 @@ fun NoteEditorScreen(
             }
             ToolPalette(state = viewModel.palette)
         }
+        if (pdfDialogVisible) {
+            ExportPdfDialog(
+                boundsForPreview = remember(pdfDialogVisible) { viewModel.computeBoundsForExport() },
+                onCancel = { pdfDialogVisible = false },
+                onExport = { mode, pageSize ->
+                    pdfDialogVisible = false
+                    scope.launch {
+                        val uri = viewModel.sharePdf(mode, pageSize)
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "application/pdf"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(send, "Share note as PDF")
+                        )
+                    }
+                },
+            )
+        }
         AiSideSheet(
             state = aiSheetState,
             onInputChanged = viewModel::onAiInputChanged,
@@ -286,11 +311,12 @@ fun NoteEditorScreen(
 }
 
 /**
- * Editor TopAppBar overflow menu (sub-phase 4.1).
+ * Editor TopAppBar overflow menu (sub-phase 4.1, PDF wired in 4.2).
  *
- * Combines the sub-phase 1.6 background-style picker with the new Share
- * section. PDF lands in 4.2 — it's rendered as a disabled menu item now so
- * the user has visible signalling that the path exists before it's wired.
+ * Combines the sub-phase 1.6 background-style picker with the Share section.
+ * Both PNG and PDF entries fire callbacks; PDF first opens [ExportPdfDialog]
+ * (handled by the parent) so the user can pick layout + page size before the
+ * exporter runs.
  */
 @Composable
 private fun EditorOverflowMenu(
@@ -299,6 +325,7 @@ private fun EditorOverflowMenu(
     onDismiss: () -> Unit,
     onBackgroundSelect: (String) -> Unit,
     onSharePng: () -> Unit,
+    onSharePdf: () -> Unit,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         Text(
@@ -324,14 +351,7 @@ private fun EditorOverflowMenu(
                     contentDescription = null,
                 )
             },
-            trailingIcon = {
-                Text(
-                    text = "Coming next",
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            },
-            enabled = false,
-            onClick = {},
+            onClick = onSharePdf,
         )
         HorizontalDivider()
         Text(

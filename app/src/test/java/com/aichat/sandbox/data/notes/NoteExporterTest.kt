@@ -110,6 +110,49 @@ class NoteExporterTest {
     }
 
     @Test
+    fun pruneOldHonoursExtensionFilter() {
+        val dir = tempFolder.newFolder("exports")
+        val png = File(dir, "note.png").apply {
+            writeText("png-payload")
+            setLastModified(500L)
+        }
+        val pdfOlder = File(dir, "note-1.pdf").apply {
+            writeText("pdf-old")
+            setLastModified(100L)
+        }
+        val pdfNewer = File(dir, "note-2.pdf").apply {
+            writeText("pdf-new")
+            setLastModified(900L)
+        }
+        // Prune limited to {png, pdf} keeping the most recent two — the older
+        // PDF should drop out, both surviving entries must be from the
+        // managed extension set.
+        NoteExporter.pruneOld(dir, keep = 2, extensions = setOf("png", "pdf"))
+        assertTrue("recent png kept", png.exists())
+        assertTrue("recent pdf kept", pdfNewer.exists())
+        assertFalse("older pdf pruned", pdfOlder.exists())
+    }
+
+    @Test
+    fun pruneOldIgnoresUnmanagedExtensionsEvenWhenAsked() {
+        val dir = tempFolder.newFolder("exports")
+        val ini = File(dir, "settings.ini").apply {
+            writeText("config")
+            setLastModified(1L)
+        }
+        val png = File(dir, "note.png").apply {
+            writeText("png")
+            setLastModified(2L)
+        }
+        // The .ini file is outside the managed set so it must survive even a
+        // keep=0 sweep — guards against collateral damage if anything else
+        // ever writes here.
+        NoteExporter.pruneOld(dir, keep = 0, extensions = setOf("png", "pdf"))
+        assertFalse(png.exists())
+        assertTrue(ini.exists())
+    }
+
+    @Test
     fun defaultPaperBoundsIsNonEmpty() {
         val b = NoteExporter.defaultPaperBounds()
         assertEquals(4, b.size)
