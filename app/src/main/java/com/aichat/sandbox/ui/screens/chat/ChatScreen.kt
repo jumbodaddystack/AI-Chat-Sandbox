@@ -48,6 +48,8 @@ import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.ui.components.MarkdownText
 import com.aichat.sandbox.ui.components.ModelSelector
 import com.aichat.sandbox.ui.components.SettingsSlider
+import com.aichat.sandbox.ui.components.chat.SketchAttachmentSheet
+import com.aichat.sandbox.ui.components.chat.SketchAttachmentState
 import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.ui.theme.AssistantBubble
 import com.aichat.sandbox.ui.theme.UserBubble
@@ -66,6 +68,10 @@ fun ChatScreen(
     val chat = uiState.chat
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    // Sketch attachment state (sub-phase 3.4) lives in the composition so
+    // the surface is torn down with the screen. Items / undo are cleared on
+    // close so reopening starts blank.
+    val sketchState = remember { SketchAttachmentState() }
 
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(uiState.messages.size, uiState.streamingContent, uiState.executingTool) {
@@ -268,6 +274,7 @@ fun ChatScreen(
             attachedImages = uiState.attachedImages,
             onAddImage = { uri -> viewModel.addImage(uri) },
             onRemoveImage = { uri -> viewModel.removeImage(uri) },
+            onSketchClick = { sketchState.open() },
             // One-shot prefill from the `?draftText=` nav arg
             // (sub-phase 2.8). Consumed on first composition so it can't
             // re-trigger after rotation.
@@ -312,6 +319,17 @@ fun ChatScreen(
             }
         )
     }
+
+    // Sketch attachment sheet (sub-phase 3.4). Rasterized PNG is appended
+    // to the same `attachedImages` list as photo-picker results.
+    SketchAttachmentSheet(
+        state = sketchState,
+        onConfirm = { png ->
+            viewModel.attachSketch(png)
+            sketchState.close()
+        },
+        onDismiss = { sketchState.close() },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -712,6 +730,7 @@ private fun ChatInputBar(
     attachedImages: List<Uri> = emptyList(),
     onAddImage: (Uri) -> Unit = {},
     onRemoveImage: (Uri) -> Unit = {},
+    onSketchClick: () -> Unit = {},
     consumeDraftText: () -> String? = { null },
 ) {
     var text by remember { mutableStateOf("") }
@@ -831,6 +850,20 @@ private fun ChatInputBar(
                         Icon(
                             Icons.Default.Image,
                             contentDescription = "Attach image",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    // Sketch attachment button (sub-phase 3.4) — opens the
+                    // bottom-sheet drawing surface. Available without a stylus;
+                    // finger sketches are explicitly supported.
+                    IconButton(
+                        onClick = onSketchClick,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Draw,
+                            contentDescription = "Sketch",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(22.dp)
                         )

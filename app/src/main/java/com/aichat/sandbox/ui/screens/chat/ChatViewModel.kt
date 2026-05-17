@@ -30,6 +30,8 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 
 data class ChatUiState(
@@ -116,6 +118,29 @@ class ChatViewModel @Inject constructor(
 
     fun addImage(uri: Uri) {
         _uiState.update { it.copy(attachedImages = it.attachedImages + uri) }
+    }
+
+    /**
+     * Attach a PNG produced by the chat composer's sketch sheet
+     * (sub-phase 3.4). The bytes are written to the app's cache dir and
+     * the resulting file Uri is appended to [ChatUiState.attachedImages],
+     * so the existing send-time encoder ([encodeImageToBase64]) picks it
+     * up alongside any photo-picked images and converts it to the
+     * data-URI form the API expects.
+     */
+    fun attachSketch(pngBytes: ByteArray) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val dir = File(appContext.cacheDir, SKETCH_CACHE_DIR).apply { mkdirs() }
+            val file = File(dir, "sketch-${UUID.randomUUID()}.png")
+            try {
+                file.outputStream().use { it.write(pngBytes) }
+            } catch (_: Exception) {
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                addImage(Uri.fromFile(file))
+            }
+        }
     }
 
     fun removeImage(uri: Uri) {
@@ -590,5 +615,6 @@ class ChatViewModel @Inject constructor(
     companion object {
         const val MAX_MESSAGE_LENGTH = 100_000
         const val MAX_TOOL_ROUNDS = 10
+        private const val SKETCH_CACHE_DIR = "chat-sketches"
     }
 }

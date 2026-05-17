@@ -67,6 +67,16 @@ class DrawingSurface(context: Context) : View(context) {
             invalidate()
         }
 
+    /**
+     * Sketch-attachment mode (sub-phase 3.4). When enabled:
+     *  - every pointer (finger or stylus) is routed through the ink path so
+     *    the chat composer's sheet works without an S-Pen,
+     *  - viewport pan / zoom is suppressed — the sheet renders at a fixed
+     *    size, no infinite canvas, no pinch.
+     * The Phase 1 note editor never sets this; defaults to off.
+     */
+    var sketchMode: Boolean = false
+
     private var sceneBitmap: Bitmap? = null
     private var sceneCanvas: Canvas? = null
     private var sceneDirty = true
@@ -378,6 +388,12 @@ class DrawingSurface(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (sketchMode) {
+            // Fixed-size sheet canvas: every pointer is ink, no viewport
+            // gestures. Pressure / tilt fall back to finger defaults when
+            // not reported.
+            return handleStylusEvent(event, 0)
+        }
         if (paletteTool.isText) {
             // Text tool: tap (stylus or finger) → create / edit text item.
             // Two-finger pinch still works so the user can zoom while in
@@ -960,6 +976,7 @@ fun DrawingSurfaceView(
     onSelectionShouldClear: () -> Unit,
     onTextTap: (worldX: Float, worldY: Float) -> Unit,
     modifier: Modifier = Modifier,
+    sketchMode: Boolean = false,
     onViewportReady: (ViewportController) -> Unit = {},
 ) {
     val currentOnCommit by rememberUpdatedState(onStrokeCommitted)
@@ -977,6 +994,7 @@ fun DrawingSurfaceView(
         modifier = modifier,
         factory = { ctx ->
             DrawingSurface(ctx).apply {
+                this.sketchMode = sketchMode
                 strokeListener = { item -> currentOnCommit(item) }
                 eraseListener = { ids -> currentOnErase(ids) }
                 lassoListener = { polygon -> currentOnLasso(polygon) }
@@ -986,6 +1004,7 @@ fun DrawingSurfaceView(
             }
         },
         update = { view ->
+            view.sketchMode = sketchMode
             view.strokeListener = { item -> currentOnCommit(item) }
             view.eraseListener = { ids -> currentOnErase(ids) }
             view.lassoListener = { polygon -> currentOnLasso(polygon) }
