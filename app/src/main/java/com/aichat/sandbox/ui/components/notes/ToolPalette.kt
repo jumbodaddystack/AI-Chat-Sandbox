@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.outlined.Highlight
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material3.FilterChip
@@ -68,6 +69,8 @@ fun ToolPalette(
                 EraserConfigRow(state = state)
             } else if (selected.isLasso) {
                 LassoHintRow()
+            } else if (selected.isText) {
+                TextHintRow()
             }
         }
     }
@@ -122,7 +125,7 @@ private fun Tool.icon(): ImageVector = when (this) {
     Tool.ERASER_STROKE -> Icons.Outlined.RadioButtonUnchecked
     Tool.ERASER_AREA -> Icons.Outlined.RadioButtonUnchecked
     Tool.LASSO -> Icons.Outlined.Highlight
-    Tool.TEXT -> Icons.Outlined.RadioButtonUnchecked
+    Tool.TEXT -> Icons.Filled.TextFields
 }
 
 @Composable
@@ -209,6 +212,19 @@ private fun LassoHintRow() {
     ) {
         Text(
             text = "Lasso — draw a loop to select strokes.",
+            style = MaterialTheme.typography.labelMedium,
+        )
+    }
+}
+
+@Composable
+private fun TextHintRow() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "Text — tap empty space to add a note, tap existing text to edit.",
             style = MaterialTheme.typography.labelMedium,
         )
     }

@@ -11,6 +11,7 @@ import android.graphics.Path
 import android.graphics.PorterDuff
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
@@ -103,6 +104,13 @@ class DrawingSurface(context: Context) : View(context) {
     private var selectedIds: Set<String> = emptySet()
 
     /**
+     * Currently in-edit text item id (sub-phase 1.9). Skipped everywhere so the
+     * Compose-side `TextItemEditor` overlay doesn't double-render on top of
+     * the rasterized copy. Null when no text is being edited.
+     */
+    private var editingTextId: String? = null
+
+    /**
      * Live-transform matrix applied to selected items at render time (sub-phase 1.8).
      * Identity = "selection sits at its baked-in position"; non-identity = a
      * Compose-side handle drag is in progress. Buffer layout matches
@@ -110,6 +118,7 @@ class DrawingSurface(context: Context) : View(context) {
      */
     private var selectionMatrix: FloatArray = StrokeTransform.IDENTITY
     private val selectionAndroidMatrix: Matrix = Matrix()
+    private val textScratchMatrix: Matrix = Matrix()
 
     /** Lasso loop points (`[x0, y0, x1, y1, …]` world coords) — only when [strokeTool] == LASSO. */
     private var lassoPoints: FloatArray =
@@ -173,12 +182,31 @@ class DrawingSurface(context: Context) : View(context) {
      */
     var selectionShouldClearListener: (() -> Unit)? = null
 
+    /**
+     * Fired when the user taps the canvas with the TEXT tool active
+     * (sub-phase 1.9). The receiver decides whether to begin a new text
+     * item at `(worldX, worldY)` or open the editor for whichever text
+     * item is under that point. The tap fires from both stylus and finger
+     * because the text tool's interaction model is tap-only — no drawing,
+     * no palm rejection conflicts.
+     */
+    var textTapListener: ((worldX: Float, worldY: Float) -> Unit)? = null
+
     // Viewport gesture state — only used for finger input (stylus has its own branch).
     private enum class GestureMode { NONE, PAN, PINCH }
     private var gestureMode: GestureMode = GestureMode.NONE
     private var panLastX: Float = 0f
     private var panLastY: Float = 0f
     private var pinchLastDist: Float = 0f
+
+    // ── Text-tool tap detection (sub-phase 1.9) ──────────────────────────
+    // Below the slop a single-pointer DOWN/UP counts as a tap and fires
+    // [textTapListener]. Pinch zoom remains available via two fingers.
+    private var textTapStartX: Float = 0f
+    private var textTapStartY: Float = 0f
+    private var textTapActive: Boolean = false
+    private val tapSlopPx: Float =
+        ViewConfiguration.get(context).scaledTouchSlop.toFloat()
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -201,10 +229,11 @@ class DrawingSurface(context: Context) : View(context) {
         committedItems = sorted
         // Re-decode lazily; drop entries no longer present so the cache
         // doesn't grow without bound across erase/undo cycles.
+        val keep = sorted.mapTo(HashSet(sorted.size)) { it.id }
         if (decodedCache.isNotEmpty()) {
-            val keep = sorted.mapTo(HashSet(sorted.size)) { it.id }
             decodedCache.keys.retainAll(keep)
         }
+        TextItemRenderer.evictUnused(keep)
         pendingErase.clear()
         sceneDirty = true
         invalidate()
@@ -240,6 +269,18 @@ class DrawingSurface(context: Context) : View(context) {
         selectedIds = ids
         selectionMatrix = matrix.copyOf()
         if (changedIds) sceneDirty = true
+        invalidate()
+    }
+
+    /**
+     * Hide a single text item from this surface so the Compose-side
+     * `TextItemEditor` overlay can take over without a duplicate rasterized
+     * copy showing through. Pass `null` to restore normal rendering.
+     */
+    fun setEditingTextId(id: String?) {
+        if (editingTextId == id) return
+        editingTextId = id
+        sceneDirty = true
         invalidate()
     }
 
@@ -336,6 +377,13 @@ class DrawingSurface(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (paletteTool.isText) {
+            // Text tool: tap (stylus or finger) → create / edit text item.
+            // Two-finger pinch still works so the user can zoom while in
+            // text mode; pan is disabled because every move-with-one-finger
+            // would otherwise either pan or commit a stray tap.
+            return handleTextToolEvent(event)
+        }
         val stylusIdx = stylusPointerIndex(event)
         if (stylusIdx >= 0) {
             // Stylus + finger: ink wins, drop any in-flight viewport gesture
@@ -344,6 +392,66 @@ class DrawingSurface(context: Context) : View(context) {
             return handleStylusEvent(event, stylusIdx)
         }
         return handleViewportEvent(event)
+    }
+
+    private fun handleTextToolEvent(event: MotionEvent): Boolean {
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                textTapStartX = event.x
+                textTapStartY = event.y
+                textTapActive = true
+                gestureMode = GestureMode.NONE
+                true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // Second finger arrived — give up on the tap and switch to pinch.
+                textTapActive = false
+                if (event.pointerCount >= 2) {
+                    pinchLastDist = pointerDistance(event, 0, 1)
+                    gestureMode = GestureMode.PINCH
+                }
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (gestureMode == GestureMode.PINCH && event.pointerCount >= 2) {
+                    val newDist = pointerDistance(event, 0, 1)
+                    if (pinchLastDist > 1f && newDist > 1f) {
+                        val factor = newDist / pinchLastDist
+                        val focalX = (event.getX(0) + event.getX(1)) * 0.5f
+                        val focalY = (event.getY(0) + event.getY(1)) * 0.5f
+                        viewport.applyZoom(focalX, focalY, factor)
+                    }
+                    pinchLastDist = newDist
+                } else if (textTapActive) {
+                    val dx = event.x - textTapStartX
+                    val dy = event.y - textTapStartY
+                    if (hypot(dx, dy) > tapSlopPx) textTapActive = false
+                }
+                true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                // Drop back to a single pointer — but the tap is gone,
+                // because we never count a tap that started life as a pinch.
+                if (event.pointerCount - 1 == 1) gestureMode = GestureMode.NONE
+                true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (textTapActive && gestureMode == GestureMode.NONE) {
+                    val wx = viewport.screenToWorldX(event.x)
+                    val wy = viewport.screenToWorldY(event.y)
+                    textTapListener?.invoke(wx, wy)
+                }
+                textTapActive = false
+                gestureMode = GestureMode.NONE
+                true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                textTapActive = false
+                gestureMode = GestureMode.NONE
+                true
+            }
+            else -> false
+        }
     }
 
     private fun stylusPointerIndex(event: MotionEvent): Int {
@@ -724,17 +832,26 @@ class DrawingSurface(context: Context) : View(context) {
         canvas.translate(viewport.offsetX, viewport.offsetY)
         canvas.scale(viewport.scale, viewport.scale)
         for (item in committedItems) {
-            if (item.kind != STROKE_KIND) continue
             if (item.id in pendingErase) continue
             // Selected items are drawn live in onDraw so a Compose-side
             // transform gesture renders without re-rasterizing every frame.
             if (item.id in selectedIds) continue
-            val decoded = decode(item) ?: continue
-            StrokeRenderer.configureToolPaint(replayPaint, item.tool, item.colorArgb)
-            StrokeRenderer.drawStrokePath(
-                canvas, replayPaint, decoded.samples, decoded.count,
-                item.baseWidthPx, item.tool, scratchPath,
-            )
+            // Currently in-edit text item is hidden — the Compose editor
+            // owns the visual real estate.
+            if (item.id == editingTextId) continue
+            when (item.kind) {
+                STROKE_KIND -> {
+                    val decoded = decode(item) ?: continue
+                    StrokeRenderer.configureToolPaint(replayPaint, item.tool, item.colorArgb)
+                    StrokeRenderer.drawStrokePath(
+                        canvas, replayPaint, decoded.samples, decoded.count,
+                        item.baseWidthPx, item.tool, scratchPath,
+                    )
+                }
+                TextItemCodec.KIND -> {
+                    TextItemRenderer.draw(canvas, item, textScratchMatrix)
+                }
+            }
         }
         canvas.restore()
     }
@@ -757,15 +874,22 @@ class DrawingSurface(context: Context) : View(context) {
             canvas.concat(selectionAndroidMatrix)
         }
         for (item in committedItems) {
-            if (item.kind != STROKE_KIND) continue
             if (item.id !in selectedIds) continue
             if (item.id in pendingErase) continue
-            val decoded = decode(item) ?: continue
-            StrokeRenderer.configureToolPaint(replayPaint, item.tool, item.colorArgb)
-            StrokeRenderer.drawStrokePath(
-                canvas, replayPaint, decoded.samples, decoded.count,
-                item.baseWidthPx, item.tool, scratchPath,
-            )
+            if (item.id == editingTextId) continue
+            when (item.kind) {
+                STROKE_KIND -> {
+                    val decoded = decode(item) ?: continue
+                    StrokeRenderer.configureToolPaint(replayPaint, item.tool, item.colorArgb)
+                    StrokeRenderer.drawStrokePath(
+                        canvas, replayPaint, decoded.samples, decoded.count,
+                        item.baseWidthPx, item.tool, scratchPath,
+                    )
+                }
+                TextItemCodec.KIND -> {
+                    TextItemRenderer.draw(canvas, item, textScratchMatrix)
+                }
+            }
         }
         canvas.restore()
     }
@@ -828,10 +952,12 @@ fun DrawingSurfaceView(
     paletteState: ToolPaletteState,
     selectedIds: Set<String>,
     selectionMatrix: FloatArray,
+    editingTextId: String?,
     onStrokeCommitted: (NoteItem) -> Unit,
     onItemsErased: (List<String>) -> Unit,
     onLassoCompleted: (FloatArray) -> Unit,
     onSelectionShouldClear: () -> Unit,
+    onTextTap: (worldX: Float, worldY: Float) -> Unit,
     modifier: Modifier = Modifier,
     onViewportReady: (ViewportController) -> Unit = {},
 ) {
@@ -839,6 +965,7 @@ fun DrawingSurfaceView(
     val currentOnErase by rememberUpdatedState(onItemsErased)
     val currentOnLasso by rememberUpdatedState(onLassoCompleted)
     val currentOnSelectionClear by rememberUpdatedState(onSelectionShouldClear)
+    val currentOnTextTap by rememberUpdatedState(onTextTap)
     val currentOnViewportReady by rememberUpdatedState(onViewportReady)
     // Reading items.size during composition makes this composable observe the
     // SnapshotStateList: erases + future undo/redo refresh the surface
@@ -853,6 +980,7 @@ fun DrawingSurfaceView(
                 eraseListener = { ids -> currentOnErase(ids) }
                 lassoListener = { polygon -> currentOnLasso(polygon) }
                 selectionShouldClearListener = { currentOnSelectionClear() }
+                textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
                 currentOnViewportReady(viewport)
             }
         },
@@ -861,6 +989,7 @@ fun DrawingSurfaceView(
             view.eraseListener = { ids -> currentOnErase(ids) }
             view.lassoListener = { polygon -> currentOnLasso(polygon) }
             view.selectionShouldClearListener = { currentOnSelectionClear() }
+            view.textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
             view.backgroundStyle = backgroundStyle
             view.setToolConfig(
                 tool = paletteState.selected,
@@ -869,6 +998,7 @@ fun DrawingSurfaceView(
                 areaEraserRadiusPx = paletteState.areaEraserRadiusPx,
             )
             view.setSelection(selectedIds, selectionMatrix)
+            view.setEditingTextId(editingTextId)
             // Re-rasterize whenever the authoritative item list changes
             // (initial load, commit, erase). [itemsSignature] is read here so
             // Compose treats the lambda as dependent on it.
