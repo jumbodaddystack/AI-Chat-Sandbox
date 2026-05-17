@@ -183,6 +183,8 @@ fun NoteEditorScreen(
                     onCut = viewModel::cutSelection,
                     onCopy = viewModel::copySelection,
                     onPaste = viewModel::pasteFromClipboard,
+                    onAsk = viewModel::openAiSheetForSelection,
+                    onConvertToText = viewModel::launchConvertSelectionToText,
                     canPaste = viewModel.hasClipboardContent(),
                 )
                 val target = textEditTarget
@@ -212,6 +214,9 @@ fun NoteEditorScreen(
             onSubmit = viewModel::submitAiPrompt,
             onCancel = viewModel::cancelAiStreaming,
             onClose = viewModel::closeAiSheet,
+            onCannedPrompt = viewModel::submitCannedPrompt,
+            onClearScope = viewModel::clearAiSheetScope,
+            onInsertConvertResult = viewModel::insertConvertResultAsTextBox,
         )
       }
     }

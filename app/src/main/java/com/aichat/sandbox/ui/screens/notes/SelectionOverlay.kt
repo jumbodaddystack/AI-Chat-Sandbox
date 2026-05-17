@@ -58,8 +58,9 @@ import kotlin.math.max
  *  - Four corner handles for scale and one rotate handle above the top edge.
  *  - A central drag-to-translate hit area that consumes pointer events so
  *    they don't fall through to the surface as stray strokes.
- *  - A floating action menu beneath the bounds with Duplicate / Delete /
- *    Cut / Copy / Paste / Ask (disabled) / Convert-to-text (disabled).
+ *  - A floating action menu beneath the bounds with Ask / Convert to text /
+ *    Duplicate / Delete / Cut / Copy / Paste. The first two were rendered
+ *    disabled in 1.8 and got wired in sub-phase 2.7.
  *
  * Touches outside any of these regions fall through to the AndroidView so
  * the user can start a fresh stroke, which clears the selection via the
@@ -82,6 +83,8 @@ fun SelectionOverlay(
     onCut: () -> Unit,
     onCopy: () -> Unit,
     onPaste: () -> Unit,
+    onAsk: () -> Unit,
+    onConvertToText: () -> Unit,
     canPaste: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -236,6 +239,8 @@ fun SelectionOverlay(
         ) {
             FloatingSelectionMenu(
                 canPaste = canPaste,
+                onAsk = onAsk,
+                onConvertToText = onConvertToText,
                 onDuplicate = onDuplicate,
                 onDelete = onDelete,
                 onCut = onCut,
@@ -346,6 +351,8 @@ private fun RotateHandle(
 @Composable
 private fun FloatingSelectionMenu(
     canPaste: Boolean,
+    onAsk: () -> Unit,
+    onConvertToText: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit,
     onCut: () -> Unit,
@@ -362,8 +369,12 @@ private fun FloatingSelectionMenu(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            MenuButton(icon = Icons.Filled.QuestionAnswer, label = "Ask", enabled = false) {}
-            MenuButton(icon = Icons.Filled.TextFields, label = "To text", enabled = false) {}
+            MenuButton(icon = Icons.Filled.QuestionAnswer, label = "Ask", onClick = onAsk)
+            MenuButton(
+                icon = Icons.Filled.TextFields,
+                label = "To text",
+                onClick = onConvertToText,
+            )
             MenuButton(icon = Icons.Filled.FileCopy, label = "Duplicate", onClick = onDuplicate)
             MenuButton(icon = Icons.Filled.Delete, label = "Delete", onClick = onDelete)
             MenuButton(icon = Icons.Filled.ContentCut, label = "Cut", onClick = onCut)
