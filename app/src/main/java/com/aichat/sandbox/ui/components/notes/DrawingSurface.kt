@@ -11,10 +11,7 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.input.motionprediction.MotionEventPredictor
@@ -23,7 +20,8 @@ import kotlin.math.hypot
 
 /**
  * Front-buffered ink surface (sub-phase 1.4) + infinite viewport & background
- * layer (sub-phase 1.5).
+ * layer (sub-phase 1.5) + tool palette / per-tool rendering / erasers /
+ * side-button mapping (sub-phase 1.6).
  *
  * Implementation notes:
  *
@@ -44,6 +42,11 @@ import kotlin.math.hypot
  *
  *  - Touch routing: any active stylus pointer wins (ink mode). Otherwise
  *    1-finger pan, 2-finger pinch.
+ *
+ *  - The S-Pen side button is captured at ACTION_DOWN — while held, the
+ *    in-progress stroke is treated as an eraser regardless of the palette's
+ *    selected tool. This matches how every other note app handles the
+ *    barrel-button toggle.
  */
 class DrawingSurface(context: Context) : View(context) {
 
@@ -80,9 +83,22 @@ class DrawingSurface(context: Context) : View(context) {
     private var hoverY: Float = 0f
     private var hoverVisible: Boolean = false
 
-    private var activeTool: String = STROKE_TOOL_PEN
-    private var baseWidthPx: Float = DEFAULT_STROKE_WIDTH_PX
+    // Palette-driven config; set by [DrawingSurfaceView] every recomposition.
+    private var paletteTool: Tool = Tool.PEN
     private var inkColor: Int = DEFAULT_INK_COLOR
+    private var baseWidthPx: Float = DEFAULT_STROKE_WIDTH_PX
+    private var areaEraserRadiusPx: Float = 24f
+
+    /** Tool actually used for the in-flight stroke (palette tool or side-button override). */
+    private var strokeTool: Tool = Tool.PEN
+    private var strokeColor: Int = DEFAULT_INK_COLOR
+    private var strokeWidthPx: Float = DEFAULT_STROKE_WIDTH_PX
+
+    /** Strokes hit by the current eraser swipe; filtered out of the scene rasterization. */
+    private val pendingErase: HashSet<String> = HashSet()
+
+    /** Decoded sample cache keyed by item id — re-decoding every sample during an erase is wasteful. */
+    private val decodedCache: HashMap<String, DecodedStroke> = HashMap()
 
     private val livePaint = Paint().apply {
         style = Paint.Style.STROKE
@@ -98,12 +114,21 @@ class DrawingSurface(context: Context) : View(context) {
         color = HOVER_COLOR
         isAntiAlias = true
     }
+    private val eraserCursorPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        color = ERASER_CURSOR_COLOR
+        strokeWidth = 1.5f
+        isAntiAlias = true
+    }
     private val scratchPath = Path()
 
     private var motionPredictor: MotionEventPredictor? = null
 
     /** Invoked once per committed stroke. Caller assigns noteId / zIndex. */
     var strokeListener: ((NoteItem) -> Unit)? = null
+
+    /** Invoked at the end of an eraser swipe with all matched item ids. */
+    var eraseListener: ((List<String>) -> Unit)? = null
 
     // Viewport gesture state — only used for finger input (stylus has its own branch).
     private enum class GestureMode { NONE, PAN, PINCH }
@@ -122,10 +147,40 @@ class DrawingSurface(context: Context) : View(context) {
         motionPredictor = null
     }
 
-    /** Replace the committed-item set and re-rasterize the scene. */
+    /**
+     * Replace the committed-item set and re-rasterize the scene. Items are
+     * sorted by `zIndex` so highlighter strokes (negative range) render
+     * under pen / pencil strokes (positive range) regardless of the order
+     * the caller hands them over.
+     */
     fun replayItems(items: List<NoteItem>) {
-        committedItems = items.toList()
+        val sorted = items.sortedBy { it.zIndex }
+        committedItems = sorted
+        // Re-decode lazily; drop entries no longer present so the cache
+        // doesn't grow without bound across erase/undo cycles.
+        if (decodedCache.isNotEmpty()) {
+            val keep = sorted.mapTo(HashSet(sorted.size)) { it.id }
+            decodedCache.keys.retainAll(keep)
+        }
+        pendingErase.clear()
         sceneDirty = true
+        invalidate()
+    }
+
+    /**
+     * Apply the palette's current selection. Live strokes already in flight
+     * are unaffected — the change takes effect on the next ACTION_DOWN.
+     */
+    fun setToolConfig(
+        tool: Tool,
+        colorArgb: Int,
+        widthPx: Float,
+        areaEraserRadiusPx: Float,
+    ) {
+        paletteTool = tool
+        inkColor = colorArgb
+        baseWidthPx = widthPx
+        this.areaEraserRadiusPx = areaEraserRadiusPx
         invalidate()
     }
 
@@ -153,33 +208,41 @@ class DrawingSurface(context: Context) : View(context) {
         }
         sceneBitmap?.let { canvas.drawBitmap(it, 0f, 0f, null) }
 
-        // Live + predicted strokes are stored in world coords; transform on draw
-        // so the in-progress stroke moves with pan/zoom alongside the scene.
-        if (liveSampleCount > 0 || predictedSampleCount > 0) {
+        if (strokeTool.isInk && (liveSampleCount > 0 || predictedSampleCount > 0)) {
             canvas.save()
             canvas.translate(viewport.offsetX, viewport.offsetY)
             canvas.scale(viewport.scale, viewport.scale)
             if (liveSampleCount > 0) {
-                livePaint.color = inkColor
+                StrokeRenderer.configureToolPaint(livePaint, strokeTool.id, strokeColor)
                 StrokeRenderer.drawStrokePath(
                     canvas, livePaint, liveSamples, liveSampleCount,
-                    baseWidthPx, activeTool, scratchPath,
+                    strokeWidthPx, strokeTool.id, scratchPath,
                 )
             }
             val predicted = predictedSamples
             if (predicted != null && predictedSampleCount > 0) {
-                predictedPaint.color = inkColor
-                predictedPaint.alpha = PREDICTED_ALPHA
+                StrokeRenderer.configureToolPaint(predictedPaint, strokeTool.id, strokeColor)
+                // Predicted tail fades in to mask overshoot at direction changes.
+                predictedPaint.alpha =
+                    (predictedPaint.alpha * PREDICTED_ALPHA_FRACTION).toInt().coerceIn(0, 255)
                 StrokeRenderer.drawStrokePath(
                     canvas, predictedPaint, predicted, predictedSampleCount,
-                    baseWidthPx, activeTool, scratchPath,
+                    strokeWidthPx, strokeTool.id, scratchPath,
                 )
             }
             canvas.restore()
         }
 
         if (hoverVisible) {
-            canvas.drawCircle(hoverX, hoverY, HOVER_RADIUS_PX, hoverPaint)
+            if (paletteTool.isEraser) {
+                // The preview circle uses the palette tool (not strokeTool) so
+                // the user sees what they're about to do before touching down.
+                val r = if (paletteTool == Tool.ERASER_AREA) areaEraserRadiusPx
+                else ToolPaletteState.STROKE_ERASER_RADIUS_PX
+                canvas.drawCircle(hoverX, hoverY, r, eraserCursorPaint)
+            } else {
+                canvas.drawCircle(hoverX, hoverY, HOVER_RADIUS_PX, hoverPaint)
+            }
         }
     }
 
@@ -228,11 +291,18 @@ class DrawingSurface(context: Context) : View(context) {
     private fun handleStylusEvent(event: MotionEvent, idx: Int): Boolean {
         return when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // Side button held at DOWN time forces eraser for this stroke
+                // regardless of the palette's selected tool.
+                strokeTool = resolveStrokeTool(event)
+                strokeColor = inkColor
+                strokeWidthPx = baseWidthPx
                 liveSampleCount = 0
                 clearPredicted()
                 hoverVisible = false
+                pendingErase.clear()
                 appendStylusSample(event, idx)
                 motionPredictor?.record(event)
+                if (strokeTool.isEraser) eraseAtLastSample()
                 invalidate()
                 true
             }
@@ -247,25 +317,41 @@ class DrawingSurface(context: Context) : View(context) {
                         event.getHistoricalPressure(idx, h),
                         event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, idx, h),
                     )
+                    if (strokeTool.isEraser) eraseAtLastSample()
                 }
                 appendStylusSample(event, idx)
-                updatePredictedFromPredictor()
+                if (strokeTool.isEraser) eraseAtLastSample()
+                if (strokeTool.isInk) updatePredictedFromPredictor() else clearPredicted()
                 invalidate()
                 true
             }
             MotionEvent.ACTION_UP -> {
                 clearPredicted()
-                commitLiveStroke()
+                if (strokeTool.isEraser) commitEraseStroke() else commitLiveStroke()
                 true
             }
             MotionEvent.ACTION_CANCEL -> {
                 liveSampleCount = 0
                 clearPredicted()
+                if (strokeTool.isEraser && pendingErase.isNotEmpty()) {
+                    // Undo the visual erase — items return to the scene.
+                    pendingErase.clear()
+                    sceneDirty = true
+                }
                 invalidate()
                 true
             }
             else -> false
         }
+    }
+
+    /**
+     * Determine the tool that should govern this stroke. Side-button held →
+     * stroke-eraser override; otherwise the palette's current selection.
+     */
+    private fun resolveStrokeTool(event: MotionEvent): Tool {
+        val buttonHeld = (event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
+        return if (buttonHeld) Tool.ERASER_STROKE else paletteTool
     }
 
     private fun appendStylusSample(event: MotionEvent, idx: Int) {
@@ -418,11 +504,14 @@ class DrawingSurface(context: Context) : View(context) {
         System.arraycopy(liveSamples, 0, packed, 0, packed.size)
         val item = NoteItem(
             noteId = "",
+            // VM rewrites this with a tool-aware zIndex (highlighter sits in a
+            // negative range so it always renders under ink); we still append
+            // here for instant feedback before the next update() lands.
             zIndex = 0,
             kind = STROKE_KIND,
-            tool = activeTool,
-            colorArgb = inkColor,
-            baseWidthPx = baseWidthPx,
+            tool = strokeTool.id,
+            colorArgb = strokeColor,
+            baseWidthPx = strokeWidthPx,
             payload = StrokeCodec.encode(packed),
         )
         committedItems = committedItems + item
@@ -430,6 +519,71 @@ class DrawingSurface(context: Context) : View(context) {
         strokeListener?.invoke(item)
         liveSampleCount = 0
         invalidate()
+    }
+
+    private fun commitEraseStroke() {
+        val matched = pendingErase.toList()
+        liveSampleCount = 0
+        if (matched.isEmpty()) {
+            invalidate()
+            return
+        }
+        // Remove from the local mirror so re-rasterizing skips them. The
+        // ViewModel will hand back the authoritative item list shortly, but
+        // we don't want a flash of un-erased ink in the meantime.
+        val matchedSet = matched.toHashSet()
+        committedItems = committedItems.filterNot { it.id in matchedSet }
+        matched.forEach { decodedCache.remove(it) }
+        pendingErase.clear()
+        sceneDirty = true
+        eraseListener?.invoke(matched)
+        invalidate()
+    }
+
+    /**
+     * Hit-test the most recently appended sample against every committed
+     * stroke; add matches to [pendingErase] and mark the scene dirty so the
+     * user sees the strokes vanish under the eraser tip.
+     */
+    private fun eraseAtLastSample() {
+        if (liveSampleCount < 1) return
+        val base = (liveSampleCount - 1) * StrokeCodec.FLOATS_PER_SAMPLE
+        val px = liveSamples[base]
+        val py = liveSamples[base + 1]
+        val radius = currentEraserRadiusWorld()
+        var changed = false
+        for (item in committedItems) {
+            if (item.kind != STROKE_KIND) continue
+            if (item.id in pendingErase) continue
+            val decoded = decode(item) ?: continue
+            if (!HitTest.bboxContainsPoint(decoded.bounds, px, py, radius)) continue
+            if (HitTest.pointWithinStroke(decoded.samples, decoded.count, px, py, radius)) {
+                pendingErase.add(item.id)
+                changed = true
+            }
+        }
+        if (changed) sceneDirty = true
+    }
+
+    private fun currentEraserRadiusScreenPx(): Float = when (strokeTool) {
+        Tool.ERASER_AREA -> areaEraserRadiusPx
+        else -> ToolPaletteState.STROKE_ERASER_RADIUS_PX
+    }
+
+    /** Eraser radius in world units (input samples are world-coord, so we divide by scale). */
+    private fun currentEraserRadiusWorld(): Float =
+        currentEraserRadiusScreenPx() / viewport.scale.coerceAtLeast(MIN_DIV_SCALE)
+
+    private fun decode(item: NoteItem): DecodedStroke? {
+        val cached = decodedCache[item.id]
+        if (cached != null) return cached
+        val samples = StrokeCodec.decode(item.payload)
+        val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+        if (count < 1) return null
+        val bounds = HitTest.boundsOf(samples, count) ?: return null
+        val fresh = DecodedStroke(samples, count, bounds)
+        decodedCache[item.id] = fresh
+        return fresh
     }
 
     /** Redraw the scene bitmap from [committedItems] under the current viewport. */
@@ -442,17 +596,23 @@ class DrawingSurface(context: Context) : View(context) {
         canvas.scale(viewport.scale, viewport.scale)
         for (item in committedItems) {
             if (item.kind != STROKE_KIND) continue
-            val samples = StrokeCodec.decode(item.payload)
-            val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
-            if (count < 1) continue
-            replayPaint.color = item.colorArgb
+            if (item.id in pendingErase) continue
+            val decoded = decode(item) ?: continue
+            StrokeRenderer.configureToolPaint(replayPaint, item.tool, item.colorArgb)
             StrokeRenderer.drawStrokePath(
-                canvas, replayPaint, samples, count,
+                canvas, replayPaint, decoded.samples, decoded.count,
                 item.baseWidthPx, item.tool, scratchPath,
             )
         }
         canvas.restore()
     }
+
+    private data class DecodedStroke(
+        val samples: FloatArray,
+        val count: Int,
+        /** `[minX, minY, maxX, maxY]` in world units. */
+        val bounds: FloatArray,
+    )
 
     companion object {
         const val DEFAULT_STROKE_WIDTH_PX = 4f
@@ -462,9 +622,13 @@ class DrawingSurface(context: Context) : View(context) {
         private const val INITIAL_SAMPLE_CAPACITY = 128
         // 0.4 alpha — predicted tail "fades in" when real samples arrive.
         private const val PREDICTED_ALPHA = 102
+        private const val PREDICTED_ALPHA_FRACTION = 0.4f
         private const val HOVER_RADIUS_PX = 4f
         // Translucent grey nib cursor.
         private const val HOVER_COLOR = 0x66000000
+        // Outlined-circle preview for the eraser; matches the hit radius.
+        private const val ERASER_CURSOR_COLOR = 0x88FF3030.toInt()
+        private const val MIN_DIV_SCALE = 0.01f
     }
 }
 
@@ -472,26 +636,41 @@ class DrawingSurface(context: Context) : View(context) {
 fun DrawingSurfaceView(
     items: List<NoteItem>,
     backgroundStyle: String,
+    paletteState: ToolPaletteState,
     onStrokeCommitted: (NoteItem) -> Unit,
+    onItemsErased: (List<String>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val currentOnCommit by rememberUpdatedState(onStrokeCommitted)
-    var replayed by remember { mutableStateOf(false) }
+    val currentOnErase by rememberUpdatedState(onItemsErased)
+    // Reading items.size during composition makes this composable observe the
+    // SnapshotStateList: erases + future undo/redo refresh the surface
+    // without us having to thread a dedicated "version" signal through.
+    val itemsSignature = items.size
 
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
             DrawingSurface(ctx).apply {
                 strokeListener = { item -> currentOnCommit(item) }
+                eraseListener = { ids -> currentOnErase(ids) }
             }
         },
         update = { view ->
             view.strokeListener = { item -> currentOnCommit(item) }
+            view.eraseListener = { ids -> currentOnErase(ids) }
             view.backgroundStyle = backgroundStyle
-            if (!replayed && items.isNotEmpty()) {
-                view.replayItems(items.toList())
-                replayed = true
-            }
+            view.setToolConfig(
+                tool = paletteState.selected,
+                colorArgb = paletteState.activeInkColor(),
+                widthPx = paletteState.activeInkWidth(),
+                areaEraserRadiusPx = paletteState.areaEraserRadiusPx,
+            )
+            // Re-rasterize whenever the authoritative item list changes
+            // (initial load, commit, erase). [itemsSignature] is read here so
+            // Compose treats the lambda as dependent on it.
+            @Suppress("UNUSED_EXPRESSION") itemsSignature
+            view.replayItems(items)
         },
     )
 }

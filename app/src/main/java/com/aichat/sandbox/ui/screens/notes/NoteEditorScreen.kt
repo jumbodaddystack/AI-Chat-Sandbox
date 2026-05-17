@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichat.sandbox.ui.components.notes.BackgroundLayer
 import com.aichat.sandbox.ui.components.notes.DrawingSurfaceView
+import com.aichat.sandbox.ui.components.notes.ToolPalette
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -89,18 +90,27 @@ fun NoteEditorScreen(
             )
         }
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .background(Color.White),
         ) {
-            DrawingSurfaceView(
-                items = viewModel.items,
-                backgroundStyle = note.backgroundStyle,
-                onStrokeCommitted = viewModel::addItem,
-                modifier = Modifier.fillMaxSize(),
-            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                DrawingSurfaceView(
+                    items = viewModel.items,
+                    backgroundStyle = note.backgroundStyle,
+                    paletteState = viewModel.palette,
+                    onStrokeCommitted = viewModel::addItem,
+                    onItemsErased = viewModel::removeItems,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            ToolPalette(state = viewModel.palette)
         }
     }
 }
