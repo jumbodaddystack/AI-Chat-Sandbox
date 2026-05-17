@@ -19,39 +19,60 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.input.motionprediction.MotionEventPredictor
 import com.aichat.sandbox.data.model.NoteItem
+import kotlin.math.hypot
 
 /**
- * Front-buffered ink surface (sub-phase 1.4).
+ * Front-buffered ink surface (sub-phase 1.4) + infinite viewport & background
+ * layer (sub-phase 1.5).
  *
  * Implementation notes:
  *
- *  - We stay on a plain [View] base class rather than the SurfaceView +
+ *  - Plain [View] base class rather than the SurfaceView +
  *    `CanvasFrontBufferedRenderer` path mentioned as the primary option in
  *    `STYLUS_NOTES_PHASE_1.md` sub-phase 1.4. The front-buffer library
- *    (`androidx.graphics:graphics-core`) is still RC and its integration
- *    with `AndroidView` is fiddly. Latency reduction here comes from:
- *      • Variable-width per-segment rendering of pressure + tilt
- *      • Quadratic-Bezier smoothing between sample midpoints
- *      • One-frame look-ahead via [MotionEventPredictor]
- *      • `historySize` iteration so we never drop S-Pen samples
- *    TODO(post-1.4): revisit SurfaceView + CanvasFrontBufferedRenderer
- *    once graphics-core ships stable and we can measure the win on device.
+ *    (`androidx.graphics:graphics-core`) is still RC and its integration with
+ *    `AndroidView` is fiddly. Latency reduction comes from variable-width
+ *    per-segment rendering, quadratic-Bezier smoothing between sample
+ *    midpoints, one-frame look-ahead via [MotionEventPredictor], and history
+ *    iteration so we never drop S-Pen samples.
  *
- *  - Stylus-only ink (palm rejection); hover events produce a small nib cursor.
- *  - Pressure and tilt are stored on every sample so the codec format
- *    established in 1.3 is preserved — no schema bump.
+ *  - Stroke samples are stored in **world** coordinates. The viewport
+ *    transform is re-applied on every render. Committed strokes are
+ *    rasterized to a screen-space scene bitmap on viewport changes (and on
+ *    each commit); the live + predicted strokes are drawn directly each
+ *    frame under `canvas.translate + scale`.
+ *
+ *  - Touch routing: any active stylus pointer wins (ink mode). Otherwise
+ *    1-finger pan, 2-finger pinch.
  */
 class DrawingSurface(context: Context) : View(context) {
 
+    /** Pan / zoom state. */
+    val viewport: ViewportController = ViewportController().also {
+        it.onChanged = ::onViewportChanged
+    }
+
+    /** Per-note background pattern (plain / dot / line / graph). */
+    var backgroundStyle: String = BackgroundLayer.STYLE_PLAIN
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+
     private var sceneBitmap: Bitmap? = null
     private var sceneCanvas: Canvas? = null
+    private var sceneDirty = true
 
-    /** Active live-stroke samples packed as `[x, y, pressure, tilt]` per sample. */
+    /** Committed strokes, kept on the view so we can re-rasterize on viewport changes. */
+    private var committedItems: List<NoteItem> = emptyList()
+
+    /** Active live-stroke samples packed as `[x, y, pressure, tilt]` per sample, world coords. */
     private var liveSamples: FloatArray =
         FloatArray(INITIAL_SAMPLE_CAPACITY * StrokeCodec.FLOATS_PER_SAMPLE)
     private var liveSampleCount: Int = 0
 
-    /** Look-ahead samples; re-derived every move event, drawn with reduced alpha. */
+    /** Look-ahead samples (world coords); re-derived every move event. */
     private var predictedSamples: FloatArray? = null
     private var predictedSampleCount: Int = 0
 
@@ -81,10 +102,15 @@ class DrawingSurface(context: Context) : View(context) {
 
     private var motionPredictor: MotionEventPredictor? = null
 
-    /** Invoked once per committed stroke. Caller is responsible for noteId / zIndex. */
+    /** Invoked once per committed stroke. Caller assigns noteId / zIndex. */
     var strokeListener: ((NoteItem) -> Unit)? = null
 
-    private var pendingReplay: List<NoteItem>? = null
+    // Viewport gesture state — only used for finger input (stylus has its own branch).
+    private enum class GestureMode { NONE, PAN, PINCH }
+    private var gestureMode: GestureMode = GestureMode.NONE
+    private var panLastX: Float = 0f
+    private var panLastY: Float = 0f
+    private var pinchLastDist: Float = 0f
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -96,14 +122,10 @@ class DrawingSurface(context: Context) : View(context) {
         motionPredictor = null
     }
 
-    /** Render the given items onto the scene bitmap, replacing any existing scene contents. */
+    /** Replace the committed-item set and re-rasterize the scene. */
     fun replayItems(items: List<NoteItem>) {
-        val canvas = sceneCanvas
-        if (canvas == null) {
-            pendingReplay = items
-            return
-        }
-        drawItemsTo(canvas, items)
+        committedItems = items.toList()
+        sceneDirty = true
         invalidate()
     }
 
@@ -111,46 +133,58 @@ class DrawingSurface(context: Context) : View(context) {
         if (w <= 0 || h <= 0) return
         val previous = sceneBitmap
         val next = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val nextCanvas = Canvas(next)
-        if (previous != null) {
-            nextCanvas.drawBitmap(previous, 0f, 0f, null)
-            previous.recycle()
-        }
         sceneBitmap = next
-        sceneCanvas = nextCanvas
-        pendingReplay?.let {
-            drawItemsTo(nextCanvas, it)
-            pendingReplay = null
-            invalidate()
-        }
+        sceneCanvas = Canvas(next)
+        previous?.recycle()
+        sceneDirty = true
+        invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+
+        // Background runs in screen space so stroke widths stay perceptually
+        // constant across zoom levels; the function handles paper fill too.
+        BackgroundLayer.draw(canvas, viewport, backgroundStyle, width, height)
+
+        if (sceneDirty) {
+            rasterizeScene()
+            sceneDirty = false
+        }
         sceneBitmap?.let { canvas.drawBitmap(it, 0f, 0f, null) }
-        if (liveSampleCount > 0) {
-            livePaint.color = inkColor
-            StrokeRenderer.drawStrokePath(
-                canvas, livePaint, liveSamples, liveSampleCount,
-                baseWidthPx, activeTool, scratchPath,
-            )
+
+        // Live + predicted strokes are stored in world coords; transform on draw
+        // so the in-progress stroke moves with pan/zoom alongside the scene.
+        if (liveSampleCount > 0 || predictedSampleCount > 0) {
+            canvas.save()
+            canvas.translate(viewport.offsetX, viewport.offsetY)
+            canvas.scale(viewport.scale, viewport.scale)
+            if (liveSampleCount > 0) {
+                livePaint.color = inkColor
+                StrokeRenderer.drawStrokePath(
+                    canvas, livePaint, liveSamples, liveSampleCount,
+                    baseWidthPx, activeTool, scratchPath,
+                )
+            }
+            val predicted = predictedSamples
+            if (predicted != null && predictedSampleCount > 0) {
+                predictedPaint.color = inkColor
+                predictedPaint.alpha = PREDICTED_ALPHA
+                StrokeRenderer.drawStrokePath(
+                    canvas, predictedPaint, predicted, predictedSampleCount,
+                    baseWidthPx, activeTool, scratchPath,
+                )
+            }
+            canvas.restore()
         }
-        val predicted = predictedSamples
-        if (predicted != null && predictedSampleCount > 0) {
-            predictedPaint.color = inkColor
-            predictedPaint.alpha = PREDICTED_ALPHA
-            StrokeRenderer.drawStrokePath(
-                canvas, predictedPaint, predicted, predictedSampleCount,
-                baseWidthPx, activeTool, scratchPath,
-            )
-        }
+
         if (hoverVisible) {
             canvas.drawCircle(hoverX, hoverY, HOVER_RADIUS_PX, hoverPaint)
         }
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
-        // Hover events drive a small nib cursor; stylus only.
+        // Hover cursor follows the stylus only.
         if (event.getToolType(0) != MotionEvent.TOOL_TYPE_STYLUS) {
             return super.onHoverEvent(event)
         }
@@ -174,15 +208,30 @@ class DrawingSurface(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // Palm rejection: only stylus pointers contribute to ink.
-        if (event.getToolType(0) != MotionEvent.TOOL_TYPE_STYLUS) return false
+        val stylusIdx = stylusPointerIndex(event)
+        if (stylusIdx >= 0) {
+            // Stylus + finger: ink wins, drop any in-flight viewport gesture
+            // so a stray finger doesn't pan mid-stroke.
+            gestureMode = GestureMode.NONE
+            return handleStylusEvent(event, stylusIdx)
+        }
+        return handleViewportEvent(event)
+    }
 
+    private fun stylusPointerIndex(event: MotionEvent): Int {
+        for (i in 0 until event.pointerCount) {
+            if (event.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS) return i
+        }
+        return -1
+    }
+
+    private fun handleStylusEvent(event: MotionEvent, idx: Int): Boolean {
         return when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 liveSampleCount = 0
                 clearPredicted()
                 hoverVisible = false
-                appendLiveSample(event.x, event.y, event.pressure, tiltOf(event))
+                appendStylusSample(event, idx)
                 motionPredictor?.record(event)
                 invalidate()
                 true
@@ -193,13 +242,13 @@ class DrawingSurface(context: Context) : View(context) {
                 // avoids dropped samples and jagged segments.
                 for (h in 0 until event.historySize) {
                     appendLiveSample(
-                        event.getHistoricalX(h),
-                        event.getHistoricalY(h),
-                        event.getHistoricalPressure(h),
-                        historicalTilt(event, h),
+                        viewport.screenToWorldX(event.getHistoricalX(idx, h)),
+                        viewport.screenToWorldY(event.getHistoricalY(idx, h)),
+                        event.getHistoricalPressure(idx, h),
+                        event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, idx, h),
                     )
                 }
-                appendLiveSample(event.x, event.y, event.pressure, tiltOf(event))
+                appendStylusSample(event, idx)
                 updatePredictedFromPredictor()
                 invalidate()
                 true
@@ -217,6 +266,82 @@ class DrawingSurface(context: Context) : View(context) {
             }
             else -> false
         }
+    }
+
+    private fun appendStylusSample(event: MotionEvent, idx: Int) {
+        appendLiveSample(
+            viewport.screenToWorldX(event.getX(idx)),
+            viewport.screenToWorldY(event.getY(idx)),
+            event.getPressure(idx),
+            event.getAxisValue(MotionEvent.AXIS_TILT, idx),
+        )
+    }
+
+    private fun handleViewportEvent(event: MotionEvent): Boolean {
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                panLastX = event.x
+                panLastY = event.y
+                gestureMode = GestureMode.PAN
+                true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (event.pointerCount >= 2) {
+                    pinchLastDist = pointerDistance(event, 0, 1)
+                    gestureMode = GestureMode.PINCH
+                }
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                when (gestureMode) {
+                    GestureMode.PAN -> {
+                        val dx = event.x - panLastX
+                        val dy = event.y - panLastY
+                        panLastX = event.x
+                        panLastY = event.y
+                        if (dx != 0f || dy != 0f) viewport.applyPan(dx, dy)
+                    }
+                    GestureMode.PINCH -> {
+                        if (event.pointerCount >= 2) {
+                            val newDist = pointerDistance(event, 0, 1)
+                            if (pinchLastDist > 1f && newDist > 1f) {
+                                val factor = newDist / pinchLastDist
+                                val focalX = (event.getX(0) + event.getX(1)) * 0.5f
+                                val focalY = (event.getY(0) + event.getY(1)) * 0.5f
+                                viewport.applyZoom(focalX, focalY, factor)
+                            }
+                            pinchLastDist = newDist
+                        }
+                    }
+                    GestureMode.NONE -> Unit
+                }
+                true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                // Stepping back from pinch to pan: anchor on the remaining pointer.
+                val remaining = event.pointerCount - 1
+                if (remaining == 1) {
+                    val keepIdx = if (event.actionIndex == 0) 1 else 0
+                    panLastX = event.getX(keepIdx)
+                    panLastY = event.getY(keepIdx)
+                    gestureMode = GestureMode.PAN
+                }
+                true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                gestureMode = GestureMode.NONE
+                true
+            }
+            else -> false
+        }
+    }
+
+    private fun pointerDistance(event: MotionEvent, a: Int, b: Int): Float =
+        hypot(event.getX(a) - event.getX(b), event.getY(a) - event.getY(b))
+
+    private fun onViewportChanged() {
+        sceneDirty = true
+        invalidate()
     }
 
     private fun appendLiveSample(x: Float, y: Float, pressure: Float, tilt: Float) {
@@ -248,8 +373,8 @@ class DrawingSurface(context: Context) : View(context) {
                 clearPredicted()
                 return
             }
-            // Anchor predicted samples on the last real sample so the visible
-            // tail extends seamlessly from the actual nib position.
+            // Predicted events arrive in screen coords; convert to world so
+            // they line up with the live samples under the viewport transform.
             val anchorIdx = (liveSampleCount - 1) * StrokeCodec.FLOATS_PER_SAMPLE
             val total = 1 + predicted.historySize + 1
             val needed = total * StrokeCodec.FLOATS_PER_SAMPLE
@@ -263,16 +388,16 @@ class DrawingSurface(context: Context) : View(context) {
 
             var dst = StrokeCodec.FLOATS_PER_SAMPLE
             for (h in 0 until predicted.historySize) {
-                buf[dst] = predicted.getHistoricalX(h)
-                buf[dst + 1] = predicted.getHistoricalY(h)
+                buf[dst] = viewport.screenToWorldX(predicted.getHistoricalX(h))
+                buf[dst + 1] = viewport.screenToWorldY(predicted.getHistoricalY(h))
                 buf[dst + 2] = predicted.getHistoricalPressure(h)
-                buf[dst + 3] = historicalTilt(predicted, h)
+                buf[dst + 3] = predicted.getHistoricalAxisValue(MotionEvent.AXIS_TILT, h)
                 dst += StrokeCodec.FLOATS_PER_SAMPLE
             }
-            buf[dst] = predicted.x
-            buf[dst + 1] = predicted.y
+            buf[dst] = viewport.screenToWorldX(predicted.x)
+            buf[dst + 1] = viewport.screenToWorldY(predicted.y)
             buf[dst + 2] = predicted.pressure
-            buf[dst + 3] = tiltOf(predicted)
+            buf[dst + 3] = predicted.getAxisValue(MotionEvent.AXIS_TILT)
 
             predictedSampleCount = total
         } finally {
@@ -300,22 +425,22 @@ class DrawingSurface(context: Context) : View(context) {
             baseWidthPx = baseWidthPx,
             payload = StrokeCodec.encode(packed),
         )
-        // Blit the live stroke onto the persistent scene layer.
-        sceneCanvas?.let { c ->
-            replayPaint.color = inkColor
-            StrokeRenderer.drawStrokePath(
-                c, replayPaint, liveSamples, liveSampleCount,
-                baseWidthPx, activeTool, scratchPath,
-            )
-        }
+        committedItems = committedItems + item
+        sceneDirty = true
         strokeListener?.invoke(item)
         liveSampleCount = 0
         invalidate()
     }
 
-    private fun drawItemsTo(canvas: Canvas, items: List<NoteItem>) {
+    /** Redraw the scene bitmap from [committedItems] under the current viewport. */
+    private fun rasterizeScene() {
+        val canvas = sceneCanvas ?: return
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-        for (item in items) {
+        if (committedItems.isEmpty()) return
+        canvas.save()
+        canvas.translate(viewport.offsetX, viewport.offsetY)
+        canvas.scale(viewport.scale, viewport.scale)
+        for (item in committedItems) {
             if (item.kind != STROKE_KIND) continue
             val samples = StrokeCodec.decode(item.payload)
             val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
@@ -326,13 +451,8 @@ class DrawingSurface(context: Context) : View(context) {
                 item.baseWidthPx, item.tool, scratchPath,
             )
         }
+        canvas.restore()
     }
-
-    private fun tiltOf(event: MotionEvent): Float =
-        event.getAxisValue(MotionEvent.AXIS_TILT)
-
-    private fun historicalTilt(event: MotionEvent, h: Int): Float =
-        event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, h)
 
     companion object {
         const val DEFAULT_STROKE_WIDTH_PX = 4f
@@ -351,6 +471,7 @@ class DrawingSurface(context: Context) : View(context) {
 @Composable
 fun DrawingSurfaceView(
     items: List<NoteItem>,
+    backgroundStyle: String,
     onStrokeCommitted: (NoteItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -366,6 +487,7 @@ fun DrawingSurfaceView(
         },
         update = { view ->
             view.strokeListener = { item -> currentOnCommit(item) }
+            view.backgroundStyle = backgroundStyle
             if (!replayed && items.isNotEmpty()) {
                 view.replayItems(items.toList())
                 replayed = true
