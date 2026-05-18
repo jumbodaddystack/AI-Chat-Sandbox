@@ -154,6 +154,49 @@ sealed interface EditorAction {
     }
 
     /**
+     * Sub-phase 7.4 — atomic AI edit: a batch of additions, removals, and
+     * before/after pairs committed as a single undo entry.
+     *
+     * `applyTo` replays added/removed/modified in deterministic order
+     * (modify-by-id-then-remove-then-add), and `invert()` produces the
+     * exact inverse so Ctrl-Z restores every item byte-identical. The
+     * before/after pairs preserve full [NoteItem] (including payload bytes)
+     * so even payload-changing ops like Smooth round-trip.
+     *
+     * Items whose ids no longer exist in the list at apply / revert time are
+     * skipped silently. This matches every other action in this file — a
+     * stale undo branch can legitimately reference dropped ids.
+     */
+    data class CompositeEdit(
+        val description: String,
+        val added: List<NoteItem>,
+        val removed: List<NoteItem>,
+        val modified: List<Pair<NoteItem, NoteItem>>,
+    ) : EditorAction {
+        override fun applyTo(items: MutableList<NoteItem>) {
+            if (modified.isNotEmpty()) {
+                val byId = modified.associate { (_, after) -> after.id to after }
+                for (i in items.indices) {
+                    val replacement = byId[items[i].id] ?: continue
+                    items[i] = replacement
+                }
+            }
+            if (removed.isNotEmpty()) {
+                val drop = removed.mapTo(HashSet(removed.size)) { it.id }
+                items.removeAll { it.id in drop }
+            }
+            if (added.isNotEmpty()) items.addAll(added)
+        }
+
+        override fun invert(): EditorAction = CompositeEdit(
+            description = description,
+            added = removed,
+            removed = added,
+            modified = modified.map { (before, after) -> after to before },
+        )
+    }
+
+    /**
      * Sub-phase 6.4 — reparent every item in [ids] from [oldLayerId] to
      * [newLayerId]. Inversion swaps the two layer ids back. Items whose
      * current layer doesn't match [oldLayerId] are skipped silently (a stale

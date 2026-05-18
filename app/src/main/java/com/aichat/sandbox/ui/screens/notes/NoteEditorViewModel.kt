@@ -15,8 +15,12 @@ import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.data.model.NoteLayer
 import com.aichat.sandbox.data.notes.AiChunk
+import com.aichat.sandbox.data.notes.AskMode
 import com.aichat.sandbox.data.notes.AskRequest
+import com.aichat.sandbox.data.notes.CannedEditAction
+import com.aichat.sandbox.data.notes.EditOpsDoc
 import com.aichat.sandbox.data.notes.HandwritingOcr
+import com.aichat.sandbox.data.notes.aiRecolorPrompt
 import com.aichat.sandbox.data.notes.HandwritingOcr.OcrModelState
 import com.aichat.sandbox.data.notes.NoteAiService
 import com.aichat.sandbox.data.notes.NoteExporter
@@ -184,6 +188,18 @@ class NoteEditorViewModel @Inject constructor(
     val aiSheetState: StateFlow<AiSideSheetState> = _aiSheetState.asStateFlow()
 
     private val streamingJobs: MutableMap<String, Job> = mutableMapOf()
+
+    // ── AI edit preview (sub-phase 7.4) ──────────────────────────────────
+    //
+    // When `runStream` runs in EDIT mode the terminal `AiChunk.EditPreview`
+    // event is staged here as a `PendingEdit` rather than committed to the
+    // canvas. The editor renders a translucent overlay on top of the live
+    // scene from this state; `acceptPendingEdit` / `rejectPendingEdit`
+    // commit-or-discard. Only one preview can be active at a time; firing
+    // another EDIT request while a preview is staged silently replaces it.
+
+    private val _pendingEdit = MutableStateFlow<PendingEdit?>(null)
+    val pendingEdit: StateFlow<PendingEdit?> = _pendingEdit.asStateFlow()
 
     /**
      * Models offered by the in-sheet model picker (sub-phase 2.8). Mirrors
@@ -1305,10 +1321,184 @@ class NoteEditorViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Sub-phase 7.5 — fire an AI EDIT request with the current selection.
+     *
+     * [description] is the short label that lands as the undo entry's
+     * description (e.g. "AI Auto-shape"). [userPrompt] is the natural-
+     * language brief sent to the model. Acts like [submitAiPrompt] in that
+     * it surfaces a turn in the side sheet for visibility — the model's
+     * reply isn't shown as prose; the user sees a preview overlay and an
+     * Accept / Reject affordance from [pendingEdit].
+     */
+    fun submitAiEdit(description: String, userPrompt: String, selection: List<NoteItem>? = null) {
+        val snapshot = _aiSheetState.value
+        if (snapshot.isStreaming) return
+        val resolvedSelection = selection
+            ?: snapshot.pendingSelection
+            ?: items.filter { it.id in _selection.value }.takeIf { it.isNotEmpty() }
+        val turnId = UUID.randomUUID().toString()
+        val turn = AskTurn(
+            id = turnId,
+            prompt = userPrompt,
+            selectionSummary = resolvedSelection?.let { summarizeSelection(it) },
+            replyBuffer = "Thinking…",
+            state = TurnState.Streaming,
+        )
+        _aiSheetState.update { current ->
+            current.copy(
+                isOpen = true,
+                turns = current.turns + turn,
+                inputText = "",
+            )
+        }
+        streamingJobs[turnId] = viewModelScope.launch {
+            runStream(
+                turnId = turnId,
+                prompt = userPrompt,
+                selection = resolvedSelection,
+                mode = AskMode.EDIT,
+                editDescription = description,
+            )
+        }
+    }
+
+    /**
+     * Sub-phase 7.4 — apply the staged AI edit to the canvas as a single
+     * [EditorAction.CompositeEdit] (one undo entry). Clears the preview.
+     */
+    fun acceptPendingEdit() {
+        val pending = _pendingEdit.value ?: return
+        _pendingEdit.value = null
+        if (pending.simulation.isEmpty) return
+        apply(pending.simulation.toCompositeEdit(pending.description))
+    }
+
+    /** Sub-phase 7.4 — drop the staged AI edit without touching the canvas. */
+    fun rejectPendingEdit() {
+        _pendingEdit.value = null
+    }
+
+    /**
+     * Sub-phase 7.5 — single entry point for the lasso menu's edit actions.
+     * Local entries (Clean up / Straighten) run synchronously; model-backed
+     * entries route through [submitAiEdit] and stage a preview.
+     */
+    fun applyCannedEditAction(action: CannedEditAction, selection: List<NoteItem>? = null) {
+        val target = selection
+            ?: items.filter { it.id in _selection.value }.takeIf { it.isNotEmpty() }
+            ?: return
+        when (action) {
+            CannedEditAction.CLEAN_UP -> applyLocalCleanUp(target)
+            CannedEditAction.STRAIGHTEN -> applyLocalStraighten(target)
+            CannedEditAction.AI_CLEAN_UP,
+            CannedEditAction.AUTO_SHAPE,
+            CannedEditAction.CONTINUE -> submitAiEdit(
+                description = action.undoDescription,
+                userPrompt = action.prompt,
+                selection = target,
+            )
+        }
+    }
+
+    /**
+     * Sub-phase 7.5 — recolor selected items via the model. [colorArgb] is
+     * the colour the picker returned; we hand the model a fully-formed
+     * brief so the only thing it needs to do is emit the op.
+     */
+    fun applyAiRecolor(colorArgb: Int, selection: List<NoteItem>? = null) {
+        val target = selection ?: items.filter { it.id in _selection.value }
+        if (target.isEmpty()) return
+        val hex = "#%06X".format(colorArgb and 0xFFFFFF)
+        submitAiEdit(
+            description = "AI Recolor",
+            userPrompt = aiRecolorPrompt(hex),
+            selection = target,
+        )
+    }
+
+    /**
+     * Sub-phase 7.5 — local Clean-up. Smooths every selected stroke through
+     * Chaikin without calling the model. Lands as a single undo entry.
+     */
+    fun applyLocalCleanUp(selection: List<NoteItem>? = null) {
+        val target = selection ?: items.filter { it.id in _selection.value }
+        if (target.isEmpty()) return
+        val pairs = ArrayList<Pair<NoteItem, NoteItem>>()
+        for (item in target) {
+            val smoothed = EditPreviewController.smoothStroke(item, iterations = 2) ?: continue
+            if (smoothed == item) continue
+            pairs += item to smoothed
+        }
+        if (pairs.isEmpty()) return
+        apply(EditorAction.CompositeEdit(
+            description = "Clean up",
+            added = emptyList(),
+            removed = emptyList(),
+            modified = pairs,
+        ))
+    }
+
+    /**
+     * Sub-phase 7.5 — local Straighten. Rotates the selection so its
+     * dominant line snaps to the nearest 15° increment. Computes the
+     * dominant angle from the union bounding box of stroke endpoints; if
+     * the selection has no strokes, no-ops.
+     */
+    fun applyLocalStraighten(selection: List<NoteItem>? = null) {
+        val target = selection ?: items.filter { it.id in _selection.value }
+        val strokes = target.filter { it.kind == STROKE_KIND }
+        if (strokes.isEmpty()) return
+        val angleRad = dominantAngleRadians(strokes) ?: return
+        // Snap to nearest 15 degrees.
+        val snapStep = Math.toRadians(15.0).toFloat()
+        val snapped = kotlin.math.round(angleRad / snapStep) * snapStep
+        val delta = snapped - angleRad
+        if (kotlin.math.abs(delta) < 0.001f) return
+        // Rotate around the centroid of the selection bounds.
+        val rects = strokes.mapNotNull { item ->
+            val samples = StrokeCodec.decode(item.payload)
+            HitTest.boundsOf(samples, samples.size / StrokeCodec.FLOATS_PER_SAMPLE)
+        }
+        val bounds = LassoController.unionBounds(rects) ?: return
+        val cx = (bounds[0] + bounds[2]) * 0.5f
+        val cy = (bounds[1] + bounds[3]) * 0.5f
+        val matrix = StrokeTransform.rotationAround(delta, cx, cy)
+        apply(EditorAction.TransformItems(strokes.map { it.id }, matrix))
+    }
+
+    private fun dominantAngleRadians(strokes: List<NoteItem>): Float? {
+        // Cheap heuristic: angle from each stroke's start to its end, then
+        // take the circular mean. Good enough for "straighten this line".
+        var sumSin = 0.0
+        var sumCos = 0.0
+        var count = 0
+        for (item in strokes) {
+            val samples = StrokeCodec.decode(item.payload)
+            val n = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+            if (n < 2) continue
+            val x0 = samples[0]
+            val y0 = samples[1]
+            val x1 = samples[(n - 1) * StrokeCodec.FLOATS_PER_SAMPLE]
+            val y1 = samples[(n - 1) * StrokeCodec.FLOATS_PER_SAMPLE + 1]
+            val dx = x1 - x0
+            val dy = y1 - y0
+            if (dx == 0f && dy == 0f) continue
+            val a = kotlin.math.atan2(dy, dx).toDouble()
+            sumSin += kotlin.math.sin(a)
+            sumCos += kotlin.math.cos(a)
+            count++
+        }
+        if (count == 0) return null
+        return kotlin.math.atan2(sumSin, sumCos).toFloat()
+    }
+
     private suspend fun runStream(
         turnId: String,
         prompt: String,
         selection: List<NoteItem>?,
+        mode: AskMode = AskMode.ASK,
+        editDescription: String = "AI edit",
     ) {
         val baseUrl = preferencesManager.apiBaseUrl.first()
         val apiKey = preferencesManager.apiKey.first()
@@ -1322,6 +1512,8 @@ class NoteEditorViewModel @Inject constructor(
             modelId = modelId,
             baseUrl = baseUrl,
             apiKey = apiKey,
+            mode = mode,
+            layers = _layers.value,
         )
         try {
             aiService.ask(request).collect { chunk ->
@@ -1330,6 +1522,14 @@ class NoteEditorViewModel @Inject constructor(
                         is AiChunk.Delta -> turn.copy(replyBuffer = turn.replyBuffer + chunk.text)
                         is AiChunk.Complete -> turn.copy(state = TurnState.Done)
                         is AiChunk.Error -> turn.copy(state = TurnState.Error(chunk.message))
+                        is AiChunk.EditPreview -> {
+                            stagePendingEdit(chunk, editDescription)
+                            val message = chunk.doc.summary.ifBlank {
+                                if (chunk.doc.ops.isEmpty()) "No changes proposed."
+                                else "Preview ready (${chunk.doc.ops.size} ops)."
+                            }
+                            turn.copy(replyBuffer = message, state = TurnState.Done)
+                        }
                     }
                 }
             }
@@ -1351,6 +1551,28 @@ class NoteEditorViewModel @Inject constructor(
         } finally {
             streamingJobs.remove(turnId)
         }
+    }
+
+    /**
+     * Sub-phase 7.4 — convert an EDIT-mode terminal chunk into a staged
+     * [PendingEdit] the UI can render as a translucent preview overlay.
+     * Re-simulates the ops against the live item list (defense in depth —
+     * the parser already validated, but items could have changed since the
+     * request was made).
+     */
+    private fun stagePendingEdit(chunk: AiChunk.EditPreview, description: String) {
+        val simulation = EditPreviewController.simulate(
+            currentItems = items.toList(),
+            doc = chunk.doc,
+            idMap = chunk.idMap,
+            layerMap = chunk.layerMap,
+            layers = _layers.value,
+        )
+        _pendingEdit.value = PendingEdit(
+            description = description,
+            doc = chunk.doc,
+            simulation = simulation,
+        )
     }
 
     private fun mutateTurn(turnId: String, block: (AskTurn) -> AskTurn) {
@@ -1610,6 +1832,20 @@ class NoteEditorViewModel @Inject constructor(
         private const val IMAGE_INSERT_TARGET_WORLD: Float = 320f
     }
 }
+
+/**
+ * Sub-phase 7.4 — staged AI edit pending user accept / reject.
+ *
+ * The preview overlay reads [simulation] to render dimmed originals,
+ * dashed-outline removals, magenta-outlined additions, and the modified-
+ * after-image over the modified-before-image. The undo entry built on
+ * Accept is `simulation.toCompositeEdit(description)`.
+ */
+data class PendingEdit(
+    val description: String,
+    val doc: EditOpsDoc,
+    val simulation: EditPreviewController.Simulation,
+)
 
 /**
  * Sub-phase 4.3 picker mode for the [SendToChatSheet]. Drives both how the

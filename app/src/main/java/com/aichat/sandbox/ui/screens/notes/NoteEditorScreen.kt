@@ -78,6 +78,7 @@ fun NoteEditorScreen(
     val layersPanelOpen by viewModel.layersPanelOpen.collectAsState()
     val brushPresets by viewModel.brushPresetList.collectAsState()
     val activeBrushPreset by viewModel.activeBrushPreset.collectAsState()
+    val pendingEdit by viewModel.pendingEdit.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
@@ -315,6 +316,9 @@ fun NoteEditorScreen(
                     onAsk = viewModel::openAiSheetForSelection,
                     onConvertToText = viewModel::launchConvertSelectionToText,
                     canPaste = viewModel.hasClipboardContent(),
+                    onCannedEdit = { action ->
+                        viewModel.applyCannedEditAction(action)
+                    },
                 )
                 val target = textEditTarget
                 val vp = viewportController
@@ -418,6 +422,18 @@ fun NoteEditorScreen(
                     }
                 },
                 onDismiss = viewModel::dismissSendToChatPicker,
+            )
+        }
+        // Sub-phase 7.4 — staged AI edit preview banner. Rendered above the
+        // AI side sheet so the user sees Accept / Reject as a row at the top
+        // of the canvas. Visual diff overlay (alpha+outline) is a follow-up;
+        // for v1 we show the summary + counts and let the side-sheet turn
+        // carry the model's narrative.
+        pendingEdit?.let { pending ->
+            AiEditPreviewBanner(
+                pending = pending,
+                onAccept = viewModel::acceptPendingEdit,
+                onReject = viewModel::rejectPendingEdit,
             )
         }
         AiSideSheet(
@@ -610,5 +626,64 @@ private fun OcrIndicatorBadge(state: OcrIndicator) {
             strokeWidth = 2.dp,
             color = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+/**
+ * Sub-phase 7.4 — staged AI edit banner.
+ *
+ * Renders a compact summary + Accept / Reject row pinned above the AI side
+ * sheet. The proper translucent-overlay preview (alpha + magenta outline)
+ * is a near-term follow-up; for v1 this surfaces "what would change" via a
+ * count line so the user can already commit / discard the AI edit as one
+ * undo entry.
+ */
+@Composable
+private fun AiEditPreviewBanner(
+    pending: PendingEdit,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+) {
+    val sim = pending.simulation
+    val countLine = buildString {
+        append(pending.description)
+        append(" · ")
+        append(sim.added.size).append(" added, ")
+        append(sim.removed.size).append(" removed, ")
+        append(sim.modified.size).append(" modified")
+        if (sim.skipped.isNotEmpty()) {
+            append(" · ").append(sim.skipped.size).append(" skipped")
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    text = pending.doc.summary.ifBlank { "AI edit preview" },
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Text(
+                    text = countLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onReject) { Text("Reject") }
+                    androidx.compose.material3.Button(onClick = onAccept) { Text("Accept") }
+                }
+            }
+        }
     }
 }

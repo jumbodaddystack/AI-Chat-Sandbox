@@ -4,6 +4,39 @@
 
 Parent plan: [`ARTIST_CANVAS_PLAN.md`](./ARTIST_CANVAS_PLAN.md).
 
+## Implementation status
+
+Phase 7 is code-complete on this branch (sub-phases 7.1 – 7.5). 7.6's safety
+checklist is satisfied at the JVM level; the on-device verification matrix
+still needs a real-hardware pass.
+
+Shipped artefacts:
+
+- `app/src/main/java/com/aichat/sandbox/data/notes/VectorCanvasJson.kt`
+  — short-id serializer, point downsampling, 180 KB soft cap, locked-layer
+  exclusion. Unit tests: `VectorCanvasJsonTest`.
+- `app/src/main/java/com/aichat/sandbox/data/notes/EditProtocol.kt` +
+  `EditOpsParser.kt` — sealed `EditOp` hierarchy with fence-tolerant parser
+  and a 1000-case fuzz test. Public `SYSTEM_MESSAGE` constant.
+- `app/src/main/java/com/aichat/sandbox/data/notes/AskRequest.kt` +
+  `AiChunk.kt` + `NoteAiService.kt` — `AskMode.ASK | EDIT`, EDIT-only
+  `AiChunk.EditPreview` event, vision + non-vision EDIT branches.
+- `app/src/main/java/com/aichat/sandbox/ui/screens/notes/EditPreviewController.kt`
+  + `EditorAction.kt` (`CompositeEdit` variant) — pure simulator with
+  defense-in-depth (locked-layer drops, unknown-id drops, no-op pruning,
+  Chaikin smoothing, RDP simplification). Unit tests:
+  `EditPreviewControllerTest`, `EditorActionCodecTest::compositeEditRoundTripsThroughCodec`.
+- `app/src/main/java/com/aichat/sandbox/data/notes/CannedEditPrompts.kt`
+  — five canned actions wired through `NoteEditorViewModel`
+  (`applyCannedEditAction`, `applyLocalCleanUp`, `applyLocalStraighten`,
+  `applyAiRecolor`, `submitAiEdit`).
+- `SelectionOverlay.kt` — Clean up / Straighten / Auto-shape buttons on
+  the floating selection menu.
+- `NoteEditorScreen.kt` — `AiEditPreviewBanner` composable surfaces
+  `pendingEdit` with Accept / Reject; the full translucent-overlay diff
+  (alpha + magenta outline) is a near-term polish follow-up and is not
+  blocking 7.6.
+
 ## Design summary
 
 Existing `ASK` mode (sub-phases 2.5 / 2.6 of `STYLUS_NOTES_PLAN.md`):
@@ -358,13 +391,13 @@ Pre-ship safety pass plus the device matrix.
 
 ### Safety checklist
 
-- [ ] Parser never crashes on malformed input (fuzz test ≥ 1000 cases).
-- [ ] Applier validates every op against current item set (rejects unknown IDs, locked layers, hidden layers, foreign layer targets).
-- [ ] Accept commits one undo entry, period.
-- [ ] Reject leaves the canvas byte-identical to pre-preview.
-- [ ] AI edits never touch items outside the original selection (when a selection was sent; whole-note edits can touch anything in the JSON).
-- [ ] No PII / image bytes are written to logcat at any verbosity level.
-- [ ] If the model returns 0 ops, the sheet shows the `summary` and a "No changes proposed" state — not an error.
+- [x] Parser never crashes on malformed input (fuzz test ≥ 1000 cases). — `EditOpsParserTest::fuzzingNeverThrows` runs 1000 random concatenations of grammar fragments through `EditOpsParser.parse`; every call returns a `Result`.
+- [x] Applier validates every op against current item set (rejects unknown IDs, locked layers, hidden layers, foreign layer targets). — `EditPreviewController.simulate` re-resolves every short id and re-checks layer locks before touching anything; rejections land in `Simulation.skipped`. Covered by `EditPreviewControllerTest::lockedLayerItemsAreSilentlyDropped` and `setLayerToLockedTargetIsRejected`.
+- [x] Accept commits one undo entry, period. — `EditorAction.CompositeEdit` batches the entire simulation into a single action; `acceptPendingEdit` calls `apply(...)` once. Round-trip verified by `EditorActionCodecTest::compositeEditRoundTripsThroughCodec` and `EditPreviewControllerTest::compositeEditRoundTripsThroughUndo`.
+- [x] Reject leaves the canvas byte-identical to pre-preview. — `rejectPendingEdit` clears `_pendingEdit` and never touches `items`.
+- [x] AI edits never touch items outside the original selection (when a selection was sent; whole-note edits can touch anything in the JSON). — `VectorCanvasJson` only serialises the items handed in; `EditPreviewController` only resolves ids that appear in the `idMap` returned with the request.
+- [x] No PII / image bytes are written to logcat at any verbosity level. — `NoteAiService` `Log.w` calls only log `request.note.id` and parse-failure causes, never the rasterised PNG or stroke contents.
+- [x] If the model returns 0 ops, the sheet shows the `summary` and a "No changes proposed" state — not an error. — `NoteEditorViewModel.runStream`'s `EditPreview` branch surfaces the model's summary, falling back to "No changes proposed." when both summary and ops are empty.
 
 ### Verification matrix (Samsung S25 Ultra)
 

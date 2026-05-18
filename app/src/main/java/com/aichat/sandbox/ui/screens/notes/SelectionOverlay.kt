@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
@@ -86,6 +88,7 @@ fun SelectionOverlay(
     onAsk: () -> Unit,
     onConvertToText: () -> Unit,
     canPaste: Boolean,
+    onCannedEdit: ((com.aichat.sandbox.data.notes.CannedEditAction) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     if (selection.isEmpty() || worldBounds == null || viewport == null) return
@@ -292,6 +295,7 @@ fun SelectionOverlay(
                 },
         ) {
             FloatingSelectionMenu(
+                onCannedEdit = onCannedEdit,
                 canPaste = canPaste,
                 onAsk = onAsk,
                 onConvertToText = onConvertToText,
@@ -412,6 +416,7 @@ private fun FloatingSelectionMenu(
     onCut: () -> Unit,
     onCopy: () -> Unit,
     onPaste: () -> Unit,
+    onCannedEdit: ((com.aichat.sandbox.data.notes.CannedEditAction) -> Unit)? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(20.dp),
@@ -429,6 +434,24 @@ private fun FloatingSelectionMenu(
                 label = "To text",
                 onClick = onConvertToText,
             )
+            // Sub-phase 7.5 — canned AI / local edit actions.
+            if (onCannedEdit != null) {
+                MenuButton(
+                    icon = Icons.Filled.AutoFixHigh,
+                    label = "Clean up",
+                    onClick = { onCannedEdit(com.aichat.sandbox.data.notes.CannedEditAction.CLEAN_UP) },
+                )
+                MenuButton(
+                    icon = Icons.Filled.RotateRight,
+                    label = "Straighten",
+                    onClick = { onCannedEdit(com.aichat.sandbox.data.notes.CannedEditAction.STRAIGHTEN) },
+                )
+                MenuButton(
+                    icon = Icons.Filled.Category,
+                    label = "Auto-shape",
+                    onClick = { onCannedEdit(com.aichat.sandbox.data.notes.CannedEditAction.AUTO_SHAPE) },
+                )
+            }
             MenuButton(icon = Icons.Filled.FileCopy, label = "Duplicate", onClick = onDuplicate)
             MenuButton(icon = Icons.Filled.Delete, label = "Delete", onClick = onDelete)
             MenuButton(icon = Icons.Filled.ContentCut, label = "Cut", onClick = onCut)
