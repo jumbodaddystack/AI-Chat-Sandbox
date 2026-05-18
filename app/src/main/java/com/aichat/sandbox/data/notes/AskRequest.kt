@@ -2,6 +2,7 @@ package com.aichat.sandbox.data.notes
 
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.data.model.NoteLayer
 
 /**
  * Inputs for `NoteAiService.ask` (sub-phase 2.5 of
@@ -14,6 +15,12 @@ import com.aichat.sandbox.data.model.NoteItem
  * Ask in 2.7). `baseUrl` / `apiKey` come from the same preferences the chat
  * pipeline reads, captured at request time so a setting change mid-stream
  * doesn't affect an in-flight ask.
+ *
+ * Phase 7.3 adds [mode]. [AskMode.ASK] is the original free-form question
+ * pipeline. [AskMode.EDIT] adds the vector JSON of the in-scope items to the
+ * request and instructs the model to reply with a typed `edit-ops` document
+ * (see [EditOpsParser]). [layers] is consumed only by EDIT mode (to expose
+ * the layer inventory in the serialised JSON and to filter locked layers).
  */
 data class AskRequest(
     val note: Note,
@@ -23,4 +30,9 @@ data class AskRequest(
     val modelId: String,
     val baseUrl: String,
     val apiKey: String,
+    val mode: AskMode = AskMode.ASK,
+    val layers: List<NoteLayer> = emptyList(),
 )
+
+/** Top-level dispatch for [NoteAiService] — see [AskRequest.mode]. */
+enum class AskMode { ASK, EDIT }

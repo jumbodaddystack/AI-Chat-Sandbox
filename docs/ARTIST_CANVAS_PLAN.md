@@ -6,9 +6,9 @@
 
 ## Status
 
-- **Current phase:** Phase 6 — all sub-phases code-complete (6.1 / 6.2 / 6.3 / 6.4 / 6.5 / 6.6 / 6.7 / 6.8). The Phase 6 verification matrix still needs a real-hardware pass and Phase 5.5 device verification is also outstanding.
-- **Next sub-phase:** 5.5 device verification (then Phase 6 matrix) before moving on to Phase 7.1 (vector JSON serializer).
-- **Last verified device pass:** n/a (5.5 + Phase 6 verification matrix pending)
+- **Current phase:** Phase 7 — sub-phases 7.1 / 7.2 / 7.3 / 7.4 / 7.5 code-complete. 7.6 safety checklist is mostly in place (parser fuzz, applier defense-in-depth, single-undo-entry CompositeEdit) but the on-device verification matrix from 7.6 is still outstanding alongside the pending Phase 5.5 / Phase 6 device passes.
+- **Next sub-phase:** 7.6 on-device verification matrix (also: 5.5 + Phase 6 matrix on real hardware) before moving on to Phase 8.1 (frame primitive).
+- **Last verified device pass:** n/a (5.5, Phase 6 matrix, and Phase 7 matrix pending)
 
 ## Phase index
 
@@ -49,12 +49,12 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked (n
 
 ### Phase 7 — AI vector edit pipeline · [`details`](./ARTIST_CANVAS_PHASE_7.md)
 
-- [ ] **7.1** Vector JSON serializer (`NoteItem[] → compact JSON the model can edit`) ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-71--vector-json-serializer))
-- [ ] **7.2** Edit protocol — structured response format the model returns ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-72--edit-protocol))
-- [ ] **7.3** Combined image + JSON request path in `NoteAiService` ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-73--combined-image--json-request))
-- [ ] **7.4** Edit applier — parse response, dry-run diff preview, single undo entry ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-74--edit-applier))
-- [ ] **7.5** Canned edit actions in lasso / Ask sheet (Clean up, Straighten, Auto-shape, Recolor, Continue) ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-75--canned-edit-actions))
-- [ ] **7.6** AI edit safety + Phase 7 verification ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-76--ai-edit-safety--phase-7-verification))
+- [x] **7.1** Vector JSON serializer (`NoteItem[] → compact JSON the model can edit`) ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-71--vector-json-serializer)) — `VectorCanvasJson` with short-id mapping, point downsampling, 180 KB soft cap, locked-layer exclusion.
+- [x] **7.2** Edit protocol — structured response format the model returns ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-72--edit-protocol)) — sealed `EditOp` hierarchy + fence-tolerant `EditOpsParser` (`SYSTEM_MESSAGE` exported); fuzz-tested 1000 random malformations.
+- [x] **7.3** Combined image + JSON request path in `NoteAiService` ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-73--combined-image--json-request)) — `AskRequest.mode = ASK|EDIT`, `AiChunk.EditPreview`, vision-with-JSON and non-vision OCR-with-JSON branches.
+- [x] **7.4** Edit applier — parse response, dry-run diff preview, single undo entry ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-74--edit-applier)) — `EditPreviewController` simulates, `EditorAction.CompositeEdit` collapses each AI edit into one undo entry; preview banner in `NoteEditorScreen` carries Accept / Reject.
+- [x] **7.5** Canned edit actions in lasso / Ask sheet (Clean up, Straighten, Auto-shape, Recolor, Continue) ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-75--canned-edit-actions)) — `CannedEditAction` enum; Clean up + Straighten run locally without a network call; Auto-shape / Continue / AI Recolor route through EDIT mode.
+- [~] **7.6** AI edit safety + Phase 7 verification ([details](./ARTIST_CANVAS_PHASE_7.md#sub-phase-76--ai-edit-safety--phase-7-verification)) — JVM safety checklist covered (parser fuzz, applier defense-in-depth, single-undo-entry round-trip in `EditorActionCodecTest` + `EditPreviewControllerTest`); on-device verification matrix still pending.
 
 ### Phase 8 — Canvas as project · [`details`](./ARTIST_CANVAS_PHASE_8.md)
 

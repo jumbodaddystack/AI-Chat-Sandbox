@@ -172,6 +172,33 @@ class EditorActionCodecTest {
     }
 
     @Test
+    fun compositeEditRoundTripsThroughCodec() {
+        val before = stroke("s-1", body = "before")
+        val after = stroke("s-1", body = "after")
+        val composite = EditorAction.CompositeEdit(
+            description = "AI Auto-shape",
+            added = listOf(stroke("s-new", body = "added")),
+            removed = listOf(stroke("s-old", body = "gone")),
+            modified = listOf(before to after),
+        )
+        val json = EditorActionCodec.encode(listOf(composite), emptyList())
+        assertNotNull(json)
+        val decoded = EditorActionCodec.decode(json)
+        val replayed = decoded.past.single() as EditorAction.CompositeEdit
+        assertEquals("AI Auto-shape", replayed.description)
+        assertEquals(1, replayed.added.size)
+        assertEquals("s-new", replayed.added[0].id)
+        assertEquals(1, replayed.removed.size)
+        assertEquals("s-old", replayed.removed[0].id)
+        assertEquals(1, replayed.modified.size)
+        assertEquals("s-1", replayed.modified[0].first.id)
+        assertTrue("modified payloads survive base64 round-trip",
+            "before".toByteArray().contentEquals(replayed.modified[0].first.payload))
+        assertTrue("after-state payload survives base64 round-trip",
+            "after".toByteArray().contentEquals(replayed.modified[0].second.payload))
+    }
+
+    @Test
     fun fiveHundredSmallAddItemsFitsUnderCap() {
         // Defensive: typical sessions stay well under the cap even with
         // 500 small actions.

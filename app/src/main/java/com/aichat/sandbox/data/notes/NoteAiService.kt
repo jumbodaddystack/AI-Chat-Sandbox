@@ -13,6 +13,7 @@ import com.aichat.sandbox.data.remote.StreamEvent
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.util.Base64
@@ -46,6 +47,10 @@ class NoteAiService @Inject constructor(
 
     fun ask(request: AskRequest): Flow<AiChunk> = flow {
         val caps = ModelCapabilities.of(request.modelId)
+        if (request.mode == AskMode.EDIT) {
+            collectEdit(request, caps.supportsVision)
+            return@flow
+        }
         val upstream = if (caps.supportsVision) {
             buildVisionStream(request)
         } else {
@@ -54,6 +59,66 @@ class NoteAiService @Inject constructor(
         upstream.collect { event ->
             emit(mapEvent(event))
         }
+    }
+
+    /**
+     * Sub-phase 7.3 — EDIT-mode dispatcher. Buffers the streamed reply, parses
+     * it through [EditOpsParser] on completion, and emits a single
+     * [AiChunk.EditPreview] terminal event (plus any deltas the side sheet
+     * wants to render as "AI thinking…").
+     */
+    private suspend fun FlowCollector<AiChunk>.collectEdit(
+        request: AskRequest,
+        supportsVision: Boolean,
+    ) {
+        val serialized = VectorCanvasJson.serialize(
+            items = request.selection ?: request.allItems,
+            bounds = null,
+            layers = request.layers,
+        )
+        val upstream = if (supportsVision) {
+            buildEditVisionStream(request, serialized.json)
+        } else {
+            buildEditOcrStream(request, serialized.json)
+        }
+        val buffer = StringBuilder()
+        var lastUsage: com.aichat.sandbox.data.model.Usage? = null
+        var errored = false
+        upstream.collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> {
+                    buffer.append(event.content)
+                    // No `Delta` re-emit — EDIT replies are JSON, not prose;
+                    // the side sheet renders a fixed "Thinking…" indicator.
+                }
+                is StreamEvent.Complete -> { lastUsage = event.usage }
+                is StreamEvent.Error -> {
+                    errored = true
+                    emit(AiChunk.Error(event.message))
+                }
+                is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
+            }
+        }
+        if (errored) return
+        val parseResult = EditOpsParser.parse(
+            raw = buffer.toString(),
+            knownIds = serialized.idMap.keys,
+            knownLayers = serialized.layerMap.keys,
+        )
+        parseResult.fold(
+            onSuccess = { doc ->
+                emit(AiChunk.EditPreview(
+                    doc = doc,
+                    idMap = serialized.idMap,
+                    layerMap = serialized.layerMap,
+                    usage = lastUsage,
+                ))
+            },
+            onFailure = { t ->
+                Log.w(TAG, "edit-ops parse failed: ${t.message}")
+                emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
+            },
+        )
     }
 
     private suspend fun buildVisionStream(request: AskRequest): Flow<StreamEvent> {
@@ -149,11 +214,111 @@ class NoteAiService @Inject constructor(
         return ocr.recognize(strokes).text
     }
 
+    /**
+     * Sub-phase 7.3 — vision EDIT branch. Sends the rasterised PNG plus the
+     * vector JSON inline in the prompt body, using the Phase 7.2 system
+     * message instead of the conversational one.
+     */
+    private suspend fun buildEditVisionStream(
+        request: AskRequest,
+        vectorJson: String,
+    ): Flow<StreamEvent> {
+        val items = request.selection ?: request.allItems
+        if (items.isEmpty()) return errorFlow(EMPTY_NOTE_MESSAGE)
+        val userMessage = withContext(Dispatchers.Default) {
+            val pngBytes = try {
+                imageRenderer.renderToPng(
+                    items = items,
+                    backgroundStyle = request.note.backgroundStyle,
+                    maxEdgePx = MAX_EDGE_PX,
+                )
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to rasterize note ${request.note.id} for EDIT", t)
+                null
+            } ?: return@withContext null
+            val dataUri = "data:image/png;base64,${Base64.getEncoder().encodeToString(pngBytes)}"
+            val metadata = gson.toJson(
+                ImageMetadata(images = listOf(ImageAttachment(dataUri = dataUri)))
+            )
+            Message(
+                chatId = SYNTHETIC_CHAT_ID,
+                role = MessageRole.USER.value,
+                content = buildEditPromptBody(request.userPrompt, vectorJson, ocrText = null),
+                contentType = "multimodal",
+                metadata = metadata,
+            )
+        } ?: return errorFlow(RENDER_FAILED_MESSAGE)
+
+        return chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = syntheticEditChat(request),
+            messages = listOf(userMessage),
+        )
+    }
+
+    /**
+     * Sub-phase 7.3 — non-vision EDIT branch. OCR text + vector JSON inline,
+     * no image attachment.
+     */
+    private suspend fun buildEditOcrStream(
+        request: AskRequest,
+        vectorJson: String,
+    ): Flow<StreamEvent> {
+        val transcribed = resolveOcrText(request)
+        val message = Message(
+            chatId = SYNTHETIC_CHAT_ID,
+            role = MessageRole.USER.value,
+            content = buildEditPromptBody(
+                userPrompt = request.userPrompt,
+                vectorJson = vectorJson,
+                ocrText = transcribed.takeIf { it.isNotBlank() },
+            ),
+            contentType = "text",
+            metadata = null,
+        )
+        return chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = syntheticEditChat(request),
+            messages = listOf(message),
+        )
+    }
+
+    /**
+     * Build the prompt body for an EDIT request. Exposed `internal` so the
+     * Phase 7.3 unit test can pin the exact wire format.
+     */
+    internal fun buildEditPromptBody(
+        userPrompt: String,
+        vectorJson: String,
+        ocrText: String?,
+    ): String = buildString {
+        if (!ocrText.isNullOrBlank()) {
+            append("Transcribed note (may have OCR errors):\n")
+            append(ocrText)
+            append("\n\n")
+        }
+        append(userPrompt)
+        append("\n\n")
+        append("Here is the vector JSON of the note. Edit by referencing IDs from `items`:\n")
+        append("```json\n")
+        append(vectorJson)
+        append("\n```")
+    }
+
     private fun syntheticChat(request: AskRequest): Chat = Chat(
         id = SYNTHETIC_CHAT_ID,
         title = "Note AI",
         model = request.modelId,
         systemMessage = SYSTEM_INSTRUCTION,
+    )
+
+    private fun syntheticEditChat(request: AskRequest): Chat = Chat(
+        id = SYNTHETIC_CHAT_ID,
+        title = "Note Edit",
+        model = request.modelId,
+        systemMessage = EditOpsParser.SYSTEM_MESSAGE,
     )
 
     private fun mapEvent(event: StreamEvent): AiChunk = when (event) {
@@ -188,6 +353,8 @@ class NoteAiService @Inject constructor(
         private const val TAG: String = "NoteAiService"
         private const val EMPTY_NOTE_MESSAGE: String = "Note is empty — nothing to send."
         private const val RENDER_FAILED_MESSAGE: String = "Couldn't render the note for the AI request."
+        internal const val PARSE_FAILED_MESSAGE: String =
+            "Could not parse AI edit response — try rephrasing."
 
         private val gson = Gson()
     }

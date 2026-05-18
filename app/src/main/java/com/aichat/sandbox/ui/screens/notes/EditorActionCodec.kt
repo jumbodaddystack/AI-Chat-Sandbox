@@ -48,6 +48,7 @@ object EditorActionCodec {
     private const val TYPE_TRANSFORM_ITEMS = "TransformItems"
     private const val TYPE_UPDATE_TEXT = "UpdateText"
     private const val TYPE_MOVE_LAYERS = "MoveItemsBetweenLayers"
+    private const val TYPE_COMPOSITE_EDIT = "CompositeEdit"
 
     /** Result of a successful decode. */
     data class Decoded(
@@ -184,6 +185,20 @@ object EditorActionCodec {
                 if (action.oldLayerId != null) obj.addProperty("oldLayerId", action.oldLayerId)
                 if (action.newLayerId != null) obj.addProperty("newLayerId", action.newLayerId)
             }
+            is EditorAction.CompositeEdit -> {
+                obj.addProperty("type", TYPE_COMPOSITE_EDIT)
+                obj.addProperty("description", action.description)
+                obj.add("added", encodeItems(action.added))
+                obj.add("removed", encodeItems(action.removed))
+                val pairs = JsonArray(action.modified.size)
+                for ((before, after) in action.modified) {
+                    val pair = JsonObject()
+                    pair.add("before", encodeItem(before))
+                    pair.add("after", encodeItem(after))
+                    pairs.add(pair)
+                }
+                obj.add("modified", pairs)
+            }
         }
         return obj
     }
@@ -213,6 +228,22 @@ object EditorActionCodec {
                     oldLayerId = obj.get("oldLayerId")?.takeIf { !it.isJsonNull }?.asString,
                     newLayerId = obj.get("newLayerId")?.takeIf { !it.isJsonNull }?.asString,
                 )
+                TYPE_COMPOSITE_EDIT -> {
+                    val pairs = obj.getAsJsonArray("modified") ?: JsonArray()
+                    val modified = ArrayList<Pair<NoteItem, NoteItem>>(pairs.size())
+                    for (el in pairs) {
+                        val po = el as? JsonObject ?: continue
+                        val beforeObj = po.getAsJsonObject("before") ?: continue
+                        val afterObj = po.getAsJsonObject("after") ?: continue
+                        modified += decodeItem(beforeObj) to decodeItem(afterObj)
+                    }
+                    EditorAction.CompositeEdit(
+                        description = obj.get("description")?.asString ?: "",
+                        added = decodeItems(obj.getAsJsonArray("added")),
+                        removed = decodeItems(obj.getAsJsonArray("removed")),
+                        modified = modified,
+                    )
+                }
                 else -> {
                     logWarn("skipping unknown action type=$type")
                     null

@@ -186,6 +186,81 @@ class NoteAiServiceTest {
         assertNotNull("upstream flow should observe a cancellation cause", cause)
     }
 
+    @Test
+    fun editModeEmitsEditPreviewWithParsedOps() = runTest {
+        val streamer = RecordingChatStreamer(
+            flow = flowOf(
+                StreamEvent.Delta("```edit-ops\n"),
+                StreamEvent.Delta("{ \"schema\": 1, \"summary\": \"deleted one\", "),
+                StreamEvent.Delta("\"ops\": [ { \"op\": \"delete\", \"ids\": [\"s_001\"] } ] }"),
+                StreamEvent.Delta("\n```"),
+                StreamEvent.Complete(null),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = FakeImageRenderer(ByteArray(4)),
+        )
+
+        val item = strokeItem()
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = listOf(item),
+                selection = null,
+                userPrompt = "Delete it",
+                modelId = "gpt-4o",
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.EDIT,
+                layers = emptyList(),
+            )
+        ).toList()
+
+        val preview = chunks.filterIsInstance<AiChunk.EditPreview>().single()
+        assertEquals("deleted one", preview.doc.summary)
+        assertEquals(1, preview.doc.ops.size)
+        // idMap exposes the on-disk uuid behind the short id the model used.
+        assertEquals(item.id, preview.idMap["s_001"])
+        // The wire body includes the vector JSON inline as a fenced block.
+        val sent = streamer.lastMessages.single().content
+        assertTrue("EDIT body should include the vector JSON", sent.contains("\"items\""))
+        assertTrue("EDIT body should reference s_001", sent.contains("s_001"))
+    }
+
+    @Test
+    fun editModeMalformedReplyEmitsError() = runTest {
+        val streamer = RecordingChatStreamer(
+            flow = flowOf(
+                StreamEvent.Delta("not even close to JSON"),
+                StreamEvent.Complete(null),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = FakeImageRenderer(ByteArray(4)),
+        )
+
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = listOf(strokeItem()),
+                selection = null,
+                userPrompt = "Do something",
+                modelId = "gpt-4o",
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.EDIT,
+            )
+        ).toList()
+
+        // No EditPreview was emitted; an Error chunk was produced instead.
+        assertTrue(chunks.none { it is AiChunk.EditPreview })
+        assertTrue(chunks.any { it is AiChunk.Error })
+    }
+
     // ---- helpers ----
 
     private fun visionRequest(strokes: List<NoteItem>): AskRequest = AskRequest(
