@@ -5,7 +5,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -17,6 +19,8 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MoreVert
@@ -112,6 +116,10 @@ fun NoteEditorScreen(
     var saveStampDialogVisible by remember { mutableStateOf(false) }
     var viewportController by remember { mutableStateOf<ViewportController?>(null) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    // Collapsible bottom-palette state. When false, the favorites + brush
+    // sheet + tool palette rows hide behind a thin handle; the canvas above
+    // expands to reclaim ~150dp of vertical space for drawing/writing.
+    var palettesExpanded by remember { mutableStateOf(true) }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -150,6 +158,11 @@ fun NoteEditorScreen(
     }
 
     Scaffold(
+        // We handle the navigation-bar inset ourselves on the bottom palette
+        // Surface so its tonal background bleeds to the screen edge instead
+        // of stopping above the system nav bar (which used to leave a visible
+        // empty strip below the width slider).
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 navigationIcon = {
@@ -343,7 +356,10 @@ fun NoteEditorScreen(
       Box(
           modifier = Modifier
               .fillMaxSize()
-              .padding(padding),
+              // Only consume the TopAppBar inset here; the navigation-bar
+              // inset is applied inside the bottom palette so its Surface
+              // background extends to the screen edge.
+              .padding(top = padding.calculateTopPadding()),
       ) {
         Column(
             modifier = Modifier
@@ -444,36 +460,62 @@ fun NoteEditorScreen(
                 onSeek = viewModel::seekAudio,
                 onDelete = viewModel::deleteAudioClip,
             )
-            // Sub-phase 8.4 — favorites bar above the tool palette.
-            FavoritesBar(
-                slots = favorites,
-                presets = brushPresets,
-                activePresetId = activeBrushPreset?.id,
-                onApply = viewModel::applyFavorite,
-                onAssignActive = viewModel::assignFavoriteFromActiveBrush,
-                onClear = viewModel::clearFavoriteSlot,
-            )
-            if (brushSheetOpen) {
-                BrushSheet(
-                    presets = brushPresets,
-                    activePreset = activeBrushPreset,
-                    onApplyPreset = viewModel::applyBrushPreset,
-                    onLiveEdit = viewModel::setLiveBrushEdit,
-                    onSaveAsPreset = { _, name -> viewModel.saveActiveAsUserPreset(name) },
-                    onTextureChange = viewModel::setActiveTextureId,
-                )
+            // Bottom palette wrapper: handle + collapsible tool rows. The
+            // outer Surface bleeds its background through the navigation-bar
+            // inset; the inner Column applies that inset to its content so
+            // controls stay above the system nav bar.
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                tonalElevation = 2.dp,
+                shadowElevation = 2.dp,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.navigationBars),
+                ) {
+                    PaletteCollapseHandle(
+                        expanded = palettesExpanded,
+                        onToggle = { palettesExpanded = !palettesExpanded },
+                    )
+                    AnimatedVisibility(visible = palettesExpanded) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            // Sub-phase 8.4 — favorites bar above the tool palette.
+                            FavoritesBar(
+                                slots = favorites,
+                                presets = brushPresets,
+                                activePresetId = activeBrushPreset?.id,
+                                onApply = viewModel::applyFavorite,
+                                onAssignActive = viewModel::assignFavoriteFromActiveBrush,
+                                onClear = viewModel::clearFavoriteSlot,
+                            )
+                            if (brushSheetOpen) {
+                                BrushSheet(
+                                    presets = brushPresets,
+                                    activePreset = activeBrushPreset,
+                                    onApplyPreset = viewModel::applyBrushPreset,
+                                    onLiveEdit = viewModel::setLiveBrushEdit,
+                                    onSaveAsPreset = { _, name -> viewModel.saveActiveAsUserPreset(name) },
+                                    onTextureChange = viewModel::setActiveTextureId,
+                                )
+                            }
+                            ToolPalette(
+                                state = viewModel.palette,
+                                onPickCustomColor = viewModel::openColorPicker,
+                                snapMask = snapMask,
+                                onToggleSnap = viewModel::toggleSnap,
+                            )
+                        }
+                    }
+                }
             }
-            ToolPalette(
-                state = viewModel.palette,
-                onPickCustomColor = viewModel::openColorPicker,
-                snapMask = snapMask,
-                onToggleSnap = viewModel::toggleSnap,
-            )
         }
         // Sub-phase 9.2 — left-edge page rail when in notebook mode.
         if (pageRailOpen && notebook != null) {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.navigationBars),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 PageThumbnailRail(
@@ -502,7 +544,9 @@ fun NoteEditorScreen(
         }
         // Sub-phase 9.4 — record button anchored above the AI side sheet.
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.navigationBars),
             contentAlignment = Alignment.BottomEnd,
         ) {
             AudioRecordingBar(
@@ -515,7 +559,9 @@ fun NoteEditorScreen(
         // Sub-phase 8.2 — left-edge frame navigator.
         if (frameNavigatorOpen) {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.navigationBars),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 FrameNavigator(
@@ -546,7 +592,8 @@ fun NoteEditorScreen(
         if (layersPanelOpen) {
             Box(
                 modifier = Modifier
-                    .fillMaxSize(),
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.navigationBars),
                 contentAlignment = Alignment.CenterEnd,
             ) {
                 LayersPanel(
@@ -588,7 +635,9 @@ fun NoteEditorScreen(
         // Sub-phase 8.3 — bottom-aligned stamp drawer.
         if (stampDrawerOpen) {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.navigationBars),
                 contentAlignment = Alignment.BottomCenter,
             ) {
                 StampDrawer(
@@ -659,6 +708,7 @@ fun NoteEditorScreen(
             )
         }
         AiSideSheet(
+            modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars),
             state = aiSheetState,
             onInputChanged = viewModel::onAiInputChanged,
             onSubmit = viewModel::submitAiPrompt,
@@ -932,5 +982,38 @@ private fun AiEditPreviewBanner(
                 }
             }
         }
+    }
+}
+
+/**
+ * Thin tappable bar that toggles the bottom palette between expanded
+ * (favorites + brush sheet + tool palette visible) and collapsed
+ * (only this handle visible, freeing the rest of the screen for ink).
+ *
+ * The chevron flips between Down (palette expanded; tap collapses) and Up
+ * (palette collapsed; tap expands). Tap target spans the full width so the
+ * user doesn't have to aim at the icon.
+ */
+@Composable
+private fun PaletteCollapseHandle(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(vertical = 2.dp)
+            .semantics {
+                contentDescription = if (expanded) "Collapse tools" else "Expand tools"
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (expanded) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
