@@ -189,17 +189,20 @@ object ShapeCodec {
             )
         }
         is Shape.Polygon -> {
-            if (shape.points.size < 2) return null
-            var minX = shape.points[0]; var minY = shape.points[1]
-            var maxX = minX; var maxY = minY
-            var i = 2
-            while (i < shape.points.size) {
-                val x = shape.points[i]; val y = shape.points[i + 1]
-                if (x < minX) minX = x else if (x > maxX) maxX = x
-                if (y < minY) minY = y else if (y > maxY) maxY = y
-                i += 2
+            if (shape.points.size < 2) {
+                null
+            } else {
+                var minX = shape.points[0]; var minY = shape.points[1]
+                var maxX = minX; var maxY = minY
+                var i = 2
+                while (i < shape.points.size) {
+                    val x = shape.points[i]; val y = shape.points[i + 1]
+                    if (x < minX) minX = x else if (x > maxX) maxX = x
+                    if (y < minY) minY = y else if (y > maxY) maxY = y
+                    i += 2
+                }
+                floatArrayOf(minX, minY, maxX, maxY)
             }
-            floatArrayOf(minX, minY, maxX, maxY)
         }
     }
 

@@ -2,6 +2,7 @@ package com.aichat.sandbox.data.local
 
 import androidx.room.Dao
 import androidx.room.Query
+import androidx.room.SkipQueryVerification
 
 @Dao
 interface NoteSearchDao {
@@ -15,7 +16,12 @@ interface NoteSearchDao {
      *
      * Pattern argument follows FTS4 MATCH syntax — typical use is a
      * pre-sanitized `prefix*` term per word.
+     *
+     * `notes_ocr_fts` is created in `MIGRATION_11_12` and not registered as
+     * a Room entity, so Room's compile-time query verifier doesn't know
+     * the table exists. `@SkipQueryVerification` bypasses that check.
      */
+    @SkipQueryVerification
     @Query(
         """
         SELECT n.id AS noteId,

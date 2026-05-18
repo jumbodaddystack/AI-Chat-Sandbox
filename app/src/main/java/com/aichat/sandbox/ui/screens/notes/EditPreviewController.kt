@@ -78,19 +78,25 @@ object EditPreviewController {
                 is EditOp.Transform -> {
                     if (StrokeTransform.isIdentity(op.matrix)) continue
                     for (sid in op.ids) {
-                        val current = fetch(sid) ?: run {
-                            skipped += "transform $sid (unknown/locked)"; continue
+                        val current = fetch(sid)
+                        if (current == null) {
+                            skipped += "transform $sid (unknown/locked)"
+                            continue
                         }
-                        val next = transformItem(current, op.matrix) ?: run {
-                            skipped += "transform $sid (unsupported kind)"; continue
+                        val next = transformItem(current, op.matrix)
+                        if (next == null) {
+                            skipped += "transform $sid (unsupported kind)"
+                            continue
                         }
                         stash(sid, next)
                     }
                 }
                 is EditOp.Recolor -> {
                     for (sid in op.ids) {
-                        val current = fetch(sid) ?: run {
-                            skipped += "recolor $sid (unknown/locked)"; continue
+                        val current = fetch(sid)
+                        if (current == null) {
+                            skipped += "recolor $sid (unknown/locked)"
+                            continue
                         }
                         if (current.colorArgb == op.colorArgb) continue
                         stash(sid, current.copy(colorArgb = op.colorArgb))
@@ -98,8 +104,10 @@ object EditPreviewController {
                 }
                 is EditOp.Restyle -> {
                     for (sid in op.ids) {
-                        val current = fetch(sid) ?: run {
-                            skipped += "restyle $sid (unknown/locked)"; continue
+                        val current = fetch(sid)
+                        if (current == null) {
+                            skipped += "restyle $sid (unknown/locked)"
+                            continue
                         }
                         val width = op.width ?: current.baseWidthPx
                         stash(sid, current.copy(baseWidthPx = width))
@@ -111,30 +119,40 @@ object EditPreviewController {
                     val iterations = (op.amount * 4f).toInt().coerceIn(0, 4)
                     if (iterations == 0) continue
                     for (sid in op.ids) {
-                        val current = fetch(sid) ?: run {
-                            skipped += "smooth $sid (unknown/locked)"; continue
+                        val current = fetch(sid)
+                        if (current == null) {
+                            skipped += "smooth $sid (unknown/locked)"
+                            continue
                         }
-                        val smoothed = smoothStroke(current, iterations) ?: run {
-                            skipped += "smooth $sid (not a stroke)"; continue
+                        val smoothed = smoothStroke(current, iterations)
+                        if (smoothed == null) {
+                            skipped += "smooth $sid (not a stroke)"
+                            continue
                         }
                         stash(sid, smoothed)
                     }
                 }
                 is EditOp.Simplify -> {
                     for (sid in op.ids) {
-                        val current = fetch(sid) ?: run {
-                            skipped += "simplify $sid (unknown/locked)"; continue
+                        val current = fetch(sid)
+                        if (current == null) {
+                            skipped += "simplify $sid (unknown/locked)"
+                            continue
                         }
-                        val simplified = simplifyStroke(current, op.tolerance) ?: run {
-                            skipped += "simplify $sid (not a stroke)"; continue
+                        val simplified = simplifyStroke(current, op.tolerance)
+                        if (simplified == null) {
+                            skipped += "simplify $sid (not a stroke)"
+                            continue
                         }
                         stash(sid, simplified)
                     }
                 }
                 is EditOp.Delete -> {
                     for (sid in op.ids) {
-                        val current = fetch(sid) ?: run {
-                            skipped += "delete $sid (unknown/locked)"; continue
+                        val current = fetch(sid)
+                        if (current == null) {
+                            skipped += "delete $sid (unknown/locked)"
+                            continue
                         }
                         // Remove from `working` so subsequent ops don't see
                         // a stale modified version.
@@ -143,24 +161,31 @@ object EditPreviewController {
                     }
                 }
                 is EditOp.SetLayer -> {
-                    val targetUuid = layerMap[op.targetLayerShortId] ?: run {
-                        skipped += "set_layer (unknown target ${op.targetLayerShortId})"; continue
+                    val targetUuid = layerMap[op.targetLayerShortId]
+                    if (targetUuid == null) {
+                        skipped += "set_layer (unknown target ${op.targetLayerShortId})"
+                        continue
                     }
                     val targetLayer = layers.firstOrNull { it.id == targetUuid }
                     if (targetLayer == null || targetLayer.locked) {
-                        skipped += "set_layer (target locked)"; continue
+                        skipped += "set_layer (target locked)"
+                        continue
                     }
                     for (sid in op.ids) {
-                        val current = fetch(sid) ?: run {
-                            skipped += "set_layer $sid (unknown/locked)"; continue
+                        val current = fetch(sid)
+                        if (current == null) {
+                            skipped += "set_layer $sid (unknown/locked)"
+                            continue
                         }
                         if (current.layerId == targetUuid) continue
                         stash(sid, current.copy(layerId = targetUuid))
                     }
                 }
                 is EditOp.ReplaceWithShape -> {
-                    val source = fetch(op.sourceId) ?: run {
-                        skipped += "replace_with_shape ${op.sourceId} (unknown/locked)"; continue
+                    val source = fetch(op.sourceId)
+                    if (source == null) {
+                        skipped += "replace_with_shape ${op.sourceId} (unknown/locked)"
+                        continue
                     }
                     val replacement = buildShapeReplacement(source, op.shape)
                     working.remove(op.sourceId)
@@ -168,7 +193,8 @@ object EditPreviewController {
                     toAdd += replacement
                 }
                 is EditOp.Group -> {
-                    skipped += "group (Phase 8)"; continue
+                    skipped += "group (Phase 8)"
+                    continue
                 }
             }
         }
