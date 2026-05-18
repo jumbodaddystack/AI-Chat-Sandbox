@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -99,7 +100,7 @@ fun NewNotebookSheet(
                     style = MaterialTheme.typography.labelMedium,
                 )
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.foundation.lazy.items(COVER_COLORS) { argb ->
+                    items(COVER_COLORS) { argb ->
                         ColorDot(
                             argb = argb,
                             selected = argb == coverColor,
