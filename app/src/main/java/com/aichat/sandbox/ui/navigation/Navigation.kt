@@ -6,7 +6,7 @@ import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.ListAlt
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -32,7 +32,6 @@ import com.aichat.sandbox.ui.screens.notes.NoteEditorScreen
 import com.aichat.sandbox.ui.screens.notes.NoteSearchScreen
 import com.aichat.sandbox.ui.screens.notes.NotesListScreen
 import com.aichat.sandbox.ui.screens.settings.SettingsScreen
-import com.aichat.sandbox.ui.screens.templates.TemplatesScreen
 import com.aichat.sandbox.ui.screens.vector.ROUTE_VECTOR_TUNEUP
 import com.aichat.sandbox.ui.screens.vector.VectorTuneupScreen
 
@@ -40,7 +39,7 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
     data object ChatList : Screen("chat_list", "Chat", Icons.Filled.Chat)
     data object Notes : Screen("notes", "Notes", Icons.Filled.EditNote)
     data object Notebooks : Screen("notebooks", "Notebooks", Icons.Filled.AutoStories)
-    data object Templates : Screen("templates", "Templates", Icons.Filled.ListAlt)
+    data object VectorTuneup : Screen(ROUTE_VECTOR_TUNEUP, "Vector", Icons.Filled.Tune)
     data object Images : Screen("images", "Images", Icons.Filled.Image)
     data object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
 }
@@ -49,7 +48,7 @@ val bottomNavItems = listOf(
     Screen.ChatList,
     Screen.Notes,
     Screen.Notebooks,
-    Screen.Templates,
+    Screen.VectorTuneup,
     Screen.Images,
     Screen.Settings
 )
@@ -241,21 +240,16 @@ fun AppNavigation(
                     },
                 )
             }
-            composable(Screen.Templates.route) {
-                TemplatesScreen()
-            }
             composable(Screen.Images.route) {
                 ImagesScreen()
             }
             composable(Screen.Settings.route) {
-                SettingsScreen(
-                    onOpenVectorTuneup = { navController.navigate(ROUTE_VECTOR_TUNEUP) },
-                )
+                SettingsScreen()
             }
             // Vector Art Tune-Up workspace (Phase 3). Reached from Settings →
             // Tools; lives as its own non-bottom-nav route so it can be opened
             // from anywhere later without a navigation rewrite.
-            composable(ROUTE_VECTOR_TUNEUP) {
+            composable(Screen.VectorTuneup.route) {
                 VectorTuneupScreen(
                     onNavigateBack = { navController.popBackStack() },
                 )
