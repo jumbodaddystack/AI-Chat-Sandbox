@@ -6,8 +6,11 @@ import com.aichat.sandbox.data.local.VectorTuneupDao
 import com.aichat.sandbox.data.model.VectorTuneupMode
 import com.aichat.sandbox.data.model.VectorTuneupProjectEntity
 import com.aichat.sandbox.data.model.VectorTuneupVersionEntity
-import com.aichat.sandbox.data.vector.AndroidVectorDrawableParser
+import com.aichat.sandbox.data.vector.AndroidVectorDrawableWriter
+import com.aichat.sandbox.data.vector.VectorDocumentImporter
 import com.aichat.sandbox.data.vector.VectorDocumentValidator
+import com.aichat.sandbox.data.vector.VectorImportDetector
+import com.aichat.sandbox.data.vector.VectorImportFormat
 import com.aichat.sandbox.data.vector.VectorMetrics
 import com.aichat.sandbox.data.vector.VectorMetricsAnalyzer
 import com.aichat.sandbox.data.vector.VectorWarning
@@ -166,32 +169,50 @@ class VectorTuneupRepository @Inject constructor(
     }
 
     /**
-     * Creates a project from imported [xml]: analyzes it with the deterministic
-     * foundation, stores the project (preserving [xml] exactly as `sourceXml`),
-     * inserts the [VectorTuneupMode.ORIGINAL] version, and marks it active.
+     * Creates a project from imported [xml]. Backwards-compatible entry point;
+     * delegates to [createProjectFromInput], which also accepts SVG.
      */
     suspend fun createProjectFromXml(
         title: String,
         xml: String,
+    ): VectorTuneupProject = createProjectFromInput(title, xml)
+
+    /**
+     * Creates a project from pasted/imported [input], which may be Android
+     * `VectorDrawable` XML or SVG. The exact [input] is preserved as `sourceXml`,
+     * but the [VectorTuneupMode.ORIGINAL] version's XML is always canonical
+     * Android `VectorDrawable` XML so every downstream edit/preview/export path
+     * keeps working. SVG input is parsed and re-serialized to Android XML;
+     * Android XML input is kept verbatim. Import warnings (e.g. unsupported SVG
+     * features) ride along on the original version.
+     */
+    suspend fun createProjectFromInput(
+        title: String,
+        input: String,
     ): VectorTuneupProject = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val projectId = UUID.randomUUID().toString()
 
-        val document = AndroidVectorDrawableParser.parse(xml)
-        val metrics = VectorMetricsAnalyzer.analyze(document, xml)
+        val format = VectorImportDetector.detect(input)
+        val document = VectorDocumentImporter.import(input)
+        val canonicalXml = when (format) {
+            VectorImportFormat.SVG -> AndroidVectorDrawableWriter.write(document)
+            else -> input
+        }
+        val metrics = VectorMetricsAnalyzer.analyze(document, canonicalXml)
         val warnings = (document.warnings + VectorDocumentValidator.validate(document)).distinct()
 
         val project = VectorTuneupProjectEntity(
             id = projectId,
             title = title.ifBlank { DEFAULT_TITLE },
-            sourceXml = xml,
+            sourceXml = input,
             activeVersionId = null,
             createdAt = now,
             updatedAt = now,
         )
         dao.upsertProject(project)
 
-        val original = buildOriginalVersion(projectId, xml, metrics, warnings, now)
+        val original = buildOriginalVersion(projectId, canonicalXml, metrics, warnings, now)
         dao.upsertVersion(original.toEntity())
         dao.setActiveVersion(projectId, original.id, now)
 

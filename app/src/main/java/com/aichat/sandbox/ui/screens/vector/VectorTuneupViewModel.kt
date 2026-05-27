@@ -12,12 +12,14 @@ import com.aichat.sandbox.data.vector.VectorBatchRestyle
 import com.aichat.sandbox.data.vector.VectorBatchRestyleApplier
 import com.aichat.sandbox.data.vector.VectorDocument
 import com.aichat.sandbox.data.vector.VectorDrawableOptimizer
+import com.aichat.sandbox.data.vector.VectorExportFormat
 import com.aichat.sandbox.data.vector.VectorManualEdit
 import com.aichat.sandbox.data.vector.VectorManualEditApplier
 import com.aichat.sandbox.data.vector.VectorManualEditResult
 import com.aichat.sandbox.data.vector.VectorMetricsAnalyzer
 import com.aichat.sandbox.data.vector.VectorOptimizeOptions
 import com.aichat.sandbox.data.vector.VectorPathCatalog
+import com.aichat.sandbox.data.vector.VectorPortableBundle
 import com.aichat.sandbox.data.vector.VectorQualityScorer
 import com.aichat.sandbox.data.vector.VectorVersionDiffAnalyzer
 import com.aichat.sandbox.data.vector.VectorVersionQualityInput
@@ -547,26 +549,73 @@ class VectorTuneupViewModel @Inject constructor(
 
     // ---- export ----
 
-    /** Exports the selected/active version (top-bar + Export tab default). */
-    fun exportCandidate() = export(reducer.resolveExportVersion(_uiState.value, null))
+    /** Updates the portable export format used by the Export tab. */
+    fun setExportFormat(format: VectorExportFormat) {
+        _uiState.update { reducer.setExportFormat(it, format) }
+    }
 
-    /** Exports a specific version from the history panel. */
+    /**
+     * Exports the selected/active version (top-bar + Export tab default). The
+     * top bar always exports Android XML to avoid surprising users; the Export
+     * tab calls [exportSelectedVersion] with the chosen format.
+     */
+    fun exportCandidate() =
+        export(reducer.resolveExportVersion(_uiState.value, null), VectorExportFormat.ANDROID_VECTOR_XML)
+
+    /** Exports the selected/active version in the requested [format]. */
+    fun exportSelectedVersion(format: VectorExportFormat = _uiState.value.exportFormat) =
+        export(reducer.resolveExportVersion(_uiState.value, null), format)
+
+    /** Exports a specific version from the history panel as Android XML. */
     fun exportVersion(versionId: String) =
-        export(reducer.resolveExportVersion(_uiState.value, versionId))
+        export(reducer.resolveExportVersion(_uiState.value, versionId), VectorExportFormat.ANDROID_VECTOR_XML)
 
-    private fun export(version: VectorVersionUi?) {
+    private fun export(version: VectorVersionUi?, format: VectorExportFormat) {
         if (version == null) {
             emit(VectorTuneupEvent.ShowMessage(VectorTuneupReducer.ERROR_NEED_VECTOR))
             return
         }
         viewModelScope.launch {
-            runCatching { exporter.exportXml("vector-tuneup", version.xml) }
-                .onSuccess { uri -> emit(VectorTuneupEvent.ExportReady(uri)) }
+            runCatching {
+                if (format == VectorExportFormat.PROJECT_BUNDLE) {
+                    exporter.exportBundle("vector-tuneup", buildBundleJson())
+                } else {
+                    exporter.exportVersion("vector-tuneup", version.xml, format)
+                }
+            }
+                .onSuccess { uri -> emit(VectorTuneupEvent.ExportReady(uri, format.mimeType)) }
                 .onFailure { t ->
                     Log.w(TAG, "Vector version export failed", t)
-                    emit(VectorTuneupEvent.ShowMessage("Vector XML could not be exported."))
+                    emit(VectorTuneupEvent.ShowMessage("Vector could not be exported."))
                 }
         }
+    }
+
+    /** Serializes the current project's versions into a portable JSON bundle. */
+    private fun buildBundleJson(): String {
+        val state = _uiState.value
+        val versions = state.versions.ifEmpty { listOfNotNull(state.original, state.candidate) }
+        return VectorPortableBundle.build(
+            project = VectorPortableBundle.ProjectInfo(
+                title = state.projectTitle,
+                createdAt = 0L,
+                updatedAt = System.currentTimeMillis(),
+            ),
+            versions = versions.map { v ->
+                VectorPortableBundle.VersionInfo(
+                    id = v.id,
+                    parentId = v.parentId,
+                    label = v.label,
+                    mode = v.mode.name,
+                    instruction = v.instruction,
+                    xml = v.xml,
+                    metrics = v.metrics,
+                    warnings = v.warnings,
+                    reportSummary = v.reportSummary,
+                    createdAt = v.createdAt,
+                )
+            },
+        )
     }
 
     // ---- internals ----
@@ -586,9 +635,11 @@ class VectorTuneupViewModel @Inject constructor(
             _uiState.value = state
             if (!state.hasOriginal) return null
         }
-        val xml = state.original?.xml ?: state.inputXml
+        // Pass the exact pasted input so the project's sourceXml preserves it
+        // (SVG included); the repository canonicalizes the original version.
+        val input = state.inputXml.ifBlank { state.original?.xml.orEmpty() }
         val project = runCatching {
-            repository.createProjectFromXml(title ?: state.projectTitle, xml)
+            repository.createProjectFromInput(title ?: state.projectTitle, input)
         }.getOrElse {
             Log.w(TAG, "Create project failed", it)
             _uiState.update { it.copy(errorMessage = VectorTuneupReducer.ERROR_CREATE_PROJECT) }

@@ -72,12 +72,12 @@ fun VectorTuneupScreen(
             when (event) {
                 is VectorTuneupEvent.ExportReady -> {
                     val send = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/xml"
+                        type = event.mimeType
                         putExtra(Intent.EXTRA_STREAM, event.uri)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                     context.startActivity(
-                        Intent.createChooser(send, "Share optimized VectorDrawable")
+                        Intent.createChooser(send, "Share vector export")
                     )
                 }
                 is VectorTuneupEvent.ShowMessage ->
@@ -179,6 +179,7 @@ fun VectorTuneupScreen(
 private fun InputTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewModel) {
     VectorXmlInputPanel(
         inputXml = state.inputXml,
+        detectedFormat = state.detectedImportFormat,
         onXmlChanged = viewModel::onXmlChanged,
         onParse = viewModel::parseInput,
         onPasteSample = viewModel::pasteSample,
@@ -197,6 +198,12 @@ private fun DiagnosticsTab(state: VectorTuneupUiState) {
         )
         return
     }
+    Text(
+        text = "Import format: ${importFormatLabel(state.detectedImportFormat)}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 4.dp),
+    )
     SectionTitle("Preview")
     VectorPreviewPanel(title = "Original (parsed)", version = original)
     SectionTitle("Metrics")
@@ -204,6 +211,13 @@ private fun DiagnosticsTab(state: VectorTuneupUiState) {
     SectionTitle("Warnings")
     VectorWarningList(original.warnings)
 }
+
+private fun importFormatLabel(format: com.aichat.sandbox.data.vector.VectorImportFormat): String =
+    when (format) {
+        com.aichat.sandbox.data.vector.VectorImportFormat.ANDROID_VECTOR -> "Android VectorDrawable"
+        com.aichat.sandbox.data.vector.VectorImportFormat.SVG -> "SVG (converted to Android XML)"
+        com.aichat.sandbox.data.vector.VectorImportFormat.UNKNOWN -> "Unknown"
+    }
 
 @Composable
 private fun CompareTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewModel) {
@@ -416,13 +430,29 @@ private fun ExportTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewMod
             modifier = Modifier.padding(bottom = 12.dp),
         )
     }
+    SectionTitle("Format")
+    VectorExportOptionsPanel(
+        selected = state.exportFormat,
+        onSelect = viewModel::setExportFormat,
+    )
     Button(
-        onClick = { viewModel.exportCandidate() },
+        onClick = { viewModel.exportSelectedVersion() },
         enabled = exportVersion != null,
+        modifier = Modifier.padding(top = 12.dp),
     ) {
-        Text("Export selected version")
+        Text(exportButtonLabel(state.exportFormat))
     }
 }
+
+private fun exportButtonLabel(format: com.aichat.sandbox.data.vector.VectorExportFormat): String =
+    when (format) {
+        com.aichat.sandbox.data.vector.VectorExportFormat.ANDROID_VECTOR_XML ->
+            "Export selected version as Android XML"
+        com.aichat.sandbox.data.vector.VectorExportFormat.SVG ->
+            "Export selected version as SVG"
+        com.aichat.sandbox.data.vector.VectorExportFormat.PROJECT_BUNDLE ->
+            "Export project bundle JSON"
+    }
 
 @Composable
 private fun SectionTitle(title: String) {

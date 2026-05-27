@@ -92,6 +92,6 @@ fun VectorTuneupVersion.toUi(): VectorVersionUi = VectorVersionUi(
  * (fire a share intent, show a snackbar).
  */
 sealed interface VectorTuneupEvent {
-    data class ExportReady(val uri: Uri) : VectorTuneupEvent
+    data class ExportReady(val uri: Uri, val mimeType: String = "text/xml") : VectorTuneupEvent
     data class ShowMessage(val message: String) : VectorTuneupEvent
 }
