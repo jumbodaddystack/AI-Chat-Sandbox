@@ -1,5 +1,7 @@
 package com.aichat.sandbox.ui.screens.vector
 
+import com.aichat.sandbox.data.vector.VectorExportFormat
+import com.aichat.sandbox.data.vector.VectorImportFormat
 import com.aichat.sandbox.data.vector.VectorOptimizeOptions
 import com.aichat.sandbox.data.vector.VectorPathCatalogEntry
 import com.aichat.sandbox.data.vector.VectorQualityScores
@@ -41,6 +43,8 @@ import com.aichat.sandbox.data.vector.VectorWarning
  * @property manualEditStatusMessage Friendly status line for the manual-edit controls.
  * @property visualDiffMode How the Compare tab's visual diff is presented.
  * @property previewWarnings Preview-build notes for the current source version (informational only).
+ * @property detectedImportFormat Format sniffed from the current [inputXml] (Phase 9).
+ * @property exportFormat The portable format the Export tab will use (Phase 9).
  */
 data class VectorTuneupUiState(
     val inputXml: String = "",
@@ -71,6 +75,8 @@ data class VectorTuneupUiState(
     val manualEditStatusMessage: String? = null,
     val visualDiffMode: VectorVisualDiffMode = VectorVisualDiffMode.SIDE_BY_SIDE,
     val previewWarnings: List<VectorWarning> = emptyList(),
+    val detectedImportFormat: VectorImportFormat = VectorImportFormat.UNKNOWN,
+    val exportFormat: VectorExportFormat = VectorExportFormat.ANDROID_VECTOR_XML,
 ) {
     /** True once the input has been parsed into an [original] version. */
     val hasOriginal: Boolean get() = original != null

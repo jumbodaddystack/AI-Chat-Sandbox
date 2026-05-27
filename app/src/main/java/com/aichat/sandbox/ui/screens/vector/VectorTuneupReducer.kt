@@ -3,11 +3,14 @@ package com.aichat.sandbox.ui.screens.vector
 import com.aichat.sandbox.data.model.VectorTuneupMode
 import com.aichat.sandbox.data.repository.VectorTuneupProject
 import com.aichat.sandbox.data.repository.VectorTuneupVersion
-import com.aichat.sandbox.data.vector.AndroidVectorDrawableParser
 import com.aichat.sandbox.data.vector.AndroidVectorDrawableWriter
 import com.aichat.sandbox.data.vector.VectorDocument
+import com.aichat.sandbox.data.vector.VectorDocumentImporter
 import com.aichat.sandbox.data.vector.VectorDocumentValidator
 import com.aichat.sandbox.data.vector.VectorDrawableOptimizer
+import com.aichat.sandbox.data.vector.VectorExportFormat
+import com.aichat.sandbox.data.vector.VectorImportDetector
+import com.aichat.sandbox.data.vector.VectorImportFormat
 import com.aichat.sandbox.data.vector.VectorMetrics
 import com.aichat.sandbox.data.vector.VectorMetricsAnalyzer
 import com.aichat.sandbox.data.vector.VectorEditPlanApplyResult
@@ -37,7 +40,7 @@ import com.aichat.sandbox.data.vector.VectorWarning
  * without crafting input that the robust optimizer would never reject.
  */
 class VectorTuneupReducer(
-    private val parse: (String) -> VectorDocument = AndroidVectorDrawableParser::parse,
+    private val parse: (String) -> VectorDocument = VectorDocumentImporter::import,
     private val analyze: (VectorDocument, String) -> VectorMetrics =
         { doc, xml -> VectorMetricsAnalyzer.analyze(doc, xml) },
     private val validate: (VectorDocument) -> List<VectorWarning> =
@@ -47,9 +50,29 @@ class VectorTuneupReducer(
         { doc, xml, opts -> VectorDrawableOptimizer.optimize(doc, xml, opts) },
 ) {
 
-    /** Updates the input text and clears any stale error. Never auto-parses. */
+    /**
+     * Updates the input text, refreshes the sniffed import format, and clears any
+     * stale error. Never auto-parses.
+     */
     fun onXmlChanged(state: VectorTuneupUiState, xml: String): VectorTuneupUiState =
-        state.copy(inputXml = xml, errorMessage = null)
+        state.copy(
+            inputXml = xml,
+            detectedImportFormat = VectorImportDetector.detect(xml),
+            errorMessage = null,
+        )
+
+    /** Re-runs import-format detection on [input] without touching anything else. */
+    fun updateDetectedImportFormat(
+        state: VectorTuneupUiState,
+        input: String,
+    ): VectorTuneupUiState =
+        state.copy(detectedImportFormat = VectorImportDetector.detect(input))
+
+    /** Sets the portable format the Export tab will use. */
+    fun setExportFormat(
+        state: VectorTuneupUiState,
+        format: VectorExportFormat,
+    ): VectorTuneupUiState = state.copy(exportFormat = format)
 
     /** Replaces the optimizer settings. Never auto-optimizes. */
     fun updateOptions(
@@ -268,6 +291,7 @@ class VectorTuneupReducer(
             original = original ?: state.original,
             candidate = candidate,
             inputXml = project.sourceXml,
+            detectedImportFormat = VectorImportDetector.detect(project.sourceXml),
             errorMessage = null,
             selectedTab = if (candidate != null) VectorTuneupTab.COMPARE else VectorTuneupTab.DIAGNOSTICS,
             isOptimizing = false,
@@ -426,31 +450,45 @@ class VectorTuneupReducer(
 
     // ---- helpers ----
 
-    private fun buildVersion(xml: String, id: String, label: String): VectorVersionUi {
-        val document = parse(xml)
-        val metrics = analyze(document, xml)
+    private fun buildVersion(input: String, id: String, label: String): VectorVersionUi {
+        val document = parse(input)
+        // SVG is canonicalized to Android XML so every downstream edit/preview/
+        // export path sees Android VectorDrawable XML; Android XML stays verbatim.
+        val canonical = if (VectorImportDetector.detect(input) == VectorImportFormat.SVG) {
+            write(document)
+        } else {
+            input
+        }
+        val metrics = analyze(document, canonical)
         val warnings = (document.warnings + validate(document)).distinct()
         return VectorVersionUi(
             id = id,
             label = label,
-            xml = xml,
+            xml = canonical,
             metrics = metrics,
             warnings = warnings,
         )
     }
 
     /**
-     * The parser never throws; it reports a structural failure (root not
-     * `<vector>`, malformed XML) as a [VectorWarning.Codes.MALFORMED_XML]
-     * warning on an empty document. Treat that as "couldn't parse" for the UI.
+     * The importer never throws; it reports a structural failure (unknown format,
+     * root not `<vector>`/`<svg>`, malformed XML) as a stable warning code on an
+     * empty document. Treat any of those as "couldn't parse" for the UI.
      */
     private fun isUnparseable(version: VectorVersionUi): Boolean =
-        version.warnings.any { it.code == VectorWarning.Codes.MALFORMED_XML }
+        version.warnings.any { it.code in UNPARSEABLE_CODES }
 
     companion object {
-        const val ERROR_BLANK = "Paste a VectorDrawable XML first."
+        /** Warning codes the importer emits on a structural parse failure. */
+        private val UNPARSEABLE_CODES = setOf(
+            VectorWarning.Codes.MALFORMED_XML,
+            VectorWarning.Codes.SVG_MALFORMED,
+            VectorWarning.Codes.IMPORT_UNKNOWN_FORMAT,
+        )
+
+        const val ERROR_BLANK = "Paste Android VectorDrawable XML or SVG first."
         const val ERROR_PARSE =
-            "Could not parse this XML. Check that the root element is <vector>."
+            "Could not parse this input. Check that it is valid Android VectorDrawable XML or SVG."
         const val ERROR_OPTIMIZE =
             "Optimization failed, but your original XML was not changed."
 
