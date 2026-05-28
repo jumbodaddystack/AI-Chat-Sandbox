@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
@@ -119,10 +120,21 @@ fun NoteEditorScreen(
     var saveStampDialogVisible by remember { mutableStateOf(false) }
     var viewportController by remember { mutableStateOf<ViewportController?>(null) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var paletteHeightPx by remember { mutableStateOf(0) }
     // Collapsible bottom-palette state. When false, the favorites + brush
     // sheet + tool palette rows hide behind a thin handle; the canvas above
     // expands to reclaim ~150dp of vertical space for drawing/writing.
     var palettesExpanded by remember { mutableStateOf(true) }
+    val density = LocalDensity.current
+    val paletteHeightDp = with(density) { paletteHeightPx.toDp() }
+    val recordingBottomOffset = if (palettesExpanded) {
+        // Keep the recording control above the expanded palette while still
+        // allowing palette background to bleed behind system navigation.
+        paletteHeightDp + 12.dp
+    } else {
+        // Collapsed state only needs handle clearance + touch breathing room.
+        56.dp
+    }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -472,7 +484,9 @@ fun NoteEditorScreen(
             // inset; the inner Column applies that inset to its content so
             // controls stay above the system nav bar.
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { paletteHeightPx = it.height },
                 tonalElevation = 2.dp,
                 shadowElevation = 2.dp,
             ) {
@@ -560,7 +574,7 @@ fun NoteEditorScreen(
                 isRecording = isRecordingAudio,
                 onStart = viewModel::startAudioRecording,
                 onStop = viewModel::stopAudioRecording,
-                modifier = Modifier.padding(end = 12.dp, bottom = 160.dp),
+                modifier = Modifier.padding(end = 12.dp, bottom = recordingBottomOffset),
             )
         }
         // Sub-phase 8.2 — left-edge frame navigator.
@@ -670,8 +684,7 @@ fun NoteEditorScreen(
         if (stampDrawerOpen) {
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.navigationBars),
+                    .fillMaxSize(),
                 contentAlignment = Alignment.BottomCenter,
             ) {
                 StampDrawer(
