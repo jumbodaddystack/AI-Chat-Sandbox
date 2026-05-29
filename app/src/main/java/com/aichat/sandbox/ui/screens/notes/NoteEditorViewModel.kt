@@ -13,7 +13,9 @@ import com.aichat.sandbox.data.model.BrushPreset
 import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteFrame
+import android.graphics.Bitmap
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.data.notes.NoteRasterizer
 import com.aichat.sandbox.data.model.NoteLayer
 import com.aichat.sandbox.data.model.Stamp
 import com.aichat.sandbox.data.notes.AiChunk
@@ -48,9 +50,14 @@ import com.aichat.sandbox.ui.components.notes.TextItemRenderer
 import com.aichat.sandbox.ui.components.notes.Tool
 import com.aichat.sandbox.ui.components.notes.ToolPaletteState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
@@ -74,6 +81,24 @@ private const val UNDO_STACK_CAP = 200
  * grid spacing, so a "graph" background draws a clean 24×24 icon grid.
  */
 private const val ICON_ARTBOARD_WORLD = 768f
+
+/**
+ * Selectable icon-artboard sizes, expressed as a count of 32-unit background
+ * grid cells. The artboard is no longer locked to the seeded 24-grid — the
+ * editor exposes these so a user can design against a tighter or roomier grid.
+ */
+enum class IconCanvasSize(val cells: Int, val world: Float, val label: String) {
+    SMALL_16(16, 512f, "Small · 16-grid"),
+    MEDIUM_24(24, 768f, "Medium · 24-grid"),
+    LARGE_32(32, 1024f, "Large · 32-grid"),
+    XLARGE_48(48, 1536f, "Extra large · 48-grid");
+
+    companion object {
+        /** Nearest preset for a measured artboard edge (for selecting the live row). */
+        fun nearest(world: Float): IconCanvasSize =
+            entries.minBy { kotlin.math.abs(it.world - world) }
+    }
+}
 
 @HiltViewModel
 class NoteEditorViewModel @Inject constructor(
@@ -511,6 +536,26 @@ class NoteEditorViewModel @Inject constructor(
         return frame.bounds()
     }
 
+    /** Edge of the current icon artboard in world units, or null if absent. */
+    fun iconArtboardWorld(): Float? {
+        val b = currentFrameBounds() ?: return null
+        return maxOf(b[2] - b[0], b[3] - b[1])
+    }
+
+    /**
+     * Resize the icon artboard to a square [worldSize], keeping its top-left
+     * corner anchored. Routes through [updateFrameBounds] so the change is a
+     * normal, undoable frame mutation — no new persistence path.
+     */
+    fun resizeIconArtboard(worldSize: Float) {
+        val id = _currentFrameId.value ?: _frames.value.firstOrNull()?.id ?: return
+        val frame = _frames.value.firstOrNull { it.id == id } ?: return
+        updateFrameBounds(
+            id,
+            floatArrayOf(frame.minX, frame.minY, frame.minX + worldSize, frame.minY + worldSize),
+        )
+    }
+
     // ── Notebook mode (sub-phase 9.1 / 9.2) ──────────────────────────────
     //
     // A notebook owns this note (one note per notebook in 9.1). When
@@ -649,6 +694,12 @@ class NoteEditorViewModel @Inject constructor(
      * [com.aichat.sandbox.data.notes.VectorCanvasJson]. Fire-and-forget;
      * the drawer's [stamps] flow surfaces the new entry once persisted.
      */
+    // One-shot UI events for transient feedback (e.g. "Stamp saved"). A
+    // SharedFlow keeps these from re-firing on recomposition/rotation the way a
+    // StateFlow would.
+    private val _stampSaved = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val stampSaved: SharedFlow<String> = _stampSaved.asSharedFlow()
+
     fun saveSelectionAsStamp(name: String) {
         val ids = _selection.value
         if (ids.isEmpty()) return
@@ -673,6 +724,7 @@ class NoteEditorViewModel @Inject constructor(
                     thumbnail = thumbnail,
                     payloadJson = payloadJson,
                 )
+                _stampSaved.tryEmit(name)
             } finally {
                 thumbnail.recycle()
             }
@@ -2200,6 +2252,50 @@ class NoteEditorViewModel @Inject constructor(
             frameBounds = currentFrameBounds(),
         )
     }
+
+    /**
+     * Count of items that would be dropped by a VectorDrawable export (text +
+     * images have no `<path>` equivalent). Computed off the wire format so it
+     * matches the exporter exactly, including the frame-visibility filter for
+     * icon notes. Lets [ExportVectorXmlDialog] show the warning only when it's
+     * actually true.
+     */
+    suspend fun vectorExportSkippedCount(): Int = withContext(Dispatchers.Default) {
+        com.aichat.sandbox.data.notes.NoteVectorDrawableExporter
+            .render(items.toList(), sizeDp = 48, frameBounds = currentFrameBounds())
+            .skippedCount
+    }
+
+    /**
+     * Rasterize the export-eligible geometry (strokes + shapes only, no grid
+     * background) so [ExportVectorXmlDialog] can show a live preview of the
+     * resulting icon. Mirrors the exporter's viewport: the active artboard
+     * frame for icon notes, content bounds otherwise. Returns null for an
+     * empty / text-only drawing so the dialog can show a placeholder.
+     */
+    suspend fun renderVectorPreview(maxEdgePx: Int = 256): Bitmap? =
+        withContext(Dispatchers.Default) {
+            val supported = items.toList().filter {
+                it.kind == NoteItem.KIND_STROKE ||
+                    it.kind == com.aichat.sandbox.ui.components.notes.Shape.KIND
+            }
+            if (supported.isEmpty()) return@withContext null
+            val frame = currentFrameBounds()
+            if (frame != null) {
+                NoteRasterizer.renderForFrame(
+                    items = supported,
+                    frameBounds = frame,
+                    maxEdgePx = maxEdgePx,
+                    backgroundStyle = com.aichat.sandbox.ui.components.notes.BackgroundLayer.STYLE_PLAIN,
+                )
+            } else {
+                NoteRasterizer.renderSelection(
+                    items = supported,
+                    maxEdgePx = maxEdgePx,
+                    backgroundStyle = com.aichat.sandbox.ui.components.notes.BackgroundLayer.STYLE_PLAIN,
+                )
+            }
+        }
 
     /**
      * Persist the current note and export it as a PDF (sub-phase 4.2).
