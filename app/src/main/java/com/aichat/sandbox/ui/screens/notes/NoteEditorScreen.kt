@@ -10,12 +10,14 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
@@ -41,9 +43,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
@@ -116,7 +120,12 @@ fun NoteEditorScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var pdfDialogVisible by remember { mutableStateOf(false) }
     var vectorXmlDialogVisible by remember { mutableStateOf(false) }
+    // Live preview + skipped-item count for the vector-XML export dialog,
+    // recomputed off the main thread each time the dialog opens.
+    var vectorPreview by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var vectorSkippedCount by remember { mutableStateOf(0) }
     var brushSheetOpen by remember { mutableStateOf(false) }
+    var canvasSizeDialogVisible by remember { mutableStateOf(false) }
     var saveStampDialogVisible by remember { mutableStateOf(false) }
     var viewportController by remember { mutableStateOf<ViewportController?>(null) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
@@ -281,6 +290,11 @@ fun NoteEditorScreen(
                             expanded = menuExpanded,
                             current = note.backgroundStyle,
                             hasActiveFrame = currentFrameId != null,
+                            isIcon = note.isIcon,
+                            onResizeArtboard = {
+                                menuExpanded = false
+                                canvasSizeDialogVisible = true
+                            },
                             onDismiss = { menuExpanded = false },
                             onBackgroundSelect = { style ->
                                 viewModel.setBackgroundStyle(style)
@@ -654,8 +668,17 @@ fun NoteEditorScreen(
             )
         }
         if (vectorXmlDialogVisible) {
+            LaunchedEffect(Unit) {
+                vectorSkippedCount = viewModel.vectorExportSkippedCount()
+                vectorPreview = viewModel.renderVectorPreview()?.asImageBitmap()
+            }
             ExportVectorXmlDialog(
-                onCancel = { vectorXmlDialogVisible = false },
+                skippedCount = vectorSkippedCount,
+                preview = vectorPreview,
+                onCancel = {
+                    vectorXmlDialogVisible = false
+                    vectorPreview = null
+                },
                 onExport = { sizeDp ->
                     vectorXmlDialogVisible = false
                     scope.launch {
@@ -678,6 +701,17 @@ fun NoteEditorScreen(
                         )
                     }
                 },
+            )
+        }
+        if (canvasSizeDialogVisible) {
+            IconCanvasSizeDialog(
+                current = viewModel.iconArtboardWorld()
+                    ?.let { IconCanvasSize.nearest(it) },
+                onSelect = { choice ->
+                    viewModel.resizeIconArtboard(choice.world)
+                    canvasSizeDialogVisible = false
+                },
+                onDismiss = { canvasSizeDialogVisible = false },
             )
         }
         // Sub-phase 8.3 — bottom-aligned stamp drawer.
@@ -804,10 +838,58 @@ fun NoteEditorScreen(
  * exporter runs.
  */
 @Composable
+private fun IconCanvasSizeDialog(
+    current: IconCanvasSize?,
+    onSelect: (IconCanvasSize) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Canvas size") },
+        text = {
+            Column {
+                Text(
+                    text = "Pick the design grid for this icon. Larger grids give finer " +
+                        "detail; the export scales the artwork to the chosen icon size.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                IconCanvasSize.entries.forEach { option ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = option == current,
+                                onClick = { onSelect(option) },
+                                role = Role.RadioButton,
+                            )
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = option == current, onClick = null)
+                        Text(
+                            text = option.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        },
+    )
+}
+
+@Composable
 private fun EditorOverflowMenu(
     expanded: Boolean,
     current: String,
     hasActiveFrame: Boolean,
+    isIcon: Boolean,
+    onResizeArtboard: () -> Unit,
     onDismiss: () -> Unit,
     onBackgroundSelect: (String) -> Unit,
     onInsertImage: () -> Unit,
@@ -821,6 +903,21 @@ private fun EditorOverflowMenu(
     onExportFrameSvg: () -> Unit,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        if (isIcon) {
+            Text(
+                text = "Icon",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            DropdownMenuItem(
+                text = { Text("Canvas size…") },
+                leadingIcon = {
+                    Icon(Icons.Filled.AspectRatio, contentDescription = null)
+                },
+                onClick = onResizeArtboard,
+            )
+            HorizontalDivider()
+        }
         Text(
             text = "Insert",
             style = MaterialTheme.typography.labelMedium,
