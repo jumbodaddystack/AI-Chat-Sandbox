@@ -66,6 +66,19 @@ fun VectorTuneupScreen(
     onNavigateBack: () -> Unit = {},
     viewModel: VectorTuneupViewModel = hiltViewModel(),
 ) {
+    com.aichat.sandbox.ui.theme.studio.StudioTheme(
+        dark = androidx.compose.foundation.isSystemInDarkTheme(),
+    ) {
+        VectorTuneupScreenContent(onNavigateBack = onNavigateBack, viewModel = viewModel)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VectorTuneupScreenContent(
+    onNavigateBack: () -> Unit,
+    viewModel: VectorTuneupViewModel,
+) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -102,10 +115,20 @@ fun VectorTuneupScreen(
         contentWindowInsets = WindowInsets.safeDrawing.only(
             WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
         ),
+        containerColor = com.aichat.sandbox.ui.theme.studio.LocalStudioColors.current.canvasBase,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("Vector Tune-Up") },
+                colors = androidx.compose.material3.TopAppBarDefaults.topAppBarColors(
+                    containerColor = com.aichat.sandbox.ui.theme.studio.LocalStudioColors.current.canvasBase,
+                    titleContentColor = com.aichat.sandbox.ui.theme.studio.LocalStudioColors.current.inkStrong,
+                ),
+                title = {
+                    Text(
+                        "Vector Tune-Up",
+                        style = com.aichat.sandbox.ui.theme.studio.LocalStudioTypography.current.title,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
@@ -141,18 +164,22 @@ fun VectorTuneupScreen(
                 onRename = viewModel::renameProject,
                 onDelete = { viewModel.deleteCurrentProject() },
             )
+            // Studio Bench: the six tabs read as a numbered pipeline / stage
+            // track (Input → Diagnostics → … → Export) rather than a flat tab
+            // strip, reinforcing that Tune-Up is a left-to-right workflow.
             val tabs = VectorTuneupTab.entries
             ScrollableTabRow(
                 selectedTabIndex = tabs.indexOf(state.selectedTab),
                 edgePadding = 8.dp,
+                containerColor = com.aichat.sandbox.ui.theme.studio.LocalStudioColors.current.canvasBase,
             ) {
-                tabs.forEach { tab ->
+                tabs.forEachIndexed { index, tab ->
                     Tab(
                         selected = state.selectedTab == tab,
                         onClick = { viewModel.selectTab(tab) },
                         text = {
                             Text(
-                                text = tabLabel(tab),
+                                text = "${index + 1} · ${tabLabel(tab)}",
                                 maxLines = 1,
                                 softWrap = false,
                             )
@@ -543,12 +570,9 @@ private fun exportButtonLabel(format: com.aichat.sandbox.data.vector.VectorExpor
 
 @Composable
 private fun SectionTitle(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
-    )
+    // Studio Bench: all-caps, wide-tracked stage marker instead of a generic
+    // titleMedium header — the instrument voice of the identity.
+    com.aichat.sandbox.ui.components.studio.StudioSectionMarker(label = title)
 }
 
 private fun tabLabel(tab: VectorTuneupTab): String = when (tab) {
