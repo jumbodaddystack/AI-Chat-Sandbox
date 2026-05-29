@@ -69,6 +69,19 @@ fun StudioHairline(modifier: Modifier = Modifier, strong: Boolean = false) {
 }
 
 /**
+ * Scope-free hairline for surfaces that aren't wrapped in [StudioTheme] (e.g.
+ * the drawing canvas's bottom palette, which is intentionally app-themed).
+ * Pass an explicit color from the Studio palette.
+ */
+@Composable
+fun StudioHairlineRaw(
+    color: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    HorizontalDivider(modifier = modifier, thickness = 1.dp, color = color)
+}
+
+/**
  * The "live" element — a tool chip or mode toggle. When active it fills with
  * the signature accent (rack-focus glow-in); at rest it's a flat hairline-
  * bordered tile. This is the ONE place the loud color appears in chrome.

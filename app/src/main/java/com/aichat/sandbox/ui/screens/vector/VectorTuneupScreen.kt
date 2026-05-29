@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.only
@@ -254,10 +256,9 @@ private fun InputTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewMode
 private fun DiagnosticsTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewModel) {
     val original = state.original
     if (original == null) {
-        Text(
-            text = "Parse a vector on the Input tab to see diagnostics.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        StudioEmptyHint(
+            marker = "Awaiting input",
+            body = "Parse a vector on the Input stage to read its diagnostics.",
         )
         return
     }
@@ -377,10 +378,9 @@ private fun CompareTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewMo
 @Composable
 private fun EditTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewModel) {
     if (!state.hasOriginal) {
-        Text(
-            text = "Parse or open a vector first, then select any version to edit it.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        StudioEmptyHint(
+            marker = "Nothing on the bench",
+            body = "Parse or open a vector first, then select any version to edit it.",
         )
         return
     }
@@ -453,10 +453,9 @@ private fun HistoryTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewMo
 
     SectionTitle("Saved projects")
     if (projects.isEmpty()) {
-        Text(
-            text = "No saved projects yet. Run an operation or tap \"Save project\" to create one.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        StudioEmptyHint(
+            marker = "No saved projects",
+            body = "Run an operation or tap \"Save project\" to keep a versioned project here.",
         )
     } else {
         projects.forEach { project ->
@@ -523,13 +522,12 @@ private fun HistoryTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewMo
 private fun ExportTab(state: VectorTuneupUiState, viewModel: VectorTuneupViewModel) {
     val exportVersion = state.selectedVersion ?: state.activeVersion ?: state.candidate ?: state.original
     if (exportVersion == null) {
-        Text(
-            text = "Parse or save a vector first. You can then export any version from " +
-                "here or from the History tab.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 12.dp),
+        StudioEmptyHint(
+            marker = "Nothing to export",
+            body = "Parse or save a vector first. You can then export any version from " +
+                "here or from the History stage.",
         )
+        Spacer(modifier = Modifier.height(12.dp))
     } else {
         Text(
             text = "Will export: ${exportVersion.label} · ${exportVersion.metrics.xmlBytes} bytes",
@@ -573,6 +571,22 @@ private fun SectionTitle(title: String) {
     // Studio Bench: all-caps, wide-tracked stage marker instead of a generic
     // titleMedium header — the instrument voice of the identity.
     com.aichat.sandbox.ui.components.studio.StudioSectionMarker(label = title)
+}
+
+/**
+ * Studio Bench empty/placeholder hint. A small-caps instrument marker over a
+ * muted instruction line — replaces the ad-hoc `Text(bodyMedium)` placeholders
+ * so the workspace's empty states speak the same voice as the rest of the
+ * identity.
+ */
+@Composable
+private fun StudioEmptyHint(marker: String, body: String) {
+    val colors = com.aichat.sandbox.ui.theme.studio.LocalStudioColors.current
+    val type = com.aichat.sandbox.ui.theme.studio.LocalStudioTypography.current
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(text = marker.uppercase(), style = type.section, color = colors.inkMuted)
+        Text(text = body, style = type.body, color = colors.inkDefault)
+    }
 }
 
 private fun tabLabel(tab: VectorTuneupTab): String = when (tab) {

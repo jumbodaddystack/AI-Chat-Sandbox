@@ -325,10 +325,19 @@ private fun SnapChipRow(snapMask: Int, onToggle: (Int) -> Unit) {
 
 @Composable
 private fun SnapToggleChip(label: String, on: Boolean, onClick: () -> Unit) {
+    val studio = if (androidx.compose.foundation.isSystemInDarkTheme()) {
+        com.aichat.sandbox.ui.theme.studio.StudioDarkColors
+    } else {
+        com.aichat.sandbox.ui.theme.studio.StudioLightColors
+    }
     FilterChip(
         selected = on,
         onClick = onClick,
         label = { Text(label) },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = studio.accentSignature,
+            selectedLabelColor = studio.onAccent,
+        ),
     )
 }
 
