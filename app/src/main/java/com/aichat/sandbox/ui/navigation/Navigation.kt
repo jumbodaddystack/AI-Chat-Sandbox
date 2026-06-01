@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.EditNote
@@ -42,7 +41,6 @@ import androidx.navigation.navArgument
 import com.aichat.sandbox.ui.screens.chat.ChatScreen
 import com.aichat.sandbox.ui.screens.chatlist.ChatListScreen
 import com.aichat.sandbox.ui.screens.icons.IconsListScreen
-import com.aichat.sandbox.ui.screens.notebooks.NotebooksListScreen
 import com.aichat.sandbox.ui.screens.notes.ENTRY_SOURCE_ICON
 import com.aichat.sandbox.ui.screens.notes.NOTE_ID_NEW
 import com.aichat.sandbox.ui.screens.notes.NoteEditorScreen
@@ -56,7 +54,6 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
     data object ChatList : Screen("chat_list", "Chat", Icons.Filled.Chat)
     data object Notes : Screen("notes", "Notes", Icons.Filled.EditNote)
     data object IconsTab : Screen("icons", "Icons", Icons.Filled.Draw)
-    data object Notebooks : Screen("notebooks", "Notebooks", Icons.Filled.AutoStories)
     data object VectorTuneup : Screen(ROUTE_VECTOR_TUNEUP, "Vector", Icons.Filled.Tune)
     data object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
 }
@@ -65,7 +62,7 @@ val bottomNavItems = listOf(
     Screen.ChatList,
     Screen.Notes,
     Screen.IconsTab,
-    Screen.Notebooks,
+    Screen.VectorTuneup,
     Screen.Settings
 )
 
@@ -186,6 +183,9 @@ fun AppNavigation(
                     onNewNote = {
                         navController.navigate("note/$NOTE_ID_NEW")
                     },
+                    onOpenNotebook = { noteId ->
+                        navController.navigate("note/$noteId")
+                    },
                     onOpenSearch = {
                         navController.navigate("notes_search")
                     },
@@ -242,16 +242,6 @@ fun AppNavigation(
                     },
                 )
             }
-            composable(Screen.Notebooks.route) {
-                NotebooksListScreen(
-                    onOpenNotebook = { noteId ->
-                        navController.navigate("note/$noteId")
-                    },
-                    onOpenSearch = {
-                        navController.navigate("notes_search")
-                    },
-                )
-            }
             composable("notes_search") {
                 NoteSearchScreen(
                     onNavigateBack = { navController.popBackStack() },
@@ -263,9 +253,9 @@ fun AppNavigation(
             composable(Screen.Settings.route) {
                 SettingsScreen()
             }
-            // Vector Art Tune-Up workspace (Phase 3). Reached from Settings →
-            // Tools; lives as its own non-bottom-nav route so it can be opened
-            // from anywhere later without a navigation rewrite.
+            // Vector Art Tune-Up workspace (Phase 3) — a bottom-nav destination.
+            // (It was briefly orphaned when the Icons tab took its slot; the
+            // Notes + Notebooks merge freed a slot to bring it back.)
             composable(Screen.VectorTuneup.route) {
                 VectorTuneupScreen(
                     onNavigateBack = { navController.popBackStack() },
