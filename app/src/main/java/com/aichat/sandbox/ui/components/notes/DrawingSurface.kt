@@ -69,6 +69,19 @@ class DrawingSurface(context: Context) : View(context) {
         }
 
     /**
+     * Icon artboard world-rect `[minX, minY, maxX, maxY]`, or null for the
+     * infinite (notes) canvas. When set, committed + live ink is clipped to
+     * the artboard so the icon reads as a bounded canvas and stray ink past
+     * the edge stays hidden (it remains in the data, just not rendered here).
+     */
+    var artboardClipBounds: FloatArray? = null
+        set(value) {
+            if (field?.contentEquals(value) == true || (field == null && value == null)) return
+            field = value
+            invalidate()
+        }
+
+    /**
      * Sketch-attachment mode (sub-phase 3.4). When enabled:
      *  - every pointer (finger or stylus) is routed through the ink path so
      *    the chat composer's sheet works without an S-Pen,
@@ -396,7 +409,20 @@ class DrawingSurface(context: Context) : View(context) {
             rasterizeScene()
             sceneDirty = false
         }
-        sceneBitmap?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+        // For icons, clip the committed scene to the artboard so ink drawn past
+        // the edge isn't shown (the canvas is bounded). Interaction affordances
+        // below (selection, lasso, hover) stay unclipped.
+        val clip = artboardClipBounds
+        sceneBitmap?.let { bmp ->
+            if (clip != null) {
+                canvas.save()
+                clipToArtboard(canvas, clip)
+                canvas.drawBitmap(bmp, 0f, 0f, null)
+                canvas.restore()
+            } else {
+                canvas.drawBitmap(bmp, 0f, 0f, null)
+            }
+        }
 
         drawSelectedItems(canvas)
 
@@ -412,6 +438,9 @@ class DrawingSurface(context: Context) : View(context) {
 
         if (strokeTool.isInk && (liveSampleCount > 0 || predictedSampleCount > 0)) {
             canvas.save()
+            // Clip the in-progress stroke to the artboard too (icons only) so it
+            // matches the committed rendering as the user draws past the edge.
+            clip?.let { clipToArtboard(canvas, it) }
             canvas.translate(viewport.offsetX, viewport.offsetY)
             canvas.scale(viewport.scale, viewport.scale)
             if (liveSampleCount > 0) {
@@ -450,6 +479,19 @@ class DrawingSurface(context: Context) : View(context) {
                 canvas.drawCircle(hoverX, hoverY, HOVER_RADIUS_PX, hoverPaint)
             }
         }
+    }
+
+    /**
+     * Clip [canvas] (in screen space) to the artboard world-rect [bounds],
+     * mapping each edge through the current viewport. Caller owns the
+     * surrounding save/restore.
+     */
+    private fun clipToArtboard(canvas: Canvas, bounds: FloatArray) {
+        val left = viewport.worldToScreenX(bounds[0])
+        val top = viewport.worldToScreenY(bounds[1])
+        val right = viewport.worldToScreenX(bounds[2])
+        val bottom = viewport.worldToScreenY(bounds[3])
+        canvas.clipRect(left, top, right, bottom)
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
@@ -1505,6 +1547,9 @@ fun DrawingSurfaceView(
     // `t = SystemClock.elapsedRealtime() - recordingStartedAt` and emits
     // v2 stroke payloads. Zero (default) keeps the v1 encoding path.
     recordingStartedAt: Long = 0L,
+    // Icon artboard world-rect; when non-null, ink is clipped to it (bounded
+    // canvas). Null for notes (infinite canvas).
+    artboardClipBounds: FloatArray? = null,
 ) {
     val currentOnCommit by rememberUpdatedState(onStrokeCommitted)
     val currentOnErase by rememberUpdatedState(onItemsErased)
@@ -1546,6 +1591,7 @@ fun DrawingSurfaceView(
             view.frameDragListener = { bounds -> currentOnFrameDrawn(bounds) }
             view.frameTapListener = { wx, wy -> currentOnFrameTap(wx, wy) }
             view.backgroundStyle = backgroundStyle
+            view.artboardClipBounds = artboardClipBounds
             view.setToolConfig(
                 tool = paletteState.selected,
                 colorArgb = paletteState.activeInkColor(),

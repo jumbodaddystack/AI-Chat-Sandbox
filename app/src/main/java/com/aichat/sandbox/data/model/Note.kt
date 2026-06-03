@@ -32,4 +32,12 @@ data class Note(
     // artboard seed, the icon-tuned AI edit prompt, and the VectorDrawable
     // export defaults.
     val isIcon: Boolean = false,
+    // Persisted viewport (pan offset + zoom) so a reopened icon restores the
+    // exact view the user left, rather than getting "lost" on the canvas.
+    // Null on non-icon notes and on icons saved before schema v16 — those
+    // fall back to fitting the artboard on open. See NoteEditorScreen's
+    // initial-fit effect and NoteEditorViewModel.save().
+    val viewportOffsetX: Float? = null,
+    val viewportOffsetY: Float? = null,
+    val viewportScale: Float? = null,
 )
