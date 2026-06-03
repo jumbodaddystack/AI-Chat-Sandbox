@@ -164,6 +164,12 @@ fun NoteEditorScreen(
     fun saveAndExit() {
         scope.launch {
             viewModel.commitTextEdit()
+            // Persist the current viewport for icons so reopening restores the
+            // exact view (pan + zoom) rather than getting "lost" on the canvas.
+            val vp = viewportController
+            if (note.isIcon && vp != null) {
+                viewModel.setIconViewport(vp.offsetX, vp.offsetY, vp.scale)
+            }
             viewModel.save()
             onNavigateBack()
         }
@@ -188,24 +194,58 @@ fun NoteEditorScreen(
         }
     }
 
-    // Frame the artboard when an icon first becomes visible. Without this the
+    // Icons are a *bounded* canvas: keep the artboard rubber-banded into the
+    // viewport so it can never be flung off-screen (notes stay infinite). This
+    // effect re-installs the clamp whenever the artboard or canvas size changes
+    // (rotation, artboard resize), and clears it for non-icon notes. setPanBounds
+    // re-clamps immediately, so a now-illegal offset snaps back into range.
+    LaunchedEffect(note.isIcon, frames, currentFrameId, viewportController, canvasSize) {
+        val vp = viewportController ?: return@LaunchedEffect
+        if (note.isIcon && canvasSize != IntSize.Zero) {
+            viewModel.currentFrameBounds()?.let { artboard ->
+                vp.setPanBounds(
+                    bounds = artboard,
+                    canvasSize = floatArrayOf(
+                        canvasSize.width.toFloat(),
+                        canvasSize.height.toFloat(),
+                    ),
+                )
+            }
+        } else if (!note.isIcon) {
+            vp.clearPanBounds()
+        }
+    }
+
+    // Restore the view when an icon first becomes visible. Without this the
     // viewport stays at the origin / 100%, so a reopened icon's box and strokes
-    // sit off-screen and the saved work looks lost. Runs once per note (the
-    // artboard frame loads asynchronously, so we wait for it), then leaves pan
-    // and zoom entirely to the user.
+    // sit off-screen and the saved work looks lost. Prefers the persisted
+    // viewport (exact view the user left); falls back to fitting the artboard
+    // for first opens / pre-v16 icons. Runs once per note (the artboard frame
+    // loads asynchronously, so we wait for it).
     var didInitialIconFit by remember(note.id) { mutableStateOf(false) }
     LaunchedEffect(note.id, note.isIcon, frames, currentFrameId, viewportController, canvasSize) {
         if (didInitialIconFit || !note.isIcon) return@LaunchedEffect
         val vp = viewportController ?: return@LaunchedEffect
         if (canvasSize == IntSize.Zero) return@LaunchedEffect
-        val bounds = viewModel.iconOpenBounds() ?: return@LaunchedEffect
-        vp.flyTo(
-            bounds = bounds,
-            canvasSize = floatArrayOf(
-                canvasSize.width.toFloat(),
-                canvasSize.height.toFloat(),
-            ),
+        val artboard = viewModel.currentFrameBounds() ?: return@LaunchedEffect
+        val canvasFloats = floatArrayOf(
+            canvasSize.width.toFloat(),
+            canvasSize.height.toFloat(),
         )
+        // Ensure the clamp is installed before the restore/fit so the result
+        // lands legal even if this effect wins the race with the one above.
+        vp.setPanBounds(artboard, canvasFloats)
+        val savedX = note.viewportOffsetX
+        val savedY = note.viewportOffsetY
+        val savedScale = note.viewportScale
+        if (savedX != null && savedY != null && savedScale != null) {
+            vp.setForAnimation(savedX, savedY, savedScale)
+        } else {
+            vp.flyTo(
+                bounds = viewModel.iconOpenBounds() ?: artboard,
+                canvasSize = canvasFloats,
+            )
+        }
         didInitialIconFit = true
     }
 
@@ -471,6 +511,12 @@ fun NoteEditorScreen(
                     onFrameDrawn = viewModel::onFrameDrawn,
                     onFrameTap = viewModel::onFrameTap,
                     recordingStartedAt = recordingStartedAt,
+                    // Icons are a bounded canvas: clip ink to the artboard.
+                    artboardClipBounds = if (note.isIcon) {
+                        viewModel.currentFrameBounds()
+                    } else {
+                        null
+                    },
                 )
                 // Sub-phase 8.1 — frame rectangles + name labels rendered
                 // above the canvas.

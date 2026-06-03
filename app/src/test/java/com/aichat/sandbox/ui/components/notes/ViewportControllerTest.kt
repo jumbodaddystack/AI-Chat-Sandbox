@@ -198,4 +198,101 @@ class ViewportControllerTest {
         }
         assertTrue(vp.scale in ViewportController.MIN_SCALE..ViewportController.MAX_SCALE)
     }
+
+    // ── Bounded pan (icon artboard) ──────────────────────────────────────
+
+    /** Square 768 artboard; a phone-ish portrait canvas. */
+    private val artboard = floatArrayOf(0f, 0f, 768f, 768f)
+
+    @Test
+    fun panClampCentersArtboardWhenSmallerThanViewport() {
+        val vp = ViewportController()
+        val canvas = floatArrayOf(1080f, 1920f)
+        // At scale 1, the 768 artboard fits both axes → must centre.
+        vp.setPanBounds(artboard, canvas)
+        // A large fling shouldn't move it: centring is absolute.
+        vp.applyPan(5000f, -5000f)
+        // Artboard midpoint (384, 384) must sit at canvas centre.
+        assertEquals(540f, vp.worldToScreenX(384f), tol)
+        assertEquals(960f, vp.worldToScreenY(384f), tol)
+    }
+
+    @Test
+    fun panClampKeepsArtboardCoveringViewportWhenZoomedIn() {
+        val vp = ViewportController(scale = 4f) // 768*4 = 3072 px, overflows 1080
+        val canvas = floatArrayOf(1080f, 1080f)
+        vp.setPanBounds(artboard, canvas)
+        // Fling far right then far left; the artboard must always cover the
+        // viewport — no gap at either edge.
+        vp.applyPan(9000f, 0f)
+        assertTrue("left edge must not leave a gap", vp.worldToScreenX(0f) <= 0f + tol)
+        assertTrue("right edge must cover", vp.worldToScreenX(768f) >= 1080f - tol)
+        vp.applyPan(-18000f, 0f)
+        assertTrue(vp.worldToScreenX(0f) <= 0f + tol)
+        assertTrue(vp.worldToScreenX(768f) >= 1080f - tol)
+    }
+
+    @Test
+    fun panClampIsPerAxisIndependent() {
+        // Landscape canvas: 768 fits horizontally (1600) but overflows
+        // vertically (600) at scale 1.
+        val vp = ViewportController(scale = 1f)
+        val canvas = floatArrayOf(1600f, 600f)
+        vp.setPanBounds(artboard, canvas)
+        vp.applyPan(4000f, 4000f)
+        // X centred: midpoint 384 at canvas centre 800.
+        assertEquals(800f, vp.worldToScreenX(384f), tol)
+        // Y panned but clamped so the artboard still covers the short axis.
+        assertTrue(vp.worldToScreenY(0f) <= 0f + tol)
+        assertTrue(vp.worldToScreenY(768f) >= 600f - tol)
+    }
+
+    @Test
+    fun setPanBoundsReclampsExistingIllegalOffset() {
+        // Start far off-screen (the "lost icon" state), then install bounds.
+        val vp = ViewportController(offsetX = 99999f, offsetY = -99999f, scale = 1f)
+        vp.setPanBounds(artboard, floatArrayOf(1080f, 1920f))
+        // Snaps the artboard back to centred/visible.
+        assertEquals(540f, vp.worldToScreenX(384f), tol)
+        assertEquals(960f, vp.worldToScreenY(384f), tol)
+    }
+
+    @Test
+    fun clearPanBoundsRestoresUnboundedPan() {
+        val vp = ViewportController()
+        vp.setPanBounds(artboard, floatArrayOf(1080f, 1920f))
+        vp.clearPanBounds()
+        // With the clamp gone, pan moves freely (notes parity): the full delta
+        // applies on top of wherever the clamp last left the offset.
+        val beforeX = vp.offsetX
+        val beforeY = vp.offsetY
+        vp.applyPan(5000f, 5000f)
+        assertEquals(beforeX + 5000f, vp.offsetX, tol)
+        assertEquals(beforeY + 5000f, vp.offsetY, tol)
+    }
+
+    @Test
+    fun zoomOutFloorForIconsHonored() {
+        val vp = ViewportController(scale = 1f)
+        val canvas = floatArrayOf(1080f, 1920f)
+        vp.setPanBounds(artboard, canvas)
+        // Try to zoom way out; the floor keeps the artboard >= 40% of the
+        // shorter canvas dim: floor = 0.4 * 1080 / 768 ≈ 0.5625.
+        vp.applyZoom(540f, 960f, 0.0001f)
+        val expectedFloor = ViewportController.ICON_MIN_FILL_FRACTION * 1080f / 768f
+        assertEquals(expectedFloor, vp.scale, tol)
+        assertTrue(vp.scale > ViewportController.MIN_SCALE)
+    }
+
+    @Test
+    fun fitToContentStillWorksWithBoundsSet() {
+        val vp = ViewportController()
+        val canvas = floatArrayOf(1080f, 1920f)
+        vp.setPanBounds(artboard, canvas)
+        // Fit is exempt from the zoom floor and must centre the artboard.
+        vp.fitToContent(artboard, canvas)
+        assertEquals(540f, vp.worldToScreenX(384f), tol)
+        assertEquals(960f, vp.worldToScreenY(384f), tol)
+        assertTrue(vp.scale in ViewportController.MIN_SCALE..ViewportController.MAX_SCALE)
+    }
 }

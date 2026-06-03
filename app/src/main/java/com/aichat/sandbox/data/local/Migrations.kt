@@ -527,3 +527,18 @@ val MIGRATION_14_15 = object : Migration(14, 15) {
         )
     }
 }
+
+/**
+ * Migration from version 15 to 16:
+ * Persist each icon's viewport (pan offset + zoom) so a reopened icon restores
+ * the exact view instead of getting "lost" on the canvas. All three columns are
+ * nullable — existing rows and non-icon notes stay null and fall back to the
+ * fit-artboard behaviour on open.
+ */
+val MIGRATION_15_16 = object : Migration(15, 16) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `notes` ADD COLUMN `viewportOffsetX` REAL")
+        db.execSQL("ALTER TABLE `notes` ADD COLUMN `viewportOffsetY` REAL")
+        db.execSQL("ALTER TABLE `notes` ADD COLUMN `viewportScale` REAL")
+    }
+}

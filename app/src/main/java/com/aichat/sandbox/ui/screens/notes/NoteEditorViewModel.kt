@@ -564,6 +564,17 @@ class NoteEditorViewModel @Inject constructor(
         )
     }
 
+    // Latest viewport (pan offset + zoom) pushed from the screen so [save]
+    // can persist it for icons. The VM doesn't own the ViewportController
+    // (the screen creates it via onViewportReady), so the screen hands the
+    // live values down right before a save. `[offsetX, offsetY, scale]`.
+    private var pendingIconViewport: FloatArray? = null
+
+    /** Screen → VM bridge: stash the live viewport so [save] can persist it. */
+    fun setIconViewport(offsetX: Float, offsetY: Float, scale: Float) {
+        pendingIconViewport = floatArrayOf(offsetX, offsetY, scale)
+    }
+
     /** Edge of the current icon artboard in world units, or null if absent. */
     fun iconArtboardWorld(): Float? {
         val b = currentFrameBounds() ?: return null
@@ -2470,6 +2481,11 @@ class NoteEditorViewModel @Inject constructor(
         // icons showed a blank "—" dimension. Fall back to the existing values
         // (rather than collapsing to 0,0,0,0) when the note has no geometry.
         val contentBounds = com.aichat.sandbox.data.notes.NoteRasterizer.computeBounds(items.toList())
+        // Persist the viewport for icons so reopening restores the exact view
+        // (offset + zoom). Notes leave these null and keep their fit-on-open /
+        // default behaviour. Falls back to the existing stored values when the
+        // screen hasn't pushed a fresh viewport yet.
+        val vp = pendingIconViewport.takeIf { current.isIcon }
         val toPersist = current.copy(
             title = sanitizedTitle,
             updatedAt = System.currentTimeMillis(),
@@ -2478,6 +2494,9 @@ class NoteEditorViewModel @Inject constructor(
             minY = contentBounds?.get(1) ?: current.minY,
             maxX = contentBounds?.get(2) ?: current.maxX,
             maxY = contentBounds?.get(3) ?: current.maxY,
+            viewportOffsetX = vp?.get(0) ?: current.viewportOffsetX,
+            viewportOffsetY = vp?.get(1) ?: current.viewportOffsetY,
+            viewportScale = vp?.get(2) ?: current.viewportScale,
         )
         // Sub-phase 6.4 — flush the layer list atomically with items so the
         // FK invariants stay sound across the save.

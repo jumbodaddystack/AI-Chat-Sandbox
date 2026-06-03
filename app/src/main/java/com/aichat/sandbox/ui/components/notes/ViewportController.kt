@@ -35,10 +35,99 @@ class ViewportController(
     /** Fired whenever offset or scale changes. Used by the surface to invalidate. */
     var onChanged: (() -> Unit)? = null
 
+    // ── Bounded pan (icon artboard) ──────────────────────────────────────
+    //
+    // Icons are a *bounded* canvas: the artboard must never be flung
+    // off-screen, otherwise reopened work looks "lost". Notes keep the
+    // infinite canvas (these stay null/zero, so [clampOffsets] no-ops).
+    //
+    // [clampBounds] is the artboard's world-rect `[minX, minY, maxX, maxY]`;
+    // when non-null every pan/zoom is followed by [clampOffsets] so the
+    // artboard either stays centred (when it fits the viewport on that axis)
+    // or keeps covering it (when zoomed in past the edges).
+    private var clampBounds: FloatArray? = null
+    private var clampCanvasW: Float = 0f
+    private var clampCanvasH: Float = 0f
+
+    /**
+     * Enable bounded panning for [bounds] (artboard world-rect) inside a
+     * viewport of [canvasSize] (`[width, height]` screen px). Passing `null`
+     * bounds clears the clamp (equivalent to [clearPanBounds]). Re-clamps
+     * immediately so a pre-existing illegal offset (e.g. after a screen
+     * rotation that changed [canvasSize]) snaps back into range.
+     */
+    fun setPanBounds(bounds: FloatArray?, canvasSize: FloatArray) {
+        if (bounds == null || bounds.size < 4 || canvasSize.size < 2) {
+            clearPanBounds()
+            return
+        }
+        clampBounds = bounds.copyOf(4)
+        clampCanvasW = canvasSize[0]
+        clampCanvasH = canvasSize[1]
+        clampOffsets()
+        onChanged?.invoke()
+    }
+
+    /** Disable bounded panning (the infinite-canvas default used by notes). */
+    fun clearPanBounds() {
+        if (clampBounds == null) return
+        clampBounds = null
+        clampCanvasW = 0f
+        clampCanvasH = 0f
+    }
+
+    /**
+     * Constrain [offsetX]/[offsetY] so the [clampBounds] artboard stays
+     * visible. Per-axis and independent: a tall artboard can overflow a
+     * short landscape viewport (pan allowed) while fitting it horizontally
+     * (centred). No-op when no bounds are set, so notes are unaffected.
+     */
+    private fun clampOffsets() {
+        val b = clampBounds ?: return
+        if (clampCanvasW <= 0f || clampCanvasH <= 0f || scale <= 0f) return
+        offsetX = clampAxis(offsetX, b[0], b[2], clampCanvasW)
+        offsetY = clampAxis(offsetY, b[1], b[3], clampCanvasH)
+    }
+
+    private fun clampAxis(
+        offset: Float,
+        worldMin: Float,
+        worldMax: Float,
+        canvasLen: Float,
+    ): Float {
+        val artScreenLen = (worldMax - worldMin) * scale
+        return if (artScreenLen <= canvasLen) {
+            // Fits this axis → centre the artboard.
+            val mid = (worldMin + worldMax) * 0.5f
+            canvasLen * 0.5f - mid * scale
+        } else {
+            // Overflows → keep the artboard covering the viewport (no gap):
+            //   top/left edge not past 0, bottom/right edge not before canvasLen.
+            val maxOffset = -worldMin * scale
+            val minOffset = canvasLen - worldMax * scale
+            offset.coerceIn(minOffset, maxOffset)
+        }
+    }
+
+    /**
+     * Lowest scale allowed while [clampBounds] is set, so the artboard can't
+     * be pinched down to a dot. Returns [MIN_SCALE] when unbounded (notes).
+     */
+    private fun iconMinScale(): Float {
+        val b = clampBounds ?: return MIN_SCALE
+        val maxWorldDim = max(b[2] - b[0], b[3] - b[1])
+        if (maxWorldDim <= 0f) return MIN_SCALE
+        val smallerCanvas = min(clampCanvasW, clampCanvasH)
+        if (smallerCanvas <= 0f) return MIN_SCALE
+        val fillFloor = ICON_MIN_FILL_FRACTION * smallerCanvas / maxWorldDim
+        return max(MIN_SCALE, fillFloor).coerceAtMost(MAX_SCALE)
+    }
+
     fun applyPan(dx: Float, dy: Float) {
         if (dx == 0f && dy == 0f) return
         offsetX += dx
         offsetY += dy
+        clampOffsets()
         onChanged?.invoke()
     }
 
@@ -49,13 +138,16 @@ class ViewportController(
      */
     fun applyZoom(focusScreenX: Float, focusScreenY: Float, factor: Float) {
         if (factor <= 0f) return
-        val target = (scale * factor).coerceIn(MIN_SCALE, MAX_SCALE)
+        // Icons floor the zoom-out so the artboard can't shrink into a dot;
+        // notes keep the global MIN_SCALE (iconMinScale returns it when unbounded).
+        val target = (scale * factor).coerceIn(iconMinScale(), MAX_SCALE)
         if (target == scale) return
         val worldX = (focusScreenX - offsetX) / scale
         val worldY = (focusScreenY - offsetY) / scale
         scale = target
         offsetX = focusScreenX - worldX * scale
         offsetY = focusScreenY - worldY * scale
+        clampOffsets()
         onChanged?.invoke()
     }
 
@@ -95,6 +187,7 @@ class ViewportController(
         scale = targetScale
         offsetX = canvasW * 0.5f - cx * targetScale
         offsetY = canvasH * 0.5f - cy * targetScale
+        clampOffsets()
         onChanged?.invoke()
     }
 
@@ -112,6 +205,7 @@ class ViewportController(
         val cy = (bounds[1] + bounds[3]) * 0.5f
         offsetX = canvasW * 0.5f - cx * scale
         offsetY = canvasH * 0.5f - cy * scale
+        clampOffsets()
         onChanged?.invoke()
     }
 
@@ -137,6 +231,7 @@ class ViewportController(
         scale = 1f
         offsetX = canvasW * 0.5f - worldCx
         offsetY = canvasH * 0.5f - worldCy
+        clampOffsets()
         onChanged?.invoke()
     }
 
@@ -164,6 +259,7 @@ class ViewportController(
         offsetX = newOffsetX
         offsetY = newOffsetY
         scale = clampedScale
+        clampOffsets()
         onChanged?.invoke()
     }
 
@@ -175,5 +271,12 @@ class ViewportController(
     companion object {
         const val MIN_SCALE = 0.25f
         const val MAX_SCALE = 8f
+
+        /**
+         * For bounded (icon) canvases, the smallest the artboard may be
+         * zoomed to: its longest edge must still cover this fraction of the
+         * viewport's shorter dimension. Stops the artboard shrinking to a dot.
+         */
+        const val ICON_MIN_FILL_FRACTION = 0.4f
     }
 }
