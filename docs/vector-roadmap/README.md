@@ -1,5 +1,9 @@
 # Vector Icon System Roadmap
 
+> **Working on this? Start at [`PROGRESS.md`](PROGRESS.md)** — the single
+> tracking + handoff doc. It says what's done, what's next, and how to run a
+> session. A fresh session only needs to read that file to get oriented.
+
 A staged plan to grow the app's vector tooling from "icon sketchpad + import-only
 tune-up" into a true editable vector icon editor. Start with
 [`00-overview.md`](00-overview.md) for the vision, current-state analysis, and the
