@@ -66,7 +66,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started
 - [x] Tests: `EditablePathRoundTripTest`, `VectorDocumentReplacePathTest` (14 tests, green)
 - [x] Committed + pushed
 
-### Phase 1 — node editor (the rest of Phase 1) — 🟡 IN PROGRESS (1a+1b+1c+1d done → **NEXT: 1e**)
+### Phase 1 — node editor (the rest of Phase 1) — 🟢 NEARLY COMPLETE (1a–1f done → **only on-device manual verify left**)
 Build in this order (each step is shippable + testable on its own):
 - [x] **1a. Pure reducer core (no UI):** `ui/screens/vector/edit/VectorEditState.kt`,
   `VectorEditAction.kt`, `VectorEditReducer.kt`. Actions: `BeginEdit`, `SetTool`,
@@ -110,14 +110,36 @@ Build in this order (each step is shippable + testable on its own):
   `calculatePan`/`calculateZoom`/`calculateCentroid`. Fits + bounds-clamps the viewport to
   the artboard on document/size change (the one place that frames the VM's viewport).
   Pure-UI (no new reducer logic); `*.edit.*` stays **59**.
-- [ ] **1e. Screen + toolbar:** `VectorEditScreen.kt` (Pen / Direct-select / add /
-  delete / corner-smooth / close / undo / redo).
-- [ ] **1f. Wire into Tune-Up:** add an "Edit" entry in `ui/screens/vector/VectorTuneupScreen.kt`;
-  edited document returns as a new version via the existing version-history reducer. No Room changes.
-- [ ] **Open choices to confirm with user before/at build:** (1) in-Tune-Up edit
-  mode vs. dedicated editor screen; (2) handles are stored as absolute
-  `ControlPoint`s (already chosen in Phase 0 — keep consistent).
-- [ ] On-device manual verify (draw closed shape, snap, undo/redo, export round-trips).
+- [x] **1e. Screen + toolbar:** `ui/screens/vector/edit/VectorEditScreen.kt` — a
+  `Scaffold` that collects `vm.state` (`collectAsState`), hosts `VectorEditCanvas` in
+  the body (passing `vm.onTap(x,y)` non-additive + the drag/pan/zoom pass-throughs),
+  a `TopAppBar` with back / **Undo** (gated on `canUndo`) / **Redo** (`canRedo`) /
+  **Done** (`applyToDocument` + `onDone`), and a two-row bottom toolbar of M3 chips:
+  **Pen** (`setTool(PEN)` + `startPath()` when no draft) / **Select** (`setTool(DIRECT_SELECT)`) /
+  **Finish** (`commitPath`, shown in pen mode, enabled at ≥2 draft anchors) /
+  **Delete** (`deleteSelected`, enabled when selection non-empty) /
+  **Corner·Smooth·Symmetric** (`setAnchorType` — enabled only when **exactly one**
+  anchor is selected, so each retype is one undo step; chip reads the anchor's current
+  type) / **Close** (`toggleClosed` on the active subpath = the one holding the
+  selection, else the last subpath) / **Snap** Grid·Angle·Endpoint (toggle the
+  `Snap.MASK_*` bits via `setSnapMask`). Added VM pass-through `setAnchorType(id, type)`.
+  Pure-UI (no reducer logic); compiles clean, `*.edit.*` stays **59**.
+- [x] **1f. Wire into Tune-Up:** the node editor opens as a **full-screen mode hosted
+  inside `VectorTuneupScreen`** (not a NavHost route — no result-passing to invent, and the
+  canvas gets the whole surface instead of fighting the scrolling EDIT tab). The EDIT tab's
+  new **"Node editor"** section has **Edit nodes** (enabled when exactly one path is selected →
+  opens on that path) and **Draw new path** (opens the pen on an empty canvas). On **Done** the
+  edited `VectorDocument` is persisted as a new `MANUAL_EDIT` version through the *existing*
+  `persistManualEdit` pipeline (`VectorTuneupViewModel.persistNodeEdit`), so history/diff/export
+  all keep working. New plumbing: `VectorDocument.upsertPath` (replace-or-append, so a
+  drawn-from-scratch path isn't dropped), reducer `applyToDocument` now upserts + new pen paths
+  get a default `#000000` fill, `VectorEditViewModel.openForNewPath`. **Tests:** +2 `upsertPath`
+  + 1 reducer new-path-apply → `*.edit.*` now **62, green**. Decision resolved with user:
+  embedded mode + new-path drawing (see §5).
+- [x] **Open choices (resolved):** (1) **embedded in-Tune-Up full-screen mode** (not a dedicated
+  route); (2) handles stored as absolute `ControlPoint`s (locked in Phase 0).
+- [ ] On-device manual verify (draw closed shape, snap, undo/redo, export round-trips) — the only
+  remaining Phase 1 item; needs a device/emulator (the build env is headless).
 
 ### Phase 2 — boolean ops + outline-stroke + offset — ⬜ NOT STARTED
 - [ ] Per `phase-2-boolean-path-ops.md`: new pure `data/vector/edit/boolean/`
@@ -139,13 +161,15 @@ Build in this order (each step is shippable + testable on its own):
 
 ## 3. Latest handoff (update this each session)
 
-**Last updated:** 2026-06-04 · **Last completed:** Phase 1 step 1d (Compose canvas + gestures)
+**Last updated:** 2026-06-04 · **Last completed:** Phase 1 steps 1e + 1f (screen/toolbar + Tune-Up wiring)
 
-**State of the branch:** Phase 0 + 1a + 1b + 1c are merged to main (PRs #91–#93). Phase 1d
-is now on `claude/vector-roadmap-next-phase-0k3F5`. `:app:compileDebugKotlin` is clean and
-edit tests stay green (**59** in `*.edit.*`: 12 Phase-0 round-trip/replace + 25 reducer +
-14 hit-test + 8 ViewModel). 1d is a Composable (pure UI), so it adds no JVM tests — its bar
-is "compiles + 59 stays green," both met. No PR open.
+**State of the branch:** Phase 0 + 1a–1d are merged to main (PRs #91–#94). Phase **1e + 1f**
+are on `claude/vector-roadmap-next-phase-T6EcZ`. `:app:assembleDebug` builds clean and edit
+tests are green (**62** in `*.edit.*`: 14 Phase-0 round-trip/replace+upsert + 26 reducer +
+14 hit-test + 8 ViewModel). No PR open. **The node editor is now fully wired into Tune-Up
+end-to-end:** open it from the EDIT tab → edit/draw on a full-screen canvas → Done saves a new
+version. The **only** remaining Phase 1 item is on-device manual verify (needs an emulator/device;
+this env is headless). After that, Phase 1 is complete and Phase 2 can start.
 
 **What exists now (for the next session to build on):**
 - *(Phase 0)* `data/vector/edit/` — `EditablePath` node model (absolute `ControlPoint`
@@ -204,45 +228,78 @@ is "compiles + 59 stays green," both met. No PR open.
     (knobs/handles/pen-draft/border) is drawn in screen space at constant px.
   - Gesture classification lives in a custom `awaitEachGesture` (NOT `detectTransformGestures`,
     which fires for one finger too): pointer-count gates tap/drag (1) vs pan/zoom (2).
+- *(Phase 1e, NEW)* `ui/screens/vector/edit/VectorEditScreen.kt`:
+  - `@Composable fun VectorEditScreen(onNavigateBack, onDone, viewModel = hiltViewModel())` —
+    wraps content in `StudioTheme`, collects `vm.state`, hosts `VectorEditCanvas` in a
+    `Scaffold` body and a chip toolbar in `bottomBar`. `const val ROUTE_VECTOR_EDIT = "vector-edit"`.
+  - Top bar: back / Undo (`canUndo`) / Redo (`canRedo`) / Done (`applyToDocument()` then `onDone()`,
+    enabled when `editing != null`). The host reads back the edited doc from `vm.state.document`
+    after Done (no document is passed through `onDone` yet — 1f decides that contract).
+  - Toolbar (two scrollable chip rows): Pen / Select / Finish / Delete / Corner·Smooth·Symmetric /
+    Close / Snap Grid·Angle·Endpoint — see the 1e checklist for exact wiring + enablement.
+  - Private helpers `singleSelectedAnchor(state)` / `activeSubpath(state)` derive the targets for
+    the type/close chips (pure reads of state — no logic).
+  - VM gained pass-through **`setAnchorType(id, type)`** (+ `AnchorType` import).
+- *(Phase 1f, NEW)* node editor ↔ Tune-Up wiring:
+  - `VectorTuneupScreen.kt` — the EDIT tab gained a **"Node editor"** section (**Edit nodes**,
+    enabled when exactly one path is selected; **Draw new path**). A private `NodeEditTarget`
+    (`ExistingPath(pathId)` / `NewPath`) hoisted in `VectorTuneupScreenContent` drives a
+    full-screen takeover: when set, `NodeEditorHost` renders `VectorEditScreen` (its own
+    `hiltViewModel`) and the normal `Scaffold` early-returns. `NodeEditorHost` parses
+    `state.sourceVersion.xml → VectorDocument` and calls `editVm.open(doc, pathId)` /
+    `editVm.openForNewPath(doc)`; on **Done** it persists `editVm.state.value.document` via
+    `tuneupVm.persistNodeEdit(...)` (only if `canUndo`, so a no-edit glance saves nothing),
+    on back it discards.
+  - `VectorTuneupViewModel.persistNodeEdit(document, label="Edit nodes")` — serializes the
+    edited doc (`AndroidVectorDrawableWriter.write`), re-analyzes metrics, and reuses the shared
+    `persistManualEdit` pipeline → a new `MANUAL_EDIT` version branched from the source.
+  - `VectorEditViewModel.openForNewPath(document)` — opens for drawing (pen tool + fresh draft).
+  - `VectorDocument.upsertPath(pathId, newPath)` — replace if the id exists, else **append to
+    root**. Reducer `applyToDocument` now upserts (so a drawn-from-scratch path isn't dropped),
+    and `commitPath` gives a brand-new path a default `#000000` fill (`NEW_PATH_FILL_COLOR`) so
+    it's visible after write-back/export.
 - Reusable, confirmed APIs (still): `VectorPreviewPathNormalizer.normalize`,
   `PathDataFormatter.format`, `PathDataParser.parse`, `ViewportController` (world↔screen,
   bounded clamp), `Snap` (`MASK_GRID/ANGLE/ENDPOINT`, all pure — reducer imports it and
   stays JVM-clean), `VectorPreviewCanvas` internals.
 
-**→ NEXT ACTION:** **Phase 1 step 1e** — `ui/screens/vector/edit/VectorEditScreen.kt`, the
-screen + toolbar that hosts `VectorEditCanvas`. Collect `vm.state` (`collectAsState`), put the
-canvas in a `Box`/`Scaffold`, and add a toolbar wired to the VM pass-throughs:
-Pen (`setTool(PEN)` + `startPath`/`commitPath`) / Direct-select (`setTool(DIRECT_SELECT)`) /
-add (insert is a canvas tap on a segment — surface as a hint, no button needed) / delete
-(`deleteSelected`) / corner↔smooth↔symmetric (`SetAnchorType` on the selected anchor — note the
-VM has **no `setAnchorType` pass-through yet**; either add one or `dispatch` the action directly)
-/ close (`toggleClosed` — needs the active subpath id; derive from selection or "last subpath")
-/ undo (`undo`, gate on `state.canUndo`) / redo (`redo`, gate on `state.canRedo`). Snap toggles
-(`setSnapMask` with `Snap.MASK_GRID/ANGLE/ENDPOINT`) are a nice-to-have. Then 1f (Tune-Up wiring).
+**→ NEXT ACTION:** Phase 1 is code-complete. Two options for the next session:
+1. **On-device manual verify** (the last Phase 1 checkbox) — needs an emulator/device (this build
+   env is headless). Flow to exercise: Tune-Up → parse/import a vector → EDIT tab → select one
+   path → **Edit nodes** → drag anchors / insert on a segment / corner↔smooth↔symmetric / close /
+   undo·redo → **Done** → confirm a new version appears and **Export** round-trips. Then **Draw new
+   path**: pen-place ≥3 points → **Finish** → **Done** → confirm the new (black-filled) path is in
+   the exported XML.
+2. **Start Phase 2** (boolean ops + outline-stroke + offset) per `phase-2-boolean-path-ops.md` —
+   it builds on the Phase 1 editable model, which is now fully in place and wired.
 
 **Watch-outs for next session:**
-- Reducer + hit-test stay pure (no Android imports); `VectorEditViewModel` + `VectorEditCanvas`
-  are the only Android-coupled edit files. Keep new logic in the reducer, not the screen/canvas.
-- **Pass `vm.onTap(x, y)` for the canvas tap** (the canvas's `onTap` is `(Float, Float) -> Unit`;
-  the VM signature is `onTap(x, y, additive=false)`). If 1e adds a multi-select toggle, thread
-  `additive` through a new canvas param — today it's always non-additive.
+- **1f decision (resolved):** node editor is an **embedded full-screen mode** in `VectorTuneupScreen`,
+  not a NavHost route. The `VectorVersion ⇄ VectorDocument` bridge is the existing
+  `AndroidVectorDrawableParser.parse` (enter) / `AndroidVectorDrawableWriter.write` (exit), same as
+  every other edit op. `ROUTE_VECTOR_EDIT` in `VectorEditScreen` is currently **unused** (the editor
+  is hosted inline, never navigated to) — leave it or wire a route only if a standalone entry is wanted.
+- New-path write-back depends on `VectorDocument.upsertPath` (append when id absent) — the older
+  `replacePath` would silently drop a from-scratch path. New pen paths get a default `#000000` fill;
+  revisit if a different default (stroke-only? last-used colour?) is wanted. The path id is
+  `VectorEditReducer.NEW_PATH_ID = "edit-path"` until re-parsed.
+- `persistNodeEdit` skips saving when `editVm.state.value.canUndo` is false (no edits), so opening
+  and immediately pressing Done won't spawn a no-op version. Entering edit normalizes the path
+  (H/V/Q/A/S/T → C/L, documented Phase-0 lossiness); other paths are preserved verbatim by upsert+writer.
+- Reducer + hit-test stay pure (no Android imports); `VectorEditViewModel`/`VectorEditCanvas`/
+  `VectorEditScreen` + the `NodeEditorHost`/`persistNodeEdit` glue are the Android-coupled files.
+  Keep new geometry logic in the reducer.
 - The canvas **frames the VM's viewport itself** (fit + `setPanBounds` on document/size change).
-  Don't also fit from the screen, or you'll fight it. If 1e wants a "reset view" button, call
-  `vm.viewport.fitToContent(bounds, canvasSize)` with the artboard rect.
-- `SetAnchorType`/`ToggleSubpathClosed` need a target id. `SetAnchorType` acts on a single
-  anchor id — for a multi-anchor selection decide a policy (apply to each, or disable the button
-  unless exactly one is selected). `ToggleSubpathClosed` takes a **subpath** id, not an anchor id.
-- Drags are **coalesced to one undo step** by the VM in `onDragEnd`; the canvas already brackets
-  honestly (incl. cancel). Don't second-guess it from the screen.
-- Handle knobs are only drawn/grabbable for **selected** anchors (canvas + `EditHitTest` agree).
-- `MoveHandle`/`MoveSelection` apply **world** deltas; the VM divides screen px by `viewport.scale`,
-  so the canvas passes raw screen deltas to `onDrag` (already wired).
+  Don't also fit from the host. For a "reset view" call `vm.viewport.fitToContent(bounds, size)`.
+- Type chips (`setAnchorType`) are **enabled only when exactly one anchor is selected** (each retype =
+  one undo step); `Close` targets the **active subpath**. For multi-anchor retype, add a reducer/VM
+  batch action (don't loop dispatches in the screen — that fragments undo).
+- Drags are **coalesced to one undo step** by the VM in `onDragEnd`; the canvas brackets honestly
+  (incl. cancel). Handle knobs draw/grab only for **selected** anchors (canvas + `EditHitTest` agree).
 - Tolerance is world-space and inverse-scales (DEFAULT 22px ÷ scale); zoomed out, anchors dominate
-  segment hits — expected. Zoom in to insert points on a segment.
-- **Confirm the two "open choices" with the user before wiring UI into Tune-Up (step 1f):**
-  in-Tune-Up edit mode vs. dedicated screen (handles-as-absolute-`ControlPoint` already locked).
-- Re-run `*.edit.*` after each step; keep them green (currently **59**). 1d/1e are Composables
-  (no JVM tests) — the bar is "compiles clean + 59 stays green."
+  segment hits — zoom in to insert points on a segment.
+- Re-run `*.edit.*` after each step; keep them green (currently **62**). Composables add no JVM tests —
+  the bar is "compiles/assembles clean + 62 stays green."
 
 ---
 
@@ -281,3 +338,24 @@ Keep this file the *only* thing a fresh session must read to be oriented.
 - **Deviation from plan:** none material. The Phase 1 doc sketched handles as
   `inX/inY/outX/outY` floats; implemented as a cleaner nullable `ControlPoint` —
   equivalent, avoids half-null states.
+
+### Phase 1 — node editor (2026-06-04)
+- **Shipped (1a–1f):** pure reducer core (`VectorEditState`/`Action`/`Reducer`), pure
+  `EditHitTest`, Hilt `VectorEditViewModel` (gesture→action, drag-coalesced undo), Compose
+  `VectorEditCanvas` (reuses the preview pipeline) + `VectorEditScreen` (chip toolbar), and the
+  Tune-Up integration: an EDIT-tab "Node editor" section that opens a **full-screen embedded mode**
+  to edit one path or draw a new one, saving the result as a new `MANUAL_EDIT` version. **62 `*.edit.*`
+  tests green; `:app:assembleDebug` clean.**
+- **Key decisions:** (1) **embedded full-screen mode**, not a NavHost route — maximal reuse of the
+  existing `persistManualEdit` version pipeline, no nav-result plumbing, and the canvas owns the whole
+  surface (a pan/zoom/drag editor can't share the scrolling EDIT tab). Confirmed with the user, who
+  also asked to include **new-path drawing** now. (2) Write-back uses `upsertPath` (replace-or-append)
+  so from-scratch paths persist; new pen paths default to `#000000` fill so they're visible. (3) Save
+  is skipped when nothing was edited (`canUndo == false`).
+- **Verified:** compile + assemble clean; 62 edit tests (incl. new `upsertPath` append + reducer
+  new-path-apply). **Not yet verified:** on-device manual interaction (headless build env) — the one
+  open Phase 1 checkbox.
+- **Deviation from plan:** the plan doc floated "VectorEditScreen.kt (or an in-Tune-Up mode)"; we did
+  the in-Tune-Up mode and `VectorEditScreen` is hosted inline (its `ROUTE_VECTOR_EDIT` is currently
+  unused). Added `VectorDocument.upsertPath` + `VectorEditViewModel.openForNewPath` +
+  `VectorTuneupViewModel.persistNodeEdit`, none of which the plan doc anticipated but all minimal.
