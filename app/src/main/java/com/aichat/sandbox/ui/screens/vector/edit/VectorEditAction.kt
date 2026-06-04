@@ -79,6 +79,24 @@ sealed interface VectorEditAction {
     /** Flip the closed flag of [subpathId]. */
     data class ToggleSubpathClosed(val subpathId: String) : VectorEditAction
 
+    // ---- Phase 2: shape algebra (each one undo entry) ----
+
+    /**
+     * Combine the **selected subpaths** of the editing path with a boolean [kind].
+     * Requires ≥2 subpaths to hold a selected anchor; otherwise a no-op. The
+     * consumed subpaths are replaced by the single result (other subpaths preserved).
+     */
+    data class BooleanOp(val kind: BoolOpKind) : VectorEditAction
+
+    /**
+     * Convert the editing path's stroked centerlines into a filled outline. No-op
+     * when the path has no positive `strokeWidth`.
+     */
+    object OutlineStroke : VectorEditAction
+
+    /** Grow (positive) or shrink (negative) the editing path by [delta] world units. */
+    data class OffsetPath(val delta: Float) : VectorEditAction
+
     // ---- history + write-back ----
 
     object Undo : VectorEditAction
@@ -87,3 +105,6 @@ sealed interface VectorEditAction {
     /** Serialize [VectorEditState.editing] back into [VectorEditState.document]. */
     object ApplyToDocument : VectorEditAction
 }
+
+/** The four boolean combinations exposed in the editor toolbar. */
+enum class BoolOpKind { UNION, SUBTRACT, INTERSECT, EXCLUDE }

@@ -208,7 +208,56 @@ private fun EditToolbar(state: VectorEditState, viewModel: VectorEditViewModel) 
                 )
             }
 
-            // Row 2 — snap toggles.
+            // Row 2 — Phase 2 shape algebra.
+            val boolReady = selectedSubpathCount(state) >= 2
+            val canStroke = (state.editing?.style?.strokeWidth ?: 0f) > 0f
+            val hasPath = state.editing != null
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AssistChip(
+                    onClick = { viewModel.booleanOp(BoolOpKind.UNION) },
+                    enabled = boolReady,
+                    label = { Text("Union") },
+                )
+                AssistChip(
+                    onClick = { viewModel.booleanOp(BoolOpKind.SUBTRACT) },
+                    enabled = boolReady,
+                    label = { Text("Subtract") },
+                )
+                AssistChip(
+                    onClick = { viewModel.booleanOp(BoolOpKind.INTERSECT) },
+                    enabled = boolReady,
+                    label = { Text("Intersect") },
+                )
+                AssistChip(
+                    onClick = { viewModel.booleanOp(BoolOpKind.EXCLUDE) },
+                    enabled = boolReady,
+                    label = { Text("Exclude") },
+                )
+                AssistChip(
+                    onClick = { viewModel.outlineStroke() },
+                    enabled = canStroke,
+                    label = { Text("Outline") },
+                )
+                AssistChip(
+                    onClick = { viewModel.offsetPath(OFFSET_STEP) },
+                    enabled = hasPath,
+                    label = { Text("Offset +") },
+                )
+                AssistChip(
+                    onClick = { viewModel.offsetPath(-OFFSET_STEP) },
+                    enabled = hasPath,
+                    label = { Text("Offset −") },
+                )
+            }
+
+            // Row 3 — snap toggles.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -237,6 +286,17 @@ private fun SnapChip(label: String, bit: Int, state: VectorEditState, viewModel:
         onClick = { viewModel.setSnapMask(state.snapMask xor bit) },
         label = { Text(label) },
     )
+}
+
+/** World-units step for one Offset+/Offset− toolbar tap. */
+private const val OFFSET_STEP = 1f
+
+/** How many subpaths currently hold a selected anchor (the boolean operands). */
+private fun selectedSubpathCount(state: VectorEditState): Int {
+    val editing = state.editing ?: return 0
+    val sel = state.selection.anchorIds
+    if (sel.isEmpty()) return 0
+    return editing.subpaths.count { sp -> sp.anchors.any { it.id in sel } }
 }
 
 /** The single selected anchor, or null unless exactly one is selected. */

@@ -10,6 +10,7 @@ import com.aichat.sandbox.data.vector.edit.EditSubpath
 import com.aichat.sandbox.data.vector.edit.EditablePath
 import com.aichat.sandbox.data.vector.edit.EditablePathFactory
 import com.aichat.sandbox.data.vector.edit.EditablePathSerializer
+import com.aichat.sandbox.data.vector.edit.boolean.PathBoolean
 import com.aichat.sandbox.data.vector.upsertPath
 import com.aichat.sandbox.ui.components.notes.Snap
 import kotlin.math.hypot
@@ -52,6 +53,10 @@ class VectorEditReducer {
             is VectorEditAction.DeleteSelected -> deleteSelected(state)
             is VectorEditAction.SetAnchorType -> setAnchorType(state, action.id, action.type)
             is VectorEditAction.ToggleSubpathClosed -> toggleClosed(state, action.subpathId)
+
+            is VectorEditAction.BooleanOp -> booleanOp(state, action.kind)
+            is VectorEditAction.OutlineStroke -> outlineStroke(state)
+            is VectorEditAction.OffsetPath -> offsetPath(state, action.delta)
 
             is VectorEditAction.Undo -> undo(state)
             is VectorEditAction.Redo -> redo(state)
@@ -297,6 +302,67 @@ class VectorEditReducer {
         )
         return state.pushingUndo().copy(editing = updated)
     }
+
+    // ---- Phase 2: shape algebra ----
+
+    /**
+     * Boolean-combine the subpaths that hold a selected anchor. Each selected
+     * subpath becomes a single-subpath operand; the result replaces them in place
+     * (other subpaths untouched). Needs ≥2 selected subpaths, else a no-op.
+     */
+    private fun booleanOp(state: VectorEditState, kind: BoolOpKind): VectorEditState {
+        val editing = state.editing ?: return state
+        val sel = state.selection.anchorIds
+        if (sel.isEmpty()) return state
+        val selected = editing.subpaths.filter { sp -> sp.anchors.any { it.id in sel } }
+        if (selected.size < 2) return state
+
+        val operands = selected.mapIndexed { i, sp ->
+            EditablePath(pathId = "${editing.pathId}#op$i", subpaths = listOf(sp), style = editing.style)
+        }
+        val result = PathBoolean.combine(operands, kind.toOp(), editing.pathId) ?: return state
+        val selectedIds = selected.map { it.id }.toSet()
+        val kept = editing.subpaths.filterNot { it.id in selectedIds }
+        val resultSubpaths = result.subpaths.mapIndexed { i, sp -> reid(sp, "${editing.pathId}.bop$i") }
+        if (resultSubpaths.isEmpty()) return state
+        return state.pushingUndo().copy(
+            editing = editing.copy(subpaths = kept + resultSubpaths),
+            selection = Selection(),
+        )
+    }
+
+    /** Outline the stroked editing path into a filled shape (no-op if unstroked). */
+    private fun outlineStroke(state: VectorEditState): VectorEditState {
+        val editing = state.editing ?: return state
+        val width = editing.style.strokeWidth ?: return state
+        if (width <= 0f) return state
+        val result = PathBoolean.outlineStroke(editing, editing.pathId) ?: return state
+        return state.pushingUndo().copy(
+            editing = result.copy(name = editing.name),
+            selection = Selection(),
+        )
+    }
+
+    /** Inset/outset the editing path; an over-shrink (empty result) is a no-op. */
+    private fun offsetPath(state: VectorEditState, delta: Float): VectorEditState {
+        val editing = state.editing ?: return state
+        if (delta == 0f) return state
+        val result = PathBoolean.offset(editing, delta, editing.pathId) ?: return state
+        return state.pushingUndo().copy(
+            editing = result.copy(name = editing.name),
+            selection = Selection(),
+        )
+    }
+
+    private fun BoolOpKind.toOp(): PathBoolean.Op = when (this) {
+        BoolOpKind.UNION -> PathBoolean.Op.UNION
+        BoolOpKind.SUBTRACT -> PathBoolean.Op.SUBTRACT
+        BoolOpKind.INTERSECT -> PathBoolean.Op.INTERSECT
+        BoolOpKind.EXCLUDE -> PathBoolean.Op.EXCLUDE
+    }
+
+    private fun reid(sp: EditSubpath, newId: String): EditSubpath =
+        sp.copy(id = newId, anchors = sp.anchors.mapIndexed { j, a -> a.copy(id = "$newId.a$j") })
 
     // ---- history ----
 
