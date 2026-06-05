@@ -18,16 +18,21 @@ object AndroidVectorDrawableWriter {
     private const val INDENT = "    "
 
     fun write(document: VectorDocument): String {
+        // Phase 5: VectorDrawable has no dash/variable-width attribute, so bake
+        // both into plain geometry first. No-op for any path that doesn't opt in.
+        val baked = StrokeExportBaker.bakeDashes(
+            StrokeExportBaker.bakeVariableWidth(document),
+        ).first
         val sb = StringBuilder(1024)
         sb.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n")
         sb.append("<vector xmlns:android=\"http://schemas.android.com/apk/res/android\"\n")
-        val vp = document.viewport
+        val vp = baked.viewport
         sb.append(INDENT).append("android:width=\"").append(num(vp.widthDp)).append("dp\"\n")
         sb.append(INDENT).append("android:height=\"").append(num(vp.heightDp)).append("dp\"\n")
         sb.append(INDENT).append("android:viewportWidth=\"").append(num(vp.viewportWidth)).append("\"\n")
         sb.append(INDENT).append("android:viewportHeight=\"").append(num(vp.viewportHeight)).append("\">\n")
 
-        for (child in document.root.children) {
+        for (child in baked.root.children) {
             writeNode(sb, child, depth = 1)
         }
 

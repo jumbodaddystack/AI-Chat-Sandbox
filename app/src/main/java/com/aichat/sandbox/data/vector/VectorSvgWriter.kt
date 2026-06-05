@@ -33,9 +33,13 @@ object VectorSvgWriter {
     fun write(document: VectorDocument): String = writeWithWarnings(document).svg
 
     fun writeWithWarnings(document: VectorDocument): VectorSvgWriteResult {
+        // Phase 5: SVG emits dashes natively but has no variable-width attribute,
+        // so bake only the width profile to a filled outline first (no-op when no
+        // path opts in). Dash arrays survive to be written as stroke-dasharray.
+        val baked = StrokeExportBaker.bakeVariableWidth(document)
         val warnings = ArrayList<VectorWarning>()
         val sb = StringBuilder(1024)
-        val vp = document.viewport
+        val vp = baked.viewport
 
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n")
         sb.append("<svg xmlns=\"").append(SVG_NS).append("\"")
@@ -44,7 +48,7 @@ object VectorSvgWriter {
             .append(" viewBox=\"0 0 ").append(num(vp.viewportWidth)).append(' ')
             .append(num(vp.viewportHeight)).append("\">\n")
 
-        for (child in document.root.children) {
+        for (child in baked.root.children) {
             writeNode(sb, child, depth = 1, warnings = warnings)
         }
 
@@ -130,6 +134,14 @@ object VectorSvgWriter {
             style.strokeLineCap?.let { sb.append(" stroke-linecap=\"").append(escapeXml(it)).append('"') }
             style.strokeLineJoin?.let { sb.append(" stroke-linejoin=\"").append(escapeXml(it)).append('"') }
             style.strokeMiterLimit?.let { sb.append(" stroke-miterlimit=\"").append(num(it)).append('"') }
+            // Phase 5: dashes are native in SVG — emit the array (and phase) verbatim.
+            style.strokeDashArray?.takeIf { it.isNotEmpty() }?.let { dash ->
+                sb.append(" stroke-dasharray=\"")
+                    .append(dash.joinToString(",") { num(it) })
+                    .append('"')
+                style.strokeDashOffset?.takeIf { it != 0f }
+                    ?.let { sb.append(" stroke-dashoffset=\"").append(num(it)).append('"') }
+            }
         }
         sb.append("/>\n")
     }
