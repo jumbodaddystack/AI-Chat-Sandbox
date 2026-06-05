@@ -90,6 +90,15 @@ data class VectorStyle(
     val strokeLineCap: String? = null,
     val strokeLineJoin: String? = null,
     val strokeMiterLimit: Float? = null,
+    // Phase 5 (sub-feature 1) — additive stroke styling. All nullable so every
+    // existing construction compiles and every current document/writer test is
+    // byte-identical (these only affect a path that opts in).
+    /** On/off dash lengths in viewport units. SVG emits this natively; Android XML bakes it into geometry. */
+    val strokeDashArray: List<Float>? = null,
+    /** Dash phase (distance into the pattern at the path start). */
+    val strokeDashOffset: Float? = null,
+    /** Width-along-the-path profile. Has no native attribute in either format, so export bakes it to a filled outline. */
+    val variableWidth: VariableWidthProfile? = null,
 )
 
 /**
@@ -115,6 +124,10 @@ data class VectorWarning(
         const val NEGATIVE_STROKE_WIDTH = "NEGATIVE_STROKE_WIDTH"
         const val GRADIENT_NOT_SUPPORTED = "GRADIENT_NOT_SUPPORTED"
         const val CLIP_PATH_NOT_SUPPORTED = "CLIP_PATH_NOT_SUPPORTED"
+
+        // Phase 5 — stroke styling. Android VectorDrawable has no dash attribute,
+        // so a dashed stroke is baked into chopped geometry on export and flagged.
+        const val STROKE_DASH_BAKED = "STROKE_DASH_BAKED"
 
         // Phase 2 — faithful deterministic optimizer.
         const val OPTIMIZER_SKIPPED_UNPARSED_PATH = "OPTIMIZER_SKIPPED_UNPARSED_PATH"
