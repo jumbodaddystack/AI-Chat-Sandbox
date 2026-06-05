@@ -141,9 +141,20 @@ Build in this order (each step is shippable + testable on its own):
 - [ ] On-device manual verify (draw closed shape, snap, undo/redo, export round-trips) — the only
   remaining Phase 1 item; needs a device/emulator (the build env is headless).
 
-### Phase 2 — boolean ops + outline-stroke + offset — ⬜ NOT STARTED
-- [ ] Per `phase-2-boolean-path-ops.md`: new pure `data/vector/edit/boolean/`
-  (clipper + outliner + offset + curve-refit), flatten→clip→refit, reducer actions, golden-geometry tests.
+### Phase 2 — boolean ops + outline-stroke + offset — 🟢 NEARLY COMPLETE (code-complete → only on-device manual verify left)
+- [x] Pure `data/vector/edit/boolean/` module (no Android imports): `Polygon` (`Ring`/`PolyShape`/`FillRule`),
+  `FillRuleResolver`, `PathFlattener` (cubics→polygons via the existing sampler/simplifier),
+  `PolygonClipper` (UNION/INTERSECT/DIFFERENCE/XOR + `selfUnion`), `CurveRefit` (polygon→cubic Schneider fit),
+  `StrokeOutliner`, `PathOffset`, and the `PathBoolean` façade (`combine`/`outlineStroke`/`offset`).
+- [x] Clipper is an **arrangement + boundary-classification** clipper (not Martinez–Rueda — see §5 deviation):
+  robust on shared/collinear/coincident edges and figure-eights (golden-geometry tests prove it).
+- [x] Reducer actions `BooleanOp(kind)` / `OutlineStroke` / `OffsetPath(delta)` + `BoolOpKind`
+  (each one undo entry), VM pass-throughs, and a new shape-ops toolbar row in `VectorEditScreen`.
+- [x] Tests: `PolygonClipperTest` (7), `PathBooleanTest` (8), `StrokeOutlinerTest` (4), `PathOffsetTest` (4),
+  `CurveRefitTest` (3), `FillRuleResolverTest` (2), `VectorBooleanReducerTest` (6) → **34 new, green**.
+- [x] `:app:assembleDebug` clean; `*.edit.*` now **96, green** (62 Phase 1 + 34 Phase 2).
+- [ ] On-device manual verify (select 2 subpaths → Union/Subtract/Intersect/Exclude; Outline a stroked path;
+  Offset ±; undo/redo each; Done → new version exports + re-imports) — headless build env can't do this.
 
 ### Phase 3 — pixel-perfect pipeline — ⬜ NOT STARTED
 - [ ] Per `phase-3-pixel-perfect-pipeline.md`: keyline grids, integer-grid snap
@@ -161,17 +172,58 @@ Build in this order (each step is shippable + testable on its own):
 
 ## 3. Latest handoff (update this each session)
 
-**Last updated:** 2026-06-04 · **Last completed:** Phase 1 steps 1e + 1f (screen/toolbar + Tune-Up wiring)
+**Last updated:** 2026-06-04 · **Last completed:** Phase 2 (boolean ops + outline-stroke + offset)
 
-**State of the branch:** Phase 0 + 1a–1d are merged to main (PRs #91–#94). Phase **1e + 1f**
-are on `claude/vector-roadmap-next-phase-T6EcZ`. `:app:assembleDebug` builds clean and edit
-tests are green (**62** in `*.edit.*`: 14 Phase-0 round-trip/replace+upsert + 26 reducer +
-14 hit-test + 8 ViewModel). No PR open. **The node editor is now fully wired into Tune-Up
-end-to-end:** open it from the EDIT tab → edit/draw on a full-screen canvas → Done saves a new
-version. The **only** remaining Phase 1 item is on-device manual verify (needs an emulator/device;
-this env is headless). After that, Phase 1 is complete and Phase 2 can start.
+**State of the branch:** Phase 0 + 1a–1f are merged to main (through PR #95). Phase **2** is on
+`claude/vector-roadmap-next-phase-HYi8t`. `:app:assembleDebug` builds clean; `*.edit.*` tests are
+green at **96** (62 Phase 1 + 34 Phase 2). No PR open. **Shape algebra is now in:** a pure
+`data/vector/edit/boolean/` module does union/subtract/intersect/exclude on selected subpaths,
+outline-stroke, and inset/outset, all wired into the node editor reducer + toolbar and persisting
+through the existing version pipeline. The only remaining Phase 2 item is on-device manual verify
+(headless env can't do it). Phases 3/4/5 can now start (all build on the Phase 1 editable model).
 
-**What exists now (for the next session to build on):**
+**Phase 2 — what exists now (for the next session to build on):**
+- *(NEW)* `data/vector/edit/boolean/` — **pure JVM, no Android imports** (unit-tested like the
+  reducer):
+  - `Polygon.kt` — internal `Ring` (shoelace `signedArea`/`oriented`), `PolyShape` (rings + `FillRule`,
+    `area`), `FillRule`.
+  - `FillRuleResolver.kt` — `VectorStyle.fillType` ⇄ `FillRule` (null/unknown ⇒ NONZERO; `"evenOdd"` token).
+  - `PathFlattener.kt` — `EditablePath`→`PolyShape` and `flattenSubpath`/`flattenCenterline`; reuses
+    `VectorPathSampler`/`VectorPathSimplifier`; world-tolerance→step-count heuristic.
+  - `PolygonClipper.kt` — `clip(subject, clip, BoolOp)` for UNION/INTERSECT/DIFFERENCE/XOR **and**
+    `selfUnion(shape)`. Approach = **arrangement + boundary-classification** (split all edges at
+    intersections incl. collinear overlaps → classify each by sampling the operands' winding just off
+    each side → orient kept-region-on-left → chain via DCEL "next = clockwise from twin"). All in
+    `Double`. Output rings correctly oriented (outer CCW, holes CW), emitted as NONZERO.
+  - `CurveRefit.kt` — `refit(ring, maxError, idPrefix, cornerAngleDeg)` → `EditSubpath`. Splits at
+    corners (turn angle), Schneider least-squares cubic fit per smooth run (recursive subdivide +
+    Newton reparam), straight runs → handle-less anchors (serialize as `LineTo`); closed smooth loops
+    fit with a continuous seam tangent so the seam anchor stays SMOOTH.
+  - `StrokeOutliner.kt` — `outline(centerline, closed, width, cap, join, miterLimit)` builds the outline
+    as a **union of pieces** (segment quads + per-vertex join: round disk / miter wedge / bevel / + caps),
+    fused by `selfUnion`. Closed centerline → annulus (outer + inner ring). `capOf`/`joinOf` map style strings.
+  - `PathOffset.kt` — `offset(shape, delta, join)` via morphology: grow = `UNION(shape, band)`, shrink =
+    `DIFFERENCE(shape, band)` where `band` = stroke outline of every contour at width `2·|delta|`
+    (round joins = Minkowski-with-disk). Over-shrink → empty (caller declines).
+  - `PathBoolean.kt` — **public façade** (`object PathBoolean`): `Op{UNION,SUBTRACT,INTERSECT,EXCLUDE}`,
+    `Options(flattenTolerance=0.25, refitMaxError=0.5, cornerAngleDeg=30)`, `combine(paths, op, newPathId)`
+    (≥2; folds pairwise; SUBTRACT = subject − union(rest)), `outlineStroke(path, newPathId)` (needs
+    `strokeWidth>0`), `offset(path, delta, newPathId)`. Boolean/outline results are pure fills (stroke
+    cleared, canonical `fillType`); offset keeps the input style. Returns null when the result is empty.
+- *(MODIFIED)* `ui/screens/vector/edit/`:
+  - `VectorEditAction.kt` — `BooleanOp(kind)` / `OutlineStroke` / `OffsetPath(delta)` + top-level
+    `enum BoolOpKind`.
+  - `VectorEditReducer.kt` — handles all three (each `pushingUndo()` = one undo step). **`BooleanOp`
+    operates on the SUBPATHS of the editing path** that hold a selected anchor (≥2 required, else no-op);
+    each selected subpath becomes a single-subpath operand, the result replaces them (kept subpaths
+    preserved, ids reissued `${pathId}.bopN`), selection cleared. `OutlineStroke`/`OffsetPath` act on
+    the whole editing path. Imports `PathBoolean`; reducer still otherwise pure.
+  - `VectorEditViewModel.kt` — pass-throughs `booleanOp(kind)`/`outlineStroke()`/`offsetPath(delta)`.
+  - `VectorEditScreen.kt` — new **shape-ops toolbar row**: Union/Subtract/Intersect/Exclude (enabled when
+    ≥2 subpaths selected via `selectedSubpathCount`), Outline (enabled when `strokeWidth>0`), Offset +/−
+    (`OFFSET_STEP = 1f`). Snap row moved to row 3.
+
+**Phase 1 — what exists (still current, for context):**
 - *(Phase 0)* `data/vector/edit/` — `EditablePath` node model (absolute `ControlPoint`
   handles, null ⇒ straight side, all-cubic), `EditablePathFactory.fromPath(...)` (enter),
   `EditablePathSerializer.toCommands/​toVectorPath(...)` (exit), `VectorDocument.replacePath(...)`.
@@ -263,43 +315,53 @@ this env is headless). After that, Phase 1 is complete and Phase 2 can start.
   bounded clamp), `Snap` (`MASK_GRID/ANGLE/ENDPOINT`, all pure — reducer imports it and
   stays JVM-clean), `VectorPreviewCanvas` internals.
 
-**→ NEXT ACTION:** Phase 1 is code-complete. Two options for the next session:
-1. **On-device manual verify** (the last Phase 1 checkbox) — needs an emulator/device (this build
-   env is headless). Flow to exercise: Tune-Up → parse/import a vector → EDIT tab → select one
-   path → **Edit nodes** → drag anchors / insert on a segment / corner↔smooth↔symmetric / close /
-   undo·redo → **Done** → confirm a new version appears and **Export** round-trips. Then **Draw new
-   path**: pen-place ≥3 points → **Finish** → **Done** → confirm the new (black-filled) path is in
-   the exported XML.
-2. **Start Phase 2** (boolean ops + outline-stroke + offset) per `phase-2-boolean-path-ops.md` —
-   it builds on the Phase 1 editable model, which is now fully in place and wired.
+**→ NEXT ACTION:** Phase 2 is code-complete. Options for the next session:
+1. **On-device manual verify** of Phases 1 + 2 (the only open checkboxes) — needs an emulator/device
+   (headless env can't). Phase-2 flow: Tune-Up → EDIT tab → **Edit nodes** on a path with 2 overlapping
+   subpaths → **Select**, tap an anchor in each subpath → **Union / Subtract / Intersect / Exclude** →
+   confirm one editable result whose anchors drag. Outline a stroked path; Offset ±. Undo/redo each.
+   **Done** → new version → **Export** to VectorDrawable + SVG and re-import.
+2. **Start Phase 3** (pixel-perfect pipeline) per `phase-3-pixel-perfect-pipeline.md`, or **Phase 4/5** —
+   all build on the now-complete Phase 1 editable model + Phase 2 algebra.
 
-**Watch-outs for next session:**
-- **1f decision (resolved):** node editor is an **embedded full-screen mode** in `VectorTuneupScreen`,
-  not a NavHost route. The `VectorVersion ⇄ VectorDocument` bridge is the existing
-  `AndroidVectorDrawableParser.parse` (enter) / `AndroidVectorDrawableWriter.write` (exit), same as
-  every other edit op. `ROUTE_VECTOR_EDIT` in `VectorEditScreen` is currently **unused** (the editor
-  is hosted inline, never navigated to) — leave it or wire a route only if a standalone entry is wanted.
-- New-path write-back depends on `VectorDocument.upsertPath` (append when id absent) — the older
-  `replacePath` would silently drop a from-scratch path. New pen paths get a default `#000000` fill;
-  revisit if a different default (stroke-only? last-used colour?) is wanted. The path id is
-  `VectorEditReducer.NEW_PATH_ID = "edit-path"` until re-parsed.
-- `persistNodeEdit` skips saving when `editVm.state.value.canUndo` is false (no edits), so opening
-  and immediately pressing Done won't spawn a no-op version. Entering edit normalizes the path
-  (H/V/Q/A/S/T → C/L, documented Phase-0 lossiness); other paths are preserved verbatim by upsert+writer.
-- Reducer + hit-test stay pure (no Android imports); `VectorEditViewModel`/`VectorEditCanvas`/
-  `VectorEditScreen` + the `NodeEditorHost`/`persistNodeEdit` glue are the Android-coupled files.
-  Keep new geometry logic in the reducer.
-- The canvas **frames the VM's viewport itself** (fit + `setPanBounds` on document/size change).
-  Don't also fit from the host. For a "reset view" call `vm.viewport.fitToContent(bounds, size)`.
-- Type chips (`setAnchorType`) are **enabled only when exactly one anchor is selected** (each retype =
-  one undo step); `Close` targets the **active subpath**. For multi-anchor retype, add a reducer/VM
-  batch action (don't loop dispatches in the screen — that fragments undo).
-- Drags are **coalesced to one undo step** by the VM in `onDragEnd`; the canvas brackets honestly
-  (incl. cancel). Handle knobs draw/grab only for **selected** anchors (canvas + `EditHitTest` agree).
-- Tolerance is world-space and inverse-scales (DEFAULT 22px ÷ scale); zoomed out, anchors dominate
-  segment hits — zoom in to insert points on a segment.
-- Re-run `*.edit.*` after each step; keep them green (currently **62**). Composables add no JVM tests —
-  the bar is "compiles/assembles clean + 62 stays green."
+**Watch-outs for next session (Phase 2):**
+- **Clipper choice / deviation:** the plan recommended Martinez–Rueda; I shipped an **arrangement +
+  boundary-classification** clipper instead (O(n²) all-pairs split, then per-edge winding sampling,
+  then DCEL contour chaining). It is robust on the degenerate cases (shared/collinear/coincident edges,
+  figure-eight — all tested) and far less subtle to get right than an in-place sweep. O(n²) is fine at
+  icon flattening scale. `selfUnion` is the single-pass merge used by outline/offset. If a future need
+  demands huge polygons, this is the spot to swap in a sweep-line.
+- **Boolean operand model (deviation from plan):** the plan said "selected *paths*", but the Phase 1
+  editor holds **one** `editing: EditablePath`. So `BooleanOp` combines the **selected subpaths** of that
+  one path (subpaths containing a selected anchor). Outline/offset act on the whole editing path. If you
+  later want cross-path booleans, the editor must hold/select multiple paths first.
+- **Lossiness is bounded + intentional:** flatten→clip→refit. `PathBoolean.Options` carries the knobs
+  (`flattenTolerance` 0.25, `refitMaxError` 0.5, `cornerAngleDeg` 30). Geometry tests assert *within
+  tolerance* (area/winding invariants like `|A∪B|+|A∩B| = |A|+|B|`), never exact float equality.
+- **Orientation matters for `selfUnion`:** it force-orients every input ring CCW (solids) before the
+  non-zero pass — oppositely-wound overlaps would otherwise cancel. `clip()` operands don't need this
+  (they're already single-orientation or prior clean output).
+- **Result style:** boolean/outline results are pure fills (stroke cleared, `fillType` = canonical/null
+  for non-zero, which is what correctly-oriented rings render as). Offset keeps the input style. A
+  fill-less subject gets `#000000` so the result is visible. `OutlineStroke`/`OffsetPath` reducer
+  handlers reuse the façade's fillOnly style but re-apply `editing.name`.
+- **No-ops don't push undo:** `BooleanOp` (<2 selected subpaths), `OutlineStroke` (no stroke),
+  `OffsetPath` (delta 0 or over-shrink→empty) all return state unchanged. Each successful op = exactly
+  one undo entry (`VectorBooleanReducerTest` asserts this + exact undo/redo inversion).
+- Re-run `*.edit.*` after each step; keep them green (currently **96**). The boolean module is pure JVM
+  so it's the easy part to extend with tests; composables add no JVM tests.
+
+**Watch-outs carried over (Phase 1, still true):**
+- Node editor is an **embedded full-screen mode** in `VectorTuneupScreen`, not a NavHost route;
+  `ROUTE_VECTOR_EDIT` is unused. The `VectorVersion ⇄ VectorDocument` bridge is `AndroidVectorDrawableParser`
+  / `AndroidVectorDrawableWriter`. `persistNodeEdit` skips saving when nothing was edited (`canUndo==false`).
+- New-path write-back uses `VectorDocument.upsertPath` (append when id absent); new pen paths default to
+  `#000000` fill; new-path id is `VectorEditReducer.NEW_PATH_ID = "edit-path"`.
+- Reducer + hit-test + the whole `boolean/` module stay pure (no Android imports); the VM/canvas/screen +
+  `NodeEditorHost`/`persistNodeEdit` glue are the Android-coupled files. Keep new geometry in the
+  reducer/boolean module.
+- Drags coalesce to one undo step (`onDragEnd`); handle knobs draw/grab only for selected anchors.
+  Tolerance is world-space, inverse-scales (22px ÷ scale).
 
 ---
 
@@ -359,3 +421,35 @@ Keep this file the *only* thing a fresh session must read to be oriented.
   the in-Tune-Up mode and `VectorEditScreen` is hosted inline (its `ROUTE_VECTOR_EDIT` is currently
   unused). Added `VectorDocument.upsertPath` + `VectorEditViewModel.openForNewPath` +
   `VectorTuneupViewModel.persistNodeEdit`, none of which the plan doc anticipated but all minimal.
+
+### Phase 2 — boolean ops + outline-stroke + offset (2026-06-04)
+- **Shipped:** a pure `data/vector/edit/boolean/` module (`Polygon`, `FillRuleResolver`, `PathFlattener`,
+  `PolygonClipper` + `selfUnion`, `CurveRefit`, `StrokeOutliner`, `PathOffset`, `PathBoolean` façade) plus
+  reducer actions `BooleanOp`/`OutlineStroke`/`OffsetPath` (+ `BoolOpKind`), VM pass-throughs, and a
+  shape-ops toolbar row in `VectorEditScreen`. **34 new `*.edit.*` tests green (96 total); `:app:assembleDebug` clean.**
+- **Key decisions:**
+  1. **Clipper = arrangement + boundary-classification, NOT Martinez–Rueda.** Split every edge (both
+     shapes + self) at all intersections incl. collinear overlaps → for each unique edge sample the
+     operands' winding a hair off each side → keep edges where the op's predicate flips, oriented
+     kept-region-on-left → chain into rings via the DCEL "next = clockwise-from-twin" rule. All in `Double`.
+     This is robust on icon geometry's degeneracies (shared/collinear edges, figure-eight — all tested)
+     and far easier to get provably right than an in-place sweep; O(n²) is fine at flattening scale.
+  2. **Offset by morphology** reusing the clipper+outliner: grow = `UNION(shape, boundaryBand(2·δ))`,
+     shrink = `DIFFERENCE(shape, boundaryBand(2·|δ|))`. Over-shrink → empty → reducer no-op.
+  3. **Outline by union-of-pieces** (segment quads + per-vertex join + caps) fused by `selfUnion`, which
+     force-orients pieces CCW so non-zero winding doesn't cancel overlaps. Closed centerline → annulus.
+  4. **Boolean operands are the editing path's selected *subpaths*** (the editor holds one path), a
+     necessary adaptation of the plan's "selected paths". Outline/offset act on the whole path.
+  5. **Results are pure fills** (stroke cleared, canonical `fillType`); offset keeps style; flatten→refit
+     lossiness is bounded by `PathBoolean.Options` and asserted within-tolerance in tests.
+- **Verified:** 34 JVM tests — clipper golden geometry (union/subtract/intersect/xor area invariants,
+  disjoint-empty, concentric, shared-collinear→one-ring, figure-eight valid rings), façade round-trip
+  back through `EditablePathSerializer`→`PathDataParser`, outline rectangle/annulus/round-cap/miter-limit,
+  offset grow/shrink/over-shrink/concave, refit circle/rectangle/straight, fill-rule mapping, and reducer
+  single-undo / no-op / undo-redo-inversion. Compile + assemble clean.
+- **Not yet verified:** on-device manual interaction (headless build env) — the one open Phase 2 checkbox.
+- **Deviation from plan:** clipper algorithm (above) and boolean-operand model (subpaths, above). The plan
+  named files `Polygon/PathFlattener/PolygonClipper/FillRuleResolver/CurveRefit/PathBoolean/StrokeOutliner/
+  PathOffset` — all delivered; added `PolygonClipper.selfUnion` and `PathFlattener.flattenCenterline` (not
+  named in the plan but minimal). `VectorEditState` needed no transient-message field (no-ops just return
+  state unchanged), so it was left untouched.

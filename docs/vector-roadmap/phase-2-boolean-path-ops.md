@@ -1,5 +1,15 @@
 # Phase 2 Implementation Plan — Boolean Path Operations + Stroke Outlining
 
+> **As-built note (2026-06-04, shipped):** implemented per this plan with two
+> deliberate deviations — (1) the clipper is an **arrangement + boundary-classification**
+> clipper (split all edges → classify by winding → chain into rings), *not* Martinez–Rueda;
+> it is robust on the same degenerate cases and simpler to prove correct (O(n²), fine at
+> icon scale). (2) Because the Phase 1 editor holds a single `editing: EditablePath`, the
+> `BooleanOp` reducer action combines the **selected subpaths** of that path rather than
+> separate selected document paths; outline/offset act on the whole path. Offset is
+> implemented via morphology (grow = union with the boundary band, shrink = difference),
+> reusing the outliner + clipper. See `PROGRESS.md` §5 (Phase 2) for the full account.
+
 ## Context
 
 Phase 1 (`phase1-editable-bezier-scene-graph.md`) gives the Vector Tune-Up
