@@ -143,6 +143,13 @@ class NoteEditorViewModel @Inject constructor(
     private val _note = MutableStateFlow(emptyNote(resolvedNoteId))
     val note: StateFlow<Note> = _note.asStateFlow()
 
+    // In-flight initial DB load for an existing note. save() awaits it so a
+    // back-press (or share / AI ask, which also save) racing the load can't
+    // persist the still-empty item list over the note's real content —
+    // saveNoteWithLayers deletes-then-reinserts, so an early save would wipe
+    // the note.
+    private var initialLoad: kotlinx.coroutines.Job? = null
+
     val items: SnapshotStateList<NoteItem> = mutableStateListOf()
 
     /** Tool palette state — selection, per-tool color / width, area-eraser radius. */
@@ -1041,7 +1048,7 @@ class NoteEditorViewModel @Inject constructor(
             }
         }
         if (routeArg != NOTE_ID_NEW) {
-            viewModelScope.launch {
+            initialLoad = viewModelScope.launch {
                 val loadedNote = repository.getNote(routeArg)
                 if (loadedNote != null) _note.value = loadedNote
                 val loaded = repository.getItems(routeArg)
@@ -2482,6 +2489,7 @@ class NoteEditorViewModel @Inject constructor(
             _note.value.title.isBlank()
 
     suspend fun save(): String {
+        initialLoad?.join()
         val current = _note.value
         val sanitizedTitle = current.title.ifBlank { DEFAULT_TITLE }
         // Sub-phase 5.2: serialize the undo/redo log alongside the note row.
