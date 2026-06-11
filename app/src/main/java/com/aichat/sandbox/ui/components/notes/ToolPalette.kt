@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Pentagon
 import androidx.compose.material.icons.filled.Polyline
 import androidx.compose.material.icons.filled.StickyNote2
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.outlined.Backspace
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.DropdownMenu
@@ -110,6 +111,12 @@ fun ToolPalette(
                 // Sub-phase 11.2 — connectors reuse the active ink colour + width.
                 InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
                 ConnectorHintRow()
+            } else if (selected.isPathPen) {
+                // Sub-phase 12.2 — the pen shares the ink colour/width row and
+                // the shape fill / line-style row (paths encode both).
+                InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
+                ShapeStyleRow(state = state, onPickShapeFillColor = onPickShapeFillColor)
+                PathPenHintRow()
             }
         }
     }
@@ -146,7 +153,10 @@ private fun ToolRow(state: ToolPaletteState) {
         ToolIconButton(state, Tool.TEXT, Modifier.weight(1f))
         GroupedToolButton(
             state = state,
-            groupTools = listOf(Tool.LINE, Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.POLYGON),
+            // 12.2 — the vector pen joins the shapes roster.
+            groupTools = listOf(
+                Tool.LINE, Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.POLYGON, Tool.PATH_PEN,
+            ),
             lastUsed = state.lastShapeTool,
             // The group button wears the last-used shape's glyph so the next
             // tap's outcome is visible before tapping.
@@ -299,6 +309,7 @@ private fun Tool.icon(): ImageVector = when (this) {
     Tool.FRAME -> Icons.Filled.CropFree
     Tool.STICKY -> Icons.Filled.StickyNote2
     Tool.CONNECTOR -> Icons.Filled.Polyline
+    Tool.PATH_PEN -> Icons.Filled.Timeline
 }
 
 @Composable
@@ -481,6 +492,19 @@ private fun ConnectorHintRow() {
     ) {
         Text(
             text = "Connector — drag between items to link them; ends stay attached.",
+            style = MaterialTheme.typography.labelMedium,
+        )
+    }
+}
+
+@Composable
+private fun PathPenHintRow() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "Pen — tap to add anchors, drag to curve; tap the first anchor to close.",
             style = MaterialTheme.typography.labelMedium,
         )
     }

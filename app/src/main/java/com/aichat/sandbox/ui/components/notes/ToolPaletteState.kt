@@ -48,6 +48,11 @@ enum class Tool(
     // Sub-phase 11.2 — bound connectors. Drag from one item to another;
     // endpoints bind to the nearest anchor and re-resolve at render time.
     CONNECTOR("connector", "Connector"),
+
+    // Sub-phase 12.2 — vector pen. Tap places corner anchors, press-drag
+    // pulls symmetric handles, tapping the first anchor closes the path;
+    // switching tools commits whatever is in progress.
+    PATH_PEN("path_pen", "Pen path"),
     ;
 
     val isInk: Boolean get() = this == PEN || this == HIGHLIGHTER || this == PENCIL
@@ -60,6 +65,7 @@ enum class Tool(
     val isFrame: Boolean get() = this == FRAME
     val isSticky: Boolean get() = this == STICKY
     val isConnector: Boolean get() = this == CONNECTOR
+    val isPathPen: Boolean get() = this == PATH_PEN
 
     companion object {
         /** Resolve a persisted [id] back to its enum, or null for unknown ids. */
@@ -159,7 +165,8 @@ class ToolPaletteState {
         selected = tool
         if (tool.isInk) lastInkTool = tool
         if (tool.isEraser) lastEraserTool = tool
-        if (tool.isShape) lastShapeTool = tool
+        // 12.2 — the pen path tool lives in the grouped shapes button.
+        if (tool.isShape || tool.isPathPen) lastShapeTool = tool
         if (tool.isSticky || tool.isConnector) lastBoardTool = tool
     }
 

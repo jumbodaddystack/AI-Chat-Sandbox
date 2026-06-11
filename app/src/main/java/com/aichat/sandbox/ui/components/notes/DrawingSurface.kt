@@ -385,6 +385,11 @@ class DrawingSurface(context: Context) : View(context) {
         shapeFillArgb: Int = 0,
         shapeStrokeStyle: Byte = ShapeCodec.STROKE_STYLE_SOLID,
     ) {
+        // 12.2 — leaving the pen tool commits whatever path is in progress;
+        // an abandoned two-anchor stub is more useful than silent loss.
+        if (paletteTool == Tool.PATH_PEN && tool != Tool.PATH_PEN) {
+            commitPendingPath(close = false)
+        }
         paletteTool = tool
         inkColor = colorArgb
         baseWidthPx = widthPx
@@ -497,6 +502,10 @@ class DrawingSurface(context: Context) : View(context) {
 
         if (connectorInProgress) {
             drawConnectorPreview(canvas)
+        }
+
+        if (penAnchors.isNotEmpty() || penCandidate != null) {
+            drawPathPenPreview(canvas)
         }
 
         drawSnapMarker(canvas)
@@ -613,6 +622,11 @@ class DrawingSurface(context: Context) : View(context) {
             // The sticky tool (11.1) shares the exact same tap state machine;
             // only the UP dispatch differs.
             return handleTextToolEvent(event)
+        }
+        if (paletteTool.isPathPen) {
+            // Sub-phase 12.2 — multi-tap pen tool; anchors accumulate across
+            // gestures until the path closes or the tool changes.
+            return handlePathPenEvent(event)
         }
         if (paletteTool.isShape) {
             // Phase 6.2 — shape tools accept any pointer (stylus or finger)
@@ -1696,6 +1710,198 @@ class DrawingSurface(context: Context) : View(context) {
         canvas.restore()
     }
 
+    // ── Pen tool routing (sub-phase 12.2) ────────────────────────────────
+    //
+    // Multi-tap state machine: each tap places a corner anchor; pressing
+    // and dragging past the touch slop pulls symmetric handles out of the
+    // new anchor; tapping the first anchor (≥ 3 anchors placed) closes the
+    // path and commits. Anchors live in world coordinates so pan / pinch
+    // between taps (two fingers, same as the text tool) costs nothing.
+    // Switching tools commits the in-progress path (see [setToolConfig]).
+
+    /** Anchors committed so far, in placement order. */
+    private val penAnchors = ArrayList<PathCodec.Anchor>()
+
+    /** The anchor being placed by the current press, or null between taps. */
+    private var penCandidate: PathCodec.Anchor? = null
+
+    /** Whether the current press has dragged past the slop (handles pulled). */
+    private var penPulling: Boolean = false
+
+    /** True when the current press started on the first anchor (closing tap). */
+    private var penClosingTap: Boolean = false
+    private var penDownScreenX: Float = 0f
+    private var penDownScreenY: Float = 0f
+
+    private fun handlePathPenEvent(event: MotionEvent): Boolean {
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (selectedIds.isNotEmpty()) selectionShouldClearListener?.invoke()
+                gestureMode = GestureMode.NONE
+                penDownScreenX = event.x
+                penDownScreenY = event.y
+                penPulling = false
+                val wx = viewport.screenToWorldX(event.x)
+                val wy = viewport.screenToWorldY(event.y)
+                penClosingTap = penAnchors.size >= MIN_PEN_ANCHORS_TO_CLOSE &&
+                    hypot(penAnchors[0].x - wx, penAnchors[0].y - wy) <
+                    PEN_CLOSE_RADIUS_PX / viewport.scale.coerceAtLeast(MIN_DIV_SCALE)
+                penCandidate = if (penClosingTap) null else PathCodec.Anchor(wx, wy)
+                invalidate()
+                true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // Second finger: this press becomes a pinch; the candidate
+                // anchor is abandoned but the placed anchors survive.
+                penCandidate = null
+                penClosingTap = false
+                if (event.pointerCount >= 2) {
+                    pinchLastDist = pointerDistance(event, 0, 1)
+                    pinchLastFocalX = (event.getX(0) + event.getX(1)) * 0.5f
+                    pinchLastFocalY = (event.getY(0) + event.getY(1)) * 0.5f
+                    gestureMode = GestureMode.PINCH
+                }
+                invalidate()
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (gestureMode == GestureMode.PINCH) return handleViewportEvent(event)
+                val candidate = penCandidate ?: return true
+                if (!penPulling &&
+                    hypot(event.x - penDownScreenX, event.y - penDownScreenY) > tapSlopPx
+                ) {
+                    penPulling = true
+                }
+                if (penPulling) {
+                    // Pull symmetric handles: out follows the finger, in
+                    // mirrors it, so the curve flows through the anchor.
+                    val outDx = viewport.screenToWorldX(event.x) - candidate.x
+                    val outDy = viewport.screenToWorldY(event.y) - candidate.y
+                    penCandidate = candidate.copy(
+                        inDx = -outDx, inDy = -outDy,
+                        outDx = outDx, outDy = outDy,
+                        type = PathCodec.TYPE_SYMMETRIC,
+                    )
+                    invalidate()
+                }
+                true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (event.pointerCount - 1 == 1) gestureMode = GestureMode.NONE
+                true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (gestureMode == GestureMode.PINCH) {
+                    gestureMode = GestureMode.NONE
+                } else if (penClosingTap && !penPulling) {
+                    commitPendingPath(close = true)
+                } else {
+                    penCandidate?.let { penAnchors.add(it) }
+                }
+                penCandidate = null
+                penClosingTap = false
+                penPulling = false
+                invalidate()
+                true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                // Drop the in-flight candidate; keep the placed anchors so a
+                // stray palm can't eat the path.
+                penCandidate = null
+                penClosingTap = false
+                penPulling = false
+                gestureMode = GestureMode.NONE
+                invalidate()
+                true
+            }
+            else -> false
+        }
+    }
+
+    /** Commit the accumulated pen anchors as one `"path"` item. */
+    private fun commitPendingPath(close: Boolean) {
+        val anchors = penAnchors.toList()
+        penAnchors.clear()
+        penCandidate = null
+        penClosingTap = false
+        penPulling = false
+        if (anchors.size < 2) {
+            invalidate()
+            return
+        }
+        val payload = PathCodec.PathPayload(
+            anchors = anchors,
+            closed = close,
+            fillArgb = shapeFillArgb,
+            strokeStyle = shapeStrokeStyle,
+        )
+        val item = NoteItem(
+            noteId = "",
+            zIndex = 0,
+            kind = PathCodec.KIND,
+            tool = Tool.PATH_PEN.id,
+            colorArgb = inkColor,
+            baseWidthPx = baseWidthPx,
+            payload = PathCodec.encode(payload),
+        )
+        committedItems = committedItems + item
+        sceneDirty = true
+        strokeListener?.invoke(item)
+        invalidate()
+    }
+
+    private fun drawPathPenPreview(canvas: Canvas) {
+        canvas.save()
+        canvas.translate(viewport.offsetX, viewport.offsetY)
+        canvas.scale(viewport.scale, viewport.scale)
+        val candidate = penCandidate
+        val anchors = if (candidate != null) penAnchors + candidate else penAnchors
+        if (anchors.size >= 2) {
+            PathRenderer.drawPayload(
+                canvas,
+                PathCodec.PathPayload(
+                    anchors = anchors,
+                    closed = false,
+                    fillArgb = shapeFillArgb,
+                    strokeStyle = shapeStrokeStyle,
+                ),
+                inkColor, baseWidthPx, shapePaint, scratchPath,
+            )
+        }
+        val scale = viewport.scale.coerceAtLeast(MIN_DIV_SCALE)
+        val dotR = ANCHOR_DOT_RADIUS_PX / scale
+        // Handle lines + dots for a pulled candidate, so the user sees the
+        // tangent they're shaping.
+        if (candidate != null && penPulling) {
+            shapePaint.style = Paint.Style.STROKE
+            shapePaint.color = ANCHOR_DOT_COLOR
+            shapePaint.strokeWidth = 1f / scale
+            shapePaint.pathEffect = null
+            canvas.drawLine(
+                candidate.x + candidate.inDx, candidate.y + candidate.inDy,
+                candidate.x + candidate.outDx, candidate.y + candidate.outDy,
+                shapePaint,
+            )
+            shapePaint.style = Paint.Style.FILL
+            canvas.drawCircle(candidate.x + candidate.inDx, candidate.y + candidate.inDy, dotR * 0.8f, shapePaint)
+            canvas.drawCircle(candidate.x + candidate.outDx, candidate.y + candidate.outDy, dotR * 0.8f, shapePaint)
+        }
+        shapePaint.style = Paint.Style.FILL
+        shapePaint.color = ANCHOR_DOT_COLOR
+        shapePaint.pathEffect = null
+        for (a in anchors) canvas.drawCircle(a.x, a.y, dotR, shapePaint)
+        // Ring the first anchor once closing is armed.
+        if (penAnchors.size >= MIN_PEN_ANCHORS_TO_CLOSE) {
+            shapePaint.style = Paint.Style.STROKE
+            shapePaint.strokeWidth = 1.5f / scale
+            canvas.drawCircle(
+                penAnchors[0].x, penAnchors[0].y,
+                PEN_CLOSE_RADIUS_PX / scale, shapePaint,
+            )
+        }
+        canvas.restore()
+    }
+
     // ── Shape tool routing (Phase 6.2) ───────────────────────────────────
 
     private fun handleShapeToolEvent(event: MotionEvent): Boolean {
@@ -2039,6 +2245,12 @@ class DrawingSurface(context: Context) : View(context) {
         private const val MIN_CONNECTOR_LENGTH_WORLD: Float = 8f
         private const val ANCHOR_DOT_RADIUS_PX: Float = 5f
         private const val ANCHOR_DOT_COLOR: Int = 0xCC1E88E5.toInt()
+
+        // ── Pen tool (sub-phase 12.2) ─────────────────────────────────
+        /** Screen-space radius of the close-the-path tap target (first anchor). */
+        private const val PEN_CLOSE_RADIUS_PX: Float = 16f
+        /** Closing needs a real region — at least a triangle. */
+        private const val MIN_PEN_ANCHORS_TO_CLOSE: Int = 3
 
         // ── Frame tool (sub-phase 8.1) ────────────────────────────────
         /** Minimum world-space extent for a created frame (both axes). */
