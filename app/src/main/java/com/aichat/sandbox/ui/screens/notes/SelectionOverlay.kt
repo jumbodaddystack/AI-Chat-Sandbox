@@ -3,6 +3,8 @@ package com.aichat.sandbox.ui.screens.notes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -41,7 +43,9 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.aichat.sandbox.ui.components.notes.StrokeTransform
@@ -286,29 +290,49 @@ fun SelectionOverlay(
             currentMatrix = { liveMatrixRef },
         )
 
-        // Floating menu under the selection.
-        Box(
-            modifier = Modifier
-                .offset {
-                    IntOffset(
-                        screenRect.left.toInt(),
-                        (screenRect.bottom + menuPaddingPx).toInt(),
+        // Floating menu under the selection, clamped fully on-screen. The
+        // old offset-based placement let the row start at the selection's
+        // left edge and run past the right side of the screen; Row then
+        // squeezed the clipped trailing buttons' labels into one-letter-per-
+        // line wraps, which ballooned the menu surface to several times the
+        // height of its visible content.
+        val menuMarginPx = with(density) { MENU_MARGIN_DP.roundToPx() }
+        FloatingSelectionMenu(
+            onCannedEdit = onCannedEdit,
+            onSaveAsStamp = onSaveAsStamp,
+            canPaste = canPaste,
+            onAsk = onAsk,
+            onConvertToText = onConvertToText,
+            onDuplicate = onDuplicate,
+            onDelete = onDelete,
+            onCut = onCut,
+            onCopy = onCopy,
+            onPaste = onPaste,
+            modifier = Modifier.layout { measurable, constraints ->
+                val placeable = measurable.measure(
+                    Constraints(
+                        maxWidth = (constraints.maxWidth - 2 * menuMarginPx)
+                            .coerceAtLeast(0),
+                        maxHeight = constraints.maxHeight,
                     )
-                },
-        ) {
-            FloatingSelectionMenu(
-                onCannedEdit = onCannedEdit,
-                onSaveAsStamp = onSaveAsStamp,
-                canPaste = canPaste,
-                onAsk = onAsk,
-                onConvertToText = onConvertToText,
-                onDuplicate = onDuplicate,
-                onDelete = onDelete,
-                onCut = onCut,
-                onCopy = onCopy,
-                onPaste = onPaste,
-            )
-        }
+                )
+                layout(constraints.maxWidth, constraints.maxHeight) {
+                    val x = screenRect.left.toInt()
+                        .coerceAtMost(constraints.maxWidth - placeable.width - menuMarginPx)
+                        .coerceAtLeast(menuMarginPx)
+                    // Prefer below the selection; flip above it when there's
+                    // no room left before the bottom of the canvas.
+                    val below = (screenRect.bottom + menuPaddingPx).toInt()
+                    val y = if (below + placeable.height + menuMarginPx > constraints.maxHeight) {
+                        ((screenRect.top - menuPaddingPx).toInt() - placeable.height)
+                            .coerceAtLeast(menuMarginPx)
+                    } else {
+                        below
+                    }
+                    placeable.place(x, y)
+                }
+            },
+        )
     }
 }
 
@@ -421,14 +445,21 @@ private fun FloatingSelectionMenu(
     onPaste: () -> Unit,
     onCannedEdit: ((com.aichat.sandbox.data.notes.CannedEditAction) -> Unit)? = null,
     onSaveAsStamp: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
+        modifier = modifier,
         shape = RoundedCornerShape(20.dp),
         tonalElevation = 4.dp,
         shadowElevation = 6.dp,
     ) {
+        // Scrollable so the roster never exceeds the width it's given —
+        // buttons keep their intrinsic size and the overflow is swiped to,
+        // instead of being crushed against the constraint.
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 8.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -559,6 +590,7 @@ private val ROTATE_HANDLE_FILL = Color(0xFF1976D2)
 private val HANDLE_DP = 18.dp
 private val ROTATE_OFFSET_DP = 40.dp
 private val MENU_GAP_DP = 16.dp
+private val MENU_MARGIN_DP = 8.dp
 
 private const val MIN_DIV_SCALE = 0.01f
 private const val MIN_SCALE = 0.1f
