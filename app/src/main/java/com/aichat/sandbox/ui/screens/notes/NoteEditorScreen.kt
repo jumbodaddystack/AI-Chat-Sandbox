@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
@@ -45,6 +46,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -286,30 +288,50 @@ fun NoteEditorScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                navigationIcon = {
+            // Compact custom header instead of TopAppBar: M3 1.2 pins the
+            // bar at 64 dp and the OutlinedTextField title needs 56 dp more
+            // vertical room than its text — together that read as a band of
+            // wasted space above the canvas. A 48 dp row keeps every icon at
+            // full touch size while giving the difference back to the page.
+            Surface(tonalElevation = 2.dp) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .height(48.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     IconButton(onClick = ::saveAndExit) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back"
                         )
                     }
-                },
-                title = {
-                    OutlinedTextField(
+                    val titleStyle = MaterialTheme.typography.titleMedium
+                    BasicTextField(
                         value = note.title,
                         onValueChange = viewModel::setTitle,
-                        placeholder = { Text("Untitled") },
                         singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color.Transparent,
-                            unfocusedBorderColor = Color.Transparent,
-                            disabledBorderColor = Color.Transparent,
+                        textStyle = titleStyle.copy(
+                            color = MaterialTheme.colorScheme.onSurface,
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        decorationBox = { innerTextField ->
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (note.title.isEmpty()) {
+                                    Text(
+                                        text = "Untitled",
+                                        style = titleStyle,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 4.dp),
                     )
-                },
-                actions = {
                     OcrIndicatorBadge(state = ocrIndicator)
                     // Hero AI action. Accented (filled-tonal) so it stands out
                     // from the monochrome toolbar icons — the user said AI
@@ -511,8 +533,8 @@ fun NoteEditorScreen(
                             },
                         )
                     }
-                },
-            )
+                }
+            }
         }
     ) { padding ->
       Box(

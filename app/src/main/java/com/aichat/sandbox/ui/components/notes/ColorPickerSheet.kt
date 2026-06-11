@@ -65,9 +65,13 @@ import kotlin.math.sin
  *
  * Layout (top → bottom):
  *  1. **Recents row** — twelve most-recent custom colours, one-tap apply.
- *  2. **Hue ring + SL square** — `hue` selected by dragging around the ring;
- *     `saturation` and `lightness` selected by dragging inside the inscribed
- *     square. The square's background is the live hue.
+ *  2. **Hue ring + SV square** — `hue` selected by dragging around the ring;
+ *     `saturation` and `value` (HSV brightness) selected by dragging inside
+ *     the inscribed square. The square's background is the live hue. The
+ *     square's gradients (white→hue across, →black down) are the classic HSV
+ *     layout, so the picked channel math must be HSV too — reading the thumb
+ *     position as HSL used to return a much lighter colour than the pixel
+ *     under the indicator.
  *  3. **Alpha slider** — `0..255` mapped to a translucent → opaque gradient.
  *  4. **Hex input + preview swatch** — accepts `#RRGGBB` and `#AARRGGBB`,
  *     rejects malformed input inline (the colour preview holds the last
@@ -89,12 +93,12 @@ fun ColorPickerSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    // Decompose the initial colour into HSL + alpha so the wheel and SL
+    // Decompose the initial colour into HSV + alpha so the wheel and SV
     // square land on the user's existing pick.
-    val initialHsl = remember(initialColorArgb) { argbToHsl(initialColorArgb) }
-    var hue by remember { mutableFloatStateOf(initialHsl.hue) }
-    var saturation by remember { mutableFloatStateOf(initialHsl.saturation) }
-    var lightness by remember { mutableFloatStateOf(initialHsl.lightness) }
+    val initialHsv = remember(initialColorArgb) { argbToHsv(initialColorArgb) }
+    var hue by remember { mutableFloatStateOf(initialHsv.hue) }
+    var saturation by remember { mutableFloatStateOf(initialHsv.saturation) }
+    var value by remember { mutableFloatStateOf(initialHsv.value) }
     var alpha by remember { mutableFloatStateOf((initialColorArgb ushr 24) / 255f) }
     var hexText by remember(initialColorArgb) {
         mutableStateOf(formatHex(initialColorArgb))
@@ -103,7 +107,7 @@ fun ColorPickerSheet(
 
     val currentColor by remember {
         derivedStateOf {
-            hslaToArgb(hue, saturation, lightness, alpha)
+            hsvaToArgb(hue, saturation, value, alpha)
         }
     }
 
@@ -132,10 +136,10 @@ fun ColorPickerSheet(
                 RecentsRow(
                     recents = recents,
                     onPick = { picked ->
-                        val hsl = argbToHsl(picked)
-                        hue = hsl.hue
-                        saturation = hsl.saturation
-                        lightness = hsl.lightness
+                        val hsv = argbToHsv(picked)
+                        hue = hsv.hue
+                        saturation = hsv.saturation
+                        value = hsv.value
                         alpha = (picked ushr 24) / 255f
                         hexError = false
                         hexText = formatHex(picked)
@@ -143,18 +147,18 @@ fun ColorPickerSheet(
                 )
             }
 
-            HueRingWithSLSquare(
+            HueRingWithSVSquare(
                 hue = hue,
                 saturation = saturation,
-                lightness = lightness,
+                value = value,
                 onHueChanged = { hue = it },
-                onSLChanged = { s, l -> saturation = s; lightness = l },
+                onSVChanged = { s, v -> saturation = s; value = v },
             )
 
             AlphaSlider(
                 hue = hue,
                 saturation = saturation,
-                lightness = lightness,
+                value = value,
                 alpha = alpha,
                 onAlphaChanged = { alpha = it },
             )
@@ -171,17 +175,17 @@ fun ColorPickerSheet(
                         hexError = true
                     } else {
                         hexError = false
-                        val hsl = argbToHsl(parsed)
-                        hue = hsl.hue
-                        saturation = hsl.saturation
-                        lightness = hsl.lightness
+                        val hsv = argbToHsv(parsed)
+                        hue = hsv.hue
+                        saturation = hsv.saturation
+                        value = hsv.value
                         alpha = (parsed ushr 24) / 255f
                     }
                 },
                 onRestoreInitial = {
-                    hue = initialHsl.hue
-                    saturation = initialHsl.saturation
-                    lightness = initialHsl.lightness
+                    hue = initialHsv.hue
+                    saturation = initialHsv.saturation
+                    value = initialHsv.value
                     alpha = (initialColorArgb ushr 24) / 255f
                     hexError = false
                     hexText = formatHex(initialColorArgb)
@@ -241,12 +245,12 @@ private fun RecentsRow(
 }
 
 @Composable
-private fun HueRingWithSLSquare(
+private fun HueRingWithSVSquare(
     hue: Float,
     saturation: Float,
-    lightness: Float,
+    value: Float,
     onHueChanged: (Float) -> Unit,
-    onSLChanged: (Float, Float) -> Unit,
+    onSVChanged: (Float, Float) -> Unit,
 ) {
     BoxWithConstraints(
         modifier = Modifier
@@ -258,7 +262,7 @@ private fun HueRingWithSLSquare(
         val ringThickness = sizePx * 0.10f
         val outerR = sizePx * 0.5f
         val innerR = outerR - ringThickness
-        // The SL square is inscribed in the inner circle. Side = inner * √2.
+        // The SV square is inscribed in the inner circle. Side = inner * √2.
         val squareSide = innerR * 1.4142f
         val squareHalf = squareSide * 0.5f
         val center = Offset(outerR, outerR)
@@ -338,7 +342,7 @@ private fun HueRingWithSLSquare(
             )
         }
 
-        // SL square — separate Canvas inside the ring.
+        // SV square — separate Canvas inside the ring.
         val squareSideDp = with(LocalDensity.current) { squareSide.toDp() }
         Box(
             modifier = Modifier
@@ -351,23 +355,26 @@ private fun HueRingWithSLSquare(
                     .pointerInput(hue) {
                         detectDragGestures { change, _ ->
                             val s = (change.position.x / size.width).coerceIn(0f, 1f)
-                            // Lightness: top is light, bottom is dark.
-                            val l = 1f - (change.position.y / size.height).coerceIn(0f, 1f)
-                            onSLChanged(s, l)
+                            // Value: top is bright, bottom is black.
+                            val v = 1f - (change.position.y / size.height).coerceIn(0f, 1f)
+                            onSVChanged(s, v)
                         }
                     }
                     .pointerInput(hue) {
                         detectTapGestures { pos ->
                             val s = (pos.x / size.width).coerceIn(0f, 1f)
-                            val l = 1f - (pos.y / size.height).coerceIn(0f, 1f)
-                            onSLChanged(s, l)
+                            val v = 1f - (pos.y / size.height).coerceIn(0f, 1f)
+                            onSVChanged(s, v)
                         }
                     },
             ) {
-                // Horizontal: white → pure hue. Vertical: top transparent, bottom black.
+                // Horizontal: white → pure hue. Vertical: top transparent,
+                // bottom black. Together these paint colour(x, y) =
+                // hsv(hue, x/w, 1 - y/h), which is what the gesture handlers
+                // above report back.
                 drawRect(
                     brush = Brush.horizontalGradient(
-                        colors = listOf(Color.White, Color.hsl(hue, 1f, 0.5f)),
+                        colors = listOf(Color.White, Color.hsv(hue, 1f, 1f)),
                     ),
                     size = Size(size.width, size.height),
                 )
@@ -377,9 +384,9 @@ private fun HueRingWithSLSquare(
                     ),
                     size = Size(size.width, size.height),
                 )
-                // SL thumb.
+                // SV thumb.
                 val thumbX = saturation * size.width
-                val thumbY = (1f - lightness) * size.height
+                val thumbY = (1f - value) * size.height
                 drawCircle(
                     color = Color.White,
                     radius = 8f,
@@ -400,7 +407,7 @@ private fun HueRingWithSLSquare(
 private fun AlphaSlider(
     hue: Float,
     saturation: Float,
-    lightness: Float,
+    value: Float,
     alpha: Float,
     onAlphaChanged: (Float) -> Unit,
 ) {
@@ -423,8 +430,8 @@ private fun AlphaSlider(
                     .background(
                         Brush.horizontalGradient(
                             colors = listOf(
-                                Color.hsl(hue, saturation, lightness, 0f),
-                                Color.hsl(hue, saturation, lightness, 1f),
+                                Color.hsv(hue, saturation, value, 0f),
+                                Color.hsv(hue, saturation, value, 1f),
                             ),
                         ),
                     ),
@@ -504,19 +511,17 @@ private const val RecentColorsStoreLimit: Int = 12
 
 // ── Colour math ─────────────────────────────────────────────────────────────
 
-internal data class Hsl(val hue: Float, val saturation: Float, val lightness: Float)
+internal data class Hsv(val hue: Float, val saturation: Float, val value: Float)
 
-/** ARGB int → HSL using the standard sRGB formula. Returned hue is in degrees `[0, 360)`. */
-internal fun argbToHsl(argb: Int): Hsl {
+/** ARGB int → HSV using the standard sRGB formula. Returned hue is in degrees `[0, 360)`. */
+internal fun argbToHsv(argb: Int): Hsv {
     val r = ((argb shr 16) and 0xFF) / 255f
     val g = ((argb shr 8) and 0xFF) / 255f
     val b = (argb and 0xFF) / 255f
     val maxC = maxOf(r, g, b)
     val minC = minOf(r, g, b)
-    val l = (maxC + minC) * 0.5f
     val d = maxC - minC
-    val s = if (d == 0f) 0f
-    else d / (1f - kotlin.math.abs(2f * l - 1f)).coerceAtLeast(1e-6f)
+    val s = if (maxC == 0f) 0f else d / maxC
     val h = when {
         d == 0f -> 0f
         maxC == r -> 60f * (((g - b) / d) % 6f)
@@ -524,14 +529,14 @@ internal fun argbToHsl(argb: Int): Hsl {
         else -> 60f * (((r - g) / d) + 4f)
     }
     val hNorm = ((h % 360f) + 360f) % 360f
-    return Hsl(hNorm, s.coerceIn(0f, 1f), l.coerceIn(0f, 1f))
+    return Hsv(hNorm, s.coerceIn(0f, 1f), maxC.coerceIn(0f, 1f))
 }
 
-internal fun hslaToArgb(h: Float, s: Float, l: Float, alpha: Float): Int {
-    val color = Color.hsl(
+internal fun hsvaToArgb(h: Float, s: Float, v: Float, alpha: Float): Int {
+    val color = Color.hsv(
         hue = (h % 360f + 360f) % 360f,
         saturation = s.coerceIn(0f, 1f),
-        lightness = l.coerceIn(0f, 1f),
+        value = v.coerceIn(0f, 1f),
         alpha = alpha.coerceIn(0f, 1f),
     )
     return color.toArgb()
