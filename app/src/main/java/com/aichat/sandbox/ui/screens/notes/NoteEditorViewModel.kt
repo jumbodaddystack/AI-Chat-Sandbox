@@ -1367,6 +1367,39 @@ class NoteEditorViewModel @Inject constructor(
         apply(EditorAction.AddItems(listOf(prepared)))
     }
 
+    /**
+     * Sub-phase 11.3 — hold-to-snap shape recognition. The surface already
+     * committed [item] as raw ink (via [addItem]); if the recognizer fires,
+     * one `CompositeEdit("Recognized …")` swaps the stroke for the shape —
+     * a single undo restores the raw ink. The shape inherits the stroke's
+     * colour / width / layer / z and carries no fill, so the replacement is
+     * exactly the user's outline, snapped.
+     */
+    fun onStrokeHoldRecognized(item: NoteItem) {
+        val committed = items.firstOrNull { it.id == item.id } ?: return
+        if (committed.kind != STROKE_KIND) return
+        val samples = StrokeCodec.decode(committed.payload)
+        val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+        val result = com.aichat.sandbox.ui.components.notes.ShapeRecognizer
+            .recognize(samples, count) ?: return
+        val shapeItem = NoteItem(
+            noteId = resolvedNoteId,
+            zIndex = committed.zIndex,
+            kind = Shape.KIND,
+            tool = null,
+            colorArgb = committed.colorArgb,
+            baseWidthPx = committed.baseWidthPx,
+            payload = ShapeCodec.encode(result.shape),
+            layerId = committed.layerId,
+        )
+        apply(EditorAction.CompositeEdit(
+            description = "Recognized ${result.label}",
+            added = listOf(shapeItem),
+            removed = listOf(committed),
+            modified = emptyList(),
+        ))
+    }
+
     /** Remove items matching [ids] (issued by the eraser swipe). */
     fun removeItems(ids: List<String>) {
         if (ids.isEmpty()) return

@@ -253,6 +253,22 @@ class DrawingSurface(context: Context) : View(context) {
     /** Invoked once per committed stroke (or shape). Caller assigns noteId / zIndex. */
     var strokeListener: ((NoteItem) -> Unit)? = null
 
+    /**
+     * Sub-phase 11.3 — fired right after [strokeListener] when the stylus was
+     * held still ≥ [ShapeRecognizer.HOLD_DURATION_MS] before lifting on a
+     * PEN / PENCIL stroke. The receiver runs [ShapeRecognizer] and, on a hit,
+     * replaces the (already-committed) raw stroke with the shape as one
+     * CompositeEdit so undo restores the ink.
+     */
+    var strokeHoldRecognizeListener: ((NoteItem) -> Unit)? = null
+
+    // Hold-to-snap tracking: the uptime + screen position of the last sample
+    // that moved more than the touch slop. A lift whose event time is ≥
+    // HOLD_DURATION_MS past this means "drew, then held still".
+    private var strokeLastMoveUptime: Long = 0L
+    private var strokeLastMoveX: Float = 0f
+    private var strokeLastMoveY: Float = 0f
+
     /** Invoked at the end of an eraser swipe with all matched item ids. */
     var eraseListener: ((List<String>) -> Unit)? = null
 
@@ -736,6 +752,9 @@ class DrawingSurface(context: Context) : View(context) {
                     motionPredictor?.record(event)
                     if (strokeTool.isEraser) eraseAtLastSample()
                 }
+                strokeLastMoveUptime = event.eventTime
+                strokeLastMoveX = event.getX(idx)
+                strokeLastMoveY = event.getY(idx)
                 invalidate()
                 true
             }
@@ -766,6 +785,14 @@ class DrawingSurface(context: Context) : View(context) {
                 appendStylusSample(event, idx)
                 if (strokeTool.isEraser) eraseAtLastSample()
                 if (strokeTool.isInk) updatePredictedFromPredictor() else clearPredicted()
+                // 11.3 — only movement beyond the touch slop resets the hold
+                // timer, so the natural micro-jitter of a held stylus still
+                // counts as "still".
+                if (hypot(event.getX(idx) - strokeLastMoveX, event.getY(idx) - strokeLastMoveY) > tapSlopPx) {
+                    strokeLastMoveUptime = event.eventTime
+                    strokeLastMoveX = event.getX(idx)
+                    strokeLastMoveY = event.getY(idx)
+                }
                 invalidate()
                 true
             }
@@ -774,7 +801,10 @@ class DrawingSurface(context: Context) : View(context) {
                 when {
                     strokeTool.isLasso -> commitLassoLoop()
                     strokeTool.isEraser -> commitEraseStroke()
-                    else -> commitLiveStroke()
+                    else -> commitLiveStroke(
+                        holdRecognition = (strokeTool == Tool.PEN || strokeTool == Tool.PENCIL) &&
+                            event.eventTime - strokeLastMoveUptime >= ShapeRecognizer.HOLD_DURATION_MS,
+                    )
                 }
                 true
             }
@@ -1005,7 +1035,7 @@ class DrawingSurface(context: Context) : View(context) {
         predictedSampleCount = 0
     }
 
-    private fun commitLiveStroke() {
+    private fun commitLiveStroke(holdRecognition: Boolean = false) {
         if (liveSampleCount < 1) {
             invalidate()
             return
@@ -1049,6 +1079,10 @@ class DrawingSurface(context: Context) : View(context) {
         committedItems = committedItems + item
         sceneDirty = true
         strokeListener?.invoke(item)
+        // 11.3 — recognition runs *after* the normal commit so the raw ink
+        // is already an undoable item; the receiver's replacement edit is a
+        // second entry and one undo restores the stroke.
+        if (holdRecognition) strokeHoldRecognizeListener?.invoke(item)
         liveSampleCount = 0
         invalidate()
     }
@@ -1879,6 +1913,8 @@ fun DrawingSurfaceView(
     // Sub-phase 11.1 — sticky notes: tap dispatch + in-edit body suppression.
     editingStickyId: String? = null,
     onStickyTap: (worldX: Float, worldY: Float) -> Unit = { _, _ -> },
+    // Sub-phase 11.3 — hold-to-snap shape recognition.
+    onStrokeHoldRecognized: (NoteItem) -> Unit = { },
     sketchMode: Boolean = false,
     // "Draw with finger" user setting — single finger inks, two fingers
     // pan/zoom. Ignored while a stylus pointer is active.
@@ -1903,6 +1939,7 @@ fun DrawingSurfaceView(
     val currentOnSelectionClear by rememberUpdatedState(onSelectionShouldClear)
     val currentOnTextTap by rememberUpdatedState(onTextTap)
     val currentOnStickyTap by rememberUpdatedState(onStickyTap)
+    val currentOnHoldRecognized by rememberUpdatedState(onStrokeHoldRecognized)
     val currentOnFrameDrawn by rememberUpdatedState(onFrameDrawn)
     val currentOnFrameTap by rememberUpdatedState(onFrameTap)
     val currentOnViewportReady by rememberUpdatedState(onViewportReady)
@@ -1922,6 +1959,7 @@ fun DrawingSurfaceView(
                 selectionShouldClearListener = { currentOnSelectionClear() }
                 textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
                 stickyTapListener = { wx, wy -> currentOnStickyTap(wx, wy) }
+                strokeHoldRecognizeListener = { item -> currentOnHoldRecognized(item) }
                 frameDragListener = { bounds -> currentOnFrameDrawn(bounds) }
                 frameTapListener = { wx, wy -> currentOnFrameTap(wx, wy) }
                 setFilesDir(ctx.filesDir)
@@ -1938,6 +1976,7 @@ fun DrawingSurfaceView(
             view.selectionShouldClearListener = { currentOnSelectionClear() }
             view.textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
             view.stickyTapListener = { wx, wy -> currentOnStickyTap(wx, wy) }
+            view.strokeHoldRecognizeListener = { item -> currentOnHoldRecognized(item) }
             view.frameDragListener = { bounds -> currentOnFrameDrawn(bounds) }
             view.frameTapListener = { wx, wy -> currentOnFrameTap(wx, wy) }
             view.backgroundStyle = backgroundStyle
