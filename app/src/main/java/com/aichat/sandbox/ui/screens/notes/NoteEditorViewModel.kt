@@ -44,6 +44,7 @@ import com.aichat.sandbox.ui.components.notes.ImageItemCodec
 import com.aichat.sandbox.ui.components.notes.ItemTransformer
 import com.aichat.sandbox.ui.components.notes.ConnectorCodec
 import com.aichat.sandbox.ui.components.notes.ConnectorResolver
+import com.aichat.sandbox.ui.components.notes.PathCodec
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.ShapeCodec
 import com.aichat.sandbox.ui.components.notes.Snap
@@ -977,6 +978,10 @@ class NoteEditorViewModel @Inject constructor(
                     )
                 )
             }
+            PathCodec.KIND -> {
+                val payload = PathCodec.decode(item.payload)
+                PathCodec.encode(PathCodec.transform(payload, shift))
+            }
             else -> item.payload.copyOf()
         }
         return item.copy(
@@ -1602,6 +1607,13 @@ class NoteEditorViewModel @Inject constructor(
                         Shape.Line(ep[0], ep[1], ep[2], ep[3]),
                         polygon, vertexCount, polyBounds,
                     )
+                }
+                PathCodec.KIND -> {
+                    // 12.1 — lasso against the flattened curve.
+                    val payload = PathCodec.decode(item.payload)
+                    val b = PathCodec.boundsOf(payload) ?: continue
+                    itemBounds = b
+                    hit = HitTest.pathIntersectsPolygon(payload, polygon, vertexCount, polyBounds)
                 }
                 else -> continue
             }
@@ -2507,6 +2519,7 @@ class NoteEditorViewModel @Inject constructor(
                 TextItemCodec.KIND -> TextItemRenderer.boundsOf(item)
                 Shape.KIND -> ShapeCodec.boundsOf(ShapeCodec.decode(item.payload).shape)
                 NoteItem.KIND_IMAGE -> ImageItemCodec.boundsOf(ImageItemCodec.decode(item.payload))
+                PathCodec.KIND -> PathCodec.boundsOf(PathCodec.decode(item.payload))
                 else -> null
             }
             rect?.let { rects.add(it) }
@@ -2884,6 +2897,10 @@ class NoteEditorViewModel @Inject constructor(
                     )
                 )
             }
+            PathCodec.KIND -> {
+                val payload = PathCodec.decode(source.payload)
+                PathCodec.encode(PathCodec.transform(payload, shifted))
+            }
             else -> source.payload.copyOf()
         }
         return source.copy(
@@ -2923,6 +2940,7 @@ class NoteEditorViewModel @Inject constructor(
                 maxOf(ep[0], ep[2]), maxOf(ep[1], ep[3]),
             )
         }
+        PathCodec.KIND -> PathCodec.boundsOf(PathCodec.decode(item.payload))
         else -> null
     }
 

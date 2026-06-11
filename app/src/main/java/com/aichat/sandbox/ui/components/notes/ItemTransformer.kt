@@ -21,7 +21,15 @@ object ItemTransformer {
         NoteItem.KIND_IMAGE -> transformImage(item, matrix)
         StickyCodec.KIND -> transformSticky(item, matrix)
         ConnectorCodec.KIND -> transformConnector(item, matrix)
+        PathCodec.KIND -> transformPath(item, matrix)
         else -> item
+    }
+
+    // 12.1 — anchors map through the full affine, handle deltas through the
+    // linear part only (PathCodec.transform owns that split).
+    private fun transformPath(item: NoteItem, m: FloatArray): NoteItem {
+        val payload = PathCodec.decode(item.payload)
+        return item.copy(payload = PathCodec.encode(PathCodec.transform(payload, m)))
     }
 
     private fun transformSticky(item: NoteItem, m: FloatArray): NoteItem {

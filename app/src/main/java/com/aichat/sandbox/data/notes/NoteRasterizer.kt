@@ -15,6 +15,8 @@ import com.aichat.sandbox.ui.components.notes.ConnectorResolver
 import com.aichat.sandbox.ui.components.notes.HitTest
 import com.aichat.sandbox.ui.components.notes.ImageItemCodec
 import com.aichat.sandbox.ui.components.notes.ImageRenderer
+import com.aichat.sandbox.ui.components.notes.PathCodec
+import com.aichat.sandbox.ui.components.notes.PathRenderer
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.StickyCodec
 import com.aichat.sandbox.ui.components.notes.StickyRenderer
@@ -309,6 +311,7 @@ object NoteRasterizer {
                 kotlin.math.max(p.x0, p.x1), kotlin.math.max(p.y0, p.y1),
             )
         }
+        PathCodec.KIND -> PathCodec.boundsOf(PathCodec.decode(item.payload))
         else -> null
     }
 
@@ -356,6 +359,7 @@ object NoteRasterizer {
                     val endpoints = ConnectorResolver.resolve(payload, connectorLookup)
                     ConnectorRenderer.draw(canvas, item, payload, endpoints, paint, path)
                 }
+                PathCodec.KIND -> PathRenderer.draw(canvas, item, paint, path)
             }
         }
     }

@@ -1164,6 +1164,14 @@ class DrawingSurface(context: Context) : View(context) {
                         Shape.Line(ep[0], ep[1], ep[2], ep[3]), px, py, radius,
                     )
                 }
+                // 12.1 — paths erase via the flattened curve (interior counts
+                // when closed, mirroring closed polygons).
+                PathCodec.KIND -> {
+                    val payload = PathCodec.decode(item.payload)
+                    val pb = PathCodec.boundsOf(payload) ?: continue
+                    if (!HitTest.bboxContainsPoint(pb, px, py, radius)) false
+                    else HitTest.pathContainsPoint(payload, px, py, radius)
+                }
                 else -> false
             }
             if (hit) {
@@ -1253,6 +1261,8 @@ class DrawingSurface(context: Context) : View(context) {
                     canvas, item, payload, resolveConnector(payload), replayPaint, scratchPath,
                 )
             }
+            // 12.1 — bezier paths.
+            PathCodec.KIND -> PathRenderer.draw(canvas, item, replayPaint, scratchPath)
         }
         if (needsLayer) canvas.restore()
     }
