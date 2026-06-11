@@ -575,6 +575,43 @@ class NoteEditorViewModel @Inject constructor(
         _currentFrameId.value = frameId
     }
 
+    // ── Presentation mode (sub-phase 11.5) ───────────────────────────────
+    //
+    // A full-screen stepper over the note's frames in ordinal order. The
+    // index points into [presentationFrames]; null = not presenting. The
+    // screen hides the editor chrome and flies the viewport to the active
+    // frame; the surface switches the stylus to transient laser ink and
+    // maps the barrel button to "advance".
+
+    private val _presentationIndex = MutableStateFlow<Int?>(null)
+    val presentationIndex: StateFlow<Int?> = _presentationIndex.asStateFlow()
+
+    /** Frames in presentation order (ordinal ascending). */
+    fun presentationFrames(): List<NoteFrame> = _frames.value.sortedBy { it.ordinal }
+
+    fun startPresentation() {
+        if (_frames.value.isEmpty()) return
+        commitTextEdit()
+        commitStickyEdit()
+        clearSelection()
+        _presentationIndex.value = 0
+    }
+
+    /** Step the presentation by [delta] frames, clamped to the deck. */
+    fun stepPresentation(delta: Int) {
+        val current = _presentationIndex.value ?: return
+        val count = _frames.value.size
+        if (count == 0) {
+            _presentationIndex.value = null
+            return
+        }
+        _presentationIndex.value = (current + delta).coerceIn(0, count - 1)
+    }
+
+    fun exitPresentation() {
+        _presentationIndex.value = null
+    }
+
     /**
      * Common path for every frame mutation: record the before / after into a
      * `FrameMutation` undo entry and update the live state. Frame ops don't

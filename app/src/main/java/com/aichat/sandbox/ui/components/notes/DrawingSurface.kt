@@ -533,6 +533,10 @@ class DrawingSurface(context: Context) : View(context) {
             canvas.restore()
         }
 
+        if (presentationMode) {
+            drawLaser(canvas)
+        }
+
         if (hoverVisible) {
             if (paletteTool.isEraser) {
                 // The preview circle uses the palette tool (not strokeTool) so
@@ -584,6 +588,17 @@ class DrawingSurface(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (presentationMode) {
+            // Sub-phase 11.5 — presenting: the stylus draws transient laser
+            // ink (never committed); fingers keep pan / pinch so the
+            // presenter can still move around inside a frame.
+            val stylusIdx = stylusPointerIndex(event)
+            if (stylusIdx >= 0) {
+                gestureMode = GestureMode.NONE
+                return handleLaserEvent(event, stylusIdx)
+            }
+            return handleViewportEvent(event)
+        }
         if (sketchMode) {
             // Fixed-size sheet canvas: every pointer is ink, no viewport
             // gestures. Pressure / tilt fall back to finger defaults when
@@ -1371,6 +1386,126 @@ class DrawingSurface(context: Context) : View(context) {
         }
     }
 
+    // ── Presentation laser (sub-phase 11.5) ──────────────────────────────
+    //
+    // Transient "laser pointer" ink drawn on the front buffer while
+    // presenting: world-coord polylines with a red glow that fade out
+    // ~900 ms after the stylus lifts and are never committed (no
+    // strokeListener, no undo entry). A stylus barrel-button press advances
+    // the presentation instead of drawing.
+
+    /** Presentation mode: stylus = laser, barrel button = advance. */
+    var presentationMode: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            laserStrokes.clear()
+            activeLaser = null
+            invalidate()
+        }
+
+    /** Fired on a stylus barrel-button press while presenting. */
+    var presentationAdvanceListener: (() -> Unit)? = null
+
+    private class LaserStroke(
+        val points: ArrayList<Float> = ArrayList(64),
+        var endedAt: Long = 0L,
+    )
+
+    private val laserStrokes = ArrayList<LaserStroke>()
+    private var activeLaser: LaserStroke? = null
+    private val laserPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        isAntiAlias = true
+    }
+    private val laserPath = Path()
+
+    private fun handleLaserEvent(event: MotionEvent, idx: Int): Boolean {
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if ((event.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) {
+                    // Barrel button = next frame; no laser for this contact.
+                    activeLaser = null
+                    presentationAdvanceListener?.invoke()
+                    return true
+                }
+                val stroke = LaserStroke()
+                stroke.points.add(viewport.screenToWorldX(event.getX(idx)))
+                stroke.points.add(viewport.screenToWorldY(event.getY(idx)))
+                activeLaser = stroke
+                laserStrokes.add(stroke)
+                invalidate()
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val stroke = activeLaser ?: return true
+                for (h in 0 until event.historySize) {
+                    stroke.points.add(viewport.screenToWorldX(event.getHistoricalX(idx, h)))
+                    stroke.points.add(viewport.screenToWorldY(event.getHistoricalY(idx, h)))
+                }
+                stroke.points.add(viewport.screenToWorldX(event.getX(idx)))
+                stroke.points.add(viewport.screenToWorldY(event.getY(idx)))
+                invalidate()
+                true
+            }
+            MotionEvent.ACTION_UP -> {
+                activeLaser?.endedAt = android.os.SystemClock.uptimeMillis()
+                activeLaser = null
+                postInvalidateOnAnimation()
+                true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                activeLaser?.let { laserStrokes.remove(it) }
+                activeLaser = null
+                invalidate()
+                true
+            }
+            else -> false
+        }
+    }
+
+    private fun drawLaser(canvas: Canvas) {
+        if (laserStrokes.isEmpty()) return
+        val now = android.os.SystemClock.uptimeMillis()
+        laserStrokes.removeAll { it.endedAt != 0L && now - it.endedAt > LASER_FADE_MS }
+        if (laserStrokes.isEmpty()) {
+            invalidate()
+            return
+        }
+        canvas.save()
+        canvas.translate(viewport.offsetX, viewport.offsetY)
+        canvas.scale(viewport.scale, viewport.scale)
+        val scale = viewport.scale.coerceAtLeast(MIN_DIV_SCALE)
+        var anyFading = false
+        for (stroke in laserStrokes) {
+            if (stroke.points.size < 4) continue
+            val alphaFraction = if (stroke.endedAt == 0L) 1f else {
+                anyFading = true
+                (1f - (now - stroke.endedAt).toFloat() / LASER_FADE_MS).coerceIn(0f, 1f)
+            }
+            laserPath.reset()
+            laserPath.moveTo(stroke.points[0], stroke.points[1])
+            var i = 2
+            while (i < stroke.points.size) {
+                laserPath.lineTo(stroke.points[i], stroke.points[i + 1])
+                i += 2
+            }
+            // Glow pass then core pass — both width-constant in screen px.
+            laserPaint.color = LASER_GLOW_COLOR
+            laserPaint.alpha = (LASER_GLOW_ALPHA * alphaFraction).toInt()
+            laserPaint.strokeWidth = LASER_GLOW_WIDTH_PX / scale
+            canvas.drawPath(laserPath, laserPaint)
+            laserPaint.color = LASER_CORE_COLOR
+            laserPaint.alpha = (255 * alphaFraction).toInt()
+            laserPaint.strokeWidth = LASER_CORE_WIDTH_PX / scale
+            canvas.drawPath(laserPath, laserPaint)
+        }
+        canvas.restore()
+        if (anyFading) postInvalidateOnAnimation()
+    }
+
     // ── Connector tool routing (sub-phase 11.2) ──────────────────────────
     //
     // Press near a bindable item (shape / sticky / image / text) → the start
@@ -1879,6 +2014,14 @@ class DrawingSurface(context: Context) : View(context) {
         private const val SNAP_FADE_MS: Long = 280L
         private const val SNAP_MARKER_RADIUS_PX: Float = 5f
 
+        // ── Presentation laser (sub-phase 11.5) ───────────────────────
+        private const val LASER_FADE_MS: Long = 900L
+        private const val LASER_CORE_COLOR: Int = 0xFFFF1744.toInt()
+        private const val LASER_GLOW_COLOR: Int = 0xFFFF5252.toInt()
+        private const val LASER_GLOW_ALPHA: Int = 90
+        private const val LASER_CORE_WIDTH_PX: Float = 4f
+        private const val LASER_GLOW_WIDTH_PX: Float = 14f
+
         // ── Connector tool (sub-phase 11.2) ───────────────────────────
         /** Screen-space grab radius for binding an endpoint to an item. */
         private const val CONNECTOR_BIND_RADIUS_PX: Float = 16f
@@ -1915,6 +2058,10 @@ fun DrawingSurfaceView(
     onStickyTap: (worldX: Float, worldY: Float) -> Unit = { _, _ -> },
     // Sub-phase 11.3 — hold-to-snap shape recognition.
     onStrokeHoldRecognized: (NoteItem) -> Unit = { },
+    // Sub-phase 11.5 — presentation mode: stylus draws transient laser ink,
+    // barrel button advances the frame stepper.
+    presentationMode: Boolean = false,
+    onPresentationAdvance: () -> Unit = { },
     sketchMode: Boolean = false,
     // "Draw with finger" user setting — single finger inks, two fingers
     // pan/zoom. Ignored while a stylus pointer is active.
@@ -1940,6 +2087,7 @@ fun DrawingSurfaceView(
     val currentOnTextTap by rememberUpdatedState(onTextTap)
     val currentOnStickyTap by rememberUpdatedState(onStickyTap)
     val currentOnHoldRecognized by rememberUpdatedState(onStrokeHoldRecognized)
+    val currentOnPresentationAdvance by rememberUpdatedState(onPresentationAdvance)
     val currentOnFrameDrawn by rememberUpdatedState(onFrameDrawn)
     val currentOnFrameTap by rememberUpdatedState(onFrameTap)
     val currentOnViewportReady by rememberUpdatedState(onViewportReady)
@@ -1960,6 +2108,7 @@ fun DrawingSurfaceView(
                 textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
                 stickyTapListener = { wx, wy -> currentOnStickyTap(wx, wy) }
                 strokeHoldRecognizeListener = { item -> currentOnHoldRecognized(item) }
+                presentationAdvanceListener = { currentOnPresentationAdvance() }
                 frameDragListener = { bounds -> currentOnFrameDrawn(bounds) }
                 frameTapListener = { wx, wy -> currentOnFrameTap(wx, wy) }
                 setFilesDir(ctx.filesDir)
@@ -1977,6 +2126,8 @@ fun DrawingSurfaceView(
             view.textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
             view.stickyTapListener = { wx, wy -> currentOnStickyTap(wx, wy) }
             view.strokeHoldRecognizeListener = { item -> currentOnHoldRecognized(item) }
+            view.presentationAdvanceListener = { currentOnPresentationAdvance() }
+            view.presentationMode = presentationMode
             view.frameDragListener = { bounds -> currentOnFrameDrawn(bounds) }
             view.frameTapListener = { wx, wy -> currentOnFrameTap(wx, wy) }
             view.backgroundStyle = backgroundStyle
