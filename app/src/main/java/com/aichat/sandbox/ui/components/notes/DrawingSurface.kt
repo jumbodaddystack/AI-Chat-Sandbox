@@ -155,6 +155,9 @@ class DrawingSurface(context: Context) : View(context) {
     private var shapeFillArgb: Int = 0
     private var shapeStrokeStyle: Byte = ShapeCodec.STROKE_STYLE_SOLID
 
+    // 12.5 — packed PathCodec cap/join byte for newly committed paths.
+    private var pathCapJoin: Int = PathCodec.DEFAULT_CAP_JOIN
+
     /** Tool actually used for the in-flight stroke (palette tool or side-button override). */
     private var strokeTool: Tool = Tool.PEN
     private var strokeColor: Int = DEFAULT_INK_COLOR
@@ -384,6 +387,7 @@ class DrawingSurface(context: Context) : View(context) {
         textureId: String? = null,
         shapeFillArgb: Int = 0,
         shapeStrokeStyle: Byte = ShapeCodec.STROKE_STYLE_SOLID,
+        pathCapJoin: Int = PathCodec.DEFAULT_CAP_JOIN,
     ) {
         // 12.2 — leaving the pen tool commits whatever path is in progress;
         // an abandoned two-anchor stub is more useful than silent loss.
@@ -397,6 +401,7 @@ class DrawingSurface(context: Context) : View(context) {
         this.areaEraserRadiusPx = areaEraserRadiusPx
         this.shapeFillArgb = shapeFillArgb
         this.shapeStrokeStyle = shapeStrokeStyle
+        this.pathCapJoin = pathCapJoin
         invalidate()
     }
 
@@ -1834,6 +1839,7 @@ class DrawingSurface(context: Context) : View(context) {
             closed = close,
             fillArgb = shapeFillArgb,
             strokeStyle = shapeStrokeStyle,
+            capJoin = pathCapJoin,
         )
         val item = NoteItem(
             noteId = "",
@@ -1864,6 +1870,7 @@ class DrawingSurface(context: Context) : View(context) {
                     closed = false,
                     fillArgb = shapeFillArgb,
                     strokeStyle = shapeStrokeStyle,
+                    capJoin = pathCapJoin,
                 ),
                 inkColor, baseWidthPx, shapePaint, scratchPath,
             )
@@ -2362,6 +2369,7 @@ fun DrawingSurfaceView(
                 textureId = activeTextureId,
                 shapeFillArgb = paletteState.activeShapeFillArgb(),
                 shapeStrokeStyle = paletteState.shapeStrokeStyle.toByte(),
+                pathCapJoin = paletteState.activePathCapJoin(),
             )
             view.setSelection(selectedIds, selectionMatrix)
             view.setEditingTextId(editingTextId)

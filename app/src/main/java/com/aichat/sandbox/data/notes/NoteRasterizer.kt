@@ -2,7 +2,6 @@ package com.aichat.sandbox.data.notes
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
@@ -63,8 +62,12 @@ object NoteRasterizer {
     private const val GRID_SPACING_WORLD: Float = 32f
     private const val MIN_GRID_BITMAP_SPACING_PX: Float = 6f
     private const val DOT_RADIUS_PX: Float = 1.4f
-    private val GRID_COLOR: Int = Color.argb(40, 0, 0, 0)
-    private const val PAPER_COLOR: Int = Color.WHITE
+
+    // Raw ARGB literals (not android.graphics.Color statics) so this
+    // object's class init — and therefore the pure [computeBounds] path the
+    // SVG / VectorDrawable exporters lean on — works in plain JVM tests.
+    private const val GRID_COLOR: Int = 0x28000000 // 40-alpha black
+    private const val PAPER_COLOR: Int = 0xFFFFFFFF.toInt() // white
 
     /**
      * Render [items] cropped to [bounds] into a fresh ARGB bitmap. The longest

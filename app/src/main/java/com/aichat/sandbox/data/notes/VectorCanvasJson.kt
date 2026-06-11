@@ -4,6 +4,7 @@ import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.data.model.NoteLayer
 import com.aichat.sandbox.ui.components.notes.ConnectorCodec
 import com.aichat.sandbox.ui.components.notes.ImageItemCodec
+import com.aichat.sandbox.ui.components.notes.PathCodec
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.ShapeCodec
 import com.aichat.sandbox.ui.components.notes.StickyCodec
@@ -95,6 +96,7 @@ object VectorCanvasJson {
         var imageSeq = 0
         var stickySeq = 0
         var connectorSeq = 0
+        var pathSeq = 0
         visibleItems.forEach { item ->
             val short = when (item.kind) {
                 NoteItem.KIND_STROKE -> "s_${(++strokeSeq).pad()}"
@@ -103,6 +105,7 @@ object VectorCanvasJson {
                 NoteItem.KIND_IMAGE -> "i_${(++imageSeq).pad()}"
                 StickyCodec.KIND -> "n_${(++stickySeq).pad()}"
                 ConnectorCodec.KIND -> "c_${(++connectorSeq).pad()}"
+                PathCodec.KIND -> "p_${(++pathSeq).pad()}"
                 else -> "x_${(item.id.hashCode() and 0xFFFF).toString(16)}"
             }
             idMap[short] = item.id
@@ -293,6 +296,29 @@ object VectorCanvasJson {
                 })
                 obj.addProperty("boundStart", payload.fromItemId != null)
                 obj.addProperty("boundEnd", payload.toItemId != null)
+            }
+            PathCodec.KIND -> {
+                // 12.5 — anchors with relative handles, mirroring the codec,
+                // so the model can reason about curvature; transform /
+                // recolor / restyle / delete address the path by id.
+                val payload = try {
+                    PathCodec.decode(item.payload)
+                } catch (_: Throwable) {
+                    return null
+                }
+                if (payload.closed && payload.fillArgb != 0) {
+                    obj.addProperty("fill", colorToHex(payload.fillArgb))
+                }
+                obj.addProperty("closed", payload.closed)
+                val arr = JsonArray(payload.anchors.size)
+                for (a in payload.anchors) {
+                    val anchor = JsonArray(6)
+                    anchor.add(round1(a.x)); anchor.add(round1(a.y))
+                    anchor.add(round1(a.inDx)); anchor.add(round1(a.inDy))
+                    anchor.add(round1(a.outDx)); anchor.add(round1(a.outDy))
+                    arr.add(anchor)
+                }
+                obj.add("anchors", arr)
             }
             else -> return null
         }

@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.ui.components.notes.PathCodec
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.ShapeCodec
 import com.aichat.sandbox.ui.components.notes.StrokeCodec
@@ -132,6 +133,7 @@ class NoteVectorDrawableExporter @Inject constructor(
                 when (item.kind) {
                     NoteItem.KIND_STROKE -> appendStroke(sb, item, transform)
                     Shape.KIND -> appendShape(sb, item, transform)
+                    PathCodec.KIND -> appendBezierPath(sb, item, transform)
                     else -> skipped++ // text + image have no VectorDrawable equivalent
                 }
             }
@@ -222,6 +224,45 @@ class NoteVectorDrawableExporter @Inject constructor(
             for (i in 0 until count) sumPressure += samples[i * StrokeCodec.FLOATS_PER_SAMPLE + 2]
             val meanPressure = (sumPressure / count).coerceIn(0.1f, 1f)
             return max(0.5f, item.baseWidthPx * meanPressure)
+        }
+
+        // ---- bezier paths (12.5) ----
+
+        private fun appendBezierPath(sb: StringBuilder, item: NoteItem, t: Transform) {
+            val payload = PathCodec.decode(item.payload)
+            if (payload.anchors.size < 2) return
+            val first = payload.anchors[0]
+            val d = StringBuilder(payload.anchors.size * 32)
+            d.append('M').append(f(t.x(first.x))).append(',').append(f(t.y(first.y)))
+            for (i in 0 until payload.segmentCount) {
+                val s = PathCodec.segment(payload, i)
+                d.append('C')
+                    .append(f(t.x(s[2]))).append(',').append(f(t.y(s[3]))).append(' ')
+                    .append(f(t.x(s[4]))).append(',').append(f(t.y(s[5]))).append(' ')
+                    .append(f(t.x(s[6]))).append(',').append(f(t.y(s[7])))
+            }
+            if (payload.closed) d.append('Z')
+            appendPath(
+                sb,
+                pathData = d.toString(),
+                fillColor = if (payload.closed && payload.fillArgb != 0) {
+                    colorToHex(payload.fillArgb)
+                } else {
+                    null
+                },
+                strokeColor = colorToHex(item.colorArgb),
+                strokeWidth = max(0.1f, t.len(item.baseWidthPx)),
+                cap = when (PathCodec.cap(payload.capJoin)) {
+                    PathCodec.CAP_BUTT -> "butt"
+                    PathCodec.CAP_SQUARE -> "square"
+                    else -> "round"
+                },
+                join = when (PathCodec.join(payload.capJoin)) {
+                    PathCodec.JOIN_MITER -> "miter"
+                    PathCodec.JOIN_BEVEL -> "bevel"
+                    else -> "round"
+                },
+            )
         }
 
         // ---- shapes ----
@@ -340,6 +381,7 @@ class NoteVectorDrawableExporter @Inject constructor(
             strokeAlpha: Float = 1f,
             cap: String? = null,
             indent: String = "  ",
+            join: String = "round",
         ) {
             sb.append(indent).append("<path\n")
             sb.append(indent).append("    android:pathData=\"").append(pathData).append("\"\n")
@@ -348,7 +390,7 @@ class NoteVectorDrawableExporter @Inject constructor(
                 sb.append("\n").append(indent).append("    android:strokeColor=\"").append(strokeColor).append("\"")
                 sb.append("\n").append(indent).append("    android:strokeWidth=\"").append(f(strokeWidth)).append("\"")
                 sb.append("\n").append(indent).append("    android:strokeLineCap=\"").append(cap ?: "round").append("\"")
-                sb.append("\n").append(indent).append("    android:strokeLineJoin=\"round\"")
+                sb.append("\n").append(indent).append("    android:strokeLineJoin=\"").append(join).append("\"")
                 if (strokeAlpha < 1f) {
                     sb.append("\n").append(indent).append("    android:strokeAlpha=\"").append(f(strokeAlpha)).append("\"")
                 }

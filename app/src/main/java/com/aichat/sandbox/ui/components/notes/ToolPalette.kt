@@ -114,9 +114,10 @@ fun ToolPalette(
             } else if (selected.isPathPen) {
                 // Sub-phase 12.2 — the pen shares the ink colour/width row and
                 // the shape fill / line-style row (paths encode both).
+                // 12.5 adds cap / join chips.
                 InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
                 ShapeStyleRow(state = state, onPickShapeFillColor = onPickShapeFillColor)
-                PathPenHintRow()
+                PathCapJoinRow(state = state)
             }
         }
     }
@@ -497,17 +498,57 @@ private fun ConnectorHintRow() {
     }
 }
 
+/**
+ * Sub-phase 12.5 — cap / join chips for newly drawn paths. Round / round
+ * is the default (matches the ink feel); the chips swap the
+ * [PathCodec] capJoin byte the pen encodes on commit.
+ */
 @Composable
-private fun PathPenHintRow() {
+private fun PathCapJoinRow(state: ToolPaletteState) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
-            text = "Pen — tap to add anchors, drag to curve; tap the first anchor to close.",
+            text = "Cap",
             style = MaterialTheme.typography.labelMedium,
         )
+        CapJoinChip("Round", state.pathStrokeCap == PathCodec.CAP_ROUND) {
+            state.setPathCap(PathCodec.CAP_ROUND)
+        }
+        CapJoinChip("Square", state.pathStrokeCap == PathCodec.CAP_SQUARE) {
+            state.setPathCap(PathCodec.CAP_SQUARE)
+        }
+        CapJoinChip("Flat", state.pathStrokeCap == PathCodec.CAP_BUTT) {
+            state.setPathCap(PathCodec.CAP_BUTT)
+        }
+        Text(
+            text = "Join",
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+        CapJoinChip("Round", state.pathStrokeJoin == PathCodec.JOIN_ROUND) {
+            state.setPathJoin(PathCodec.JOIN_ROUND)
+        }
+        CapJoinChip("Miter", state.pathStrokeJoin == PathCodec.JOIN_MITER) {
+            state.setPathJoin(PathCodec.JOIN_MITER)
+        }
+        CapJoinChip("Bevel", state.pathStrokeJoin == PathCodec.JOIN_BEVEL) {
+            state.setPathJoin(PathCodec.JOIN_BEVEL)
+        }
     }
+}
+
+@Composable
+private fun CapJoinChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label) },
+    )
 }
 
 @Composable

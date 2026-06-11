@@ -1885,10 +1885,12 @@ class NoteEditorViewModel @Inject constructor(
 
     // ── Phase 10 — group / restyle / arrange ─────────────────────────────
 
-    /** True when the active selection contains at least one shape item. */
+    /** True when the selection has restyleable vector items (shapes / paths). */
     fun selectionHasShapes(): Boolean {
         val ids = _selection.value
-        return items.any { it.id in ids && it.kind == Shape.KIND }
+        return items.any {
+            it.id in ids && (it.kind == Shape.KIND || it.kind == PathCodec.KIND)
+        }
     }
 
     /** True when the active selection contains at least one grouped item. */
@@ -1926,34 +1928,50 @@ class NoteEditorViewModel @Inject constructor(
     }
 
     /**
-     * Re-fill every selected shape (10.2). `null` removes the fill. One
-     * CompositeEdit so the restyle is a single undo entry; non-shape items
-     * in the selection are untouched.
+     * Re-fill every selected shape / path (10.2, paths since 12.5). `null`
+     * removes the fill. One CompositeEdit so the restyle is a single undo
+     * entry; other kinds in the selection are untouched.
      */
     fun setSelectionFill(fillArgb: Int?) {
-        restyleSelectedShapes(if (fillArgb == null) "Remove fill" else "Set fill") { decoded ->
-            ShapeCodec.encode(decoded.shape, fillArgb ?: 0, decoded.strokeStyle)
-        }
+        restyleSelectedShapes(
+            description = if (fillArgb == null) "Remove fill" else "Set fill",
+            reencode = { decoded ->
+                ShapeCodec.encode(decoded.shape, fillArgb ?: 0, decoded.strokeStyle)
+            },
+            reencodePath = { payload ->
+                PathCodec.encode(payload.copy(fillArgb = fillArgb ?: 0))
+            },
+        )
     }
 
-    /** Re-style every selected shape's outline (10.3) — a [ShapeCodec] STROKE_STYLE_* value. */
+    /** Re-style every selected shape / path outline — a [ShapeCodec] STROKE_STYLE_* value. */
     fun setSelectionStrokeStyle(style: Int) {
-        restyleSelectedShapes("Line style") { decoded ->
-            ShapeCodec.encode(decoded.shape, decoded.fillArgb, style.toByte())
-        }
+        restyleSelectedShapes(
+            description = "Line style",
+            reencode = { decoded ->
+                ShapeCodec.encode(decoded.shape, decoded.fillArgb, style.toByte())
+            },
+            reencodePath = { payload ->
+                PathCodec.encode(payload.copy(strokeStyle = style.toByte()))
+            },
+        )
     }
 
     private fun restyleSelectedShapes(
         description: String,
         reencode: (ShapeCodec.DecodedShape) -> ByteArray,
+        reencodePath: (PathCodec.PathPayload) -> ByteArray,
     ) {
         val ids = _selection.value
         if (ids.isEmpty()) return
         val pairs = ArrayList<Pair<NoteItem, NoteItem>>()
         for (item in items) {
-            if (item.id !in ids || item.kind != Shape.KIND) continue
-            val decoded = ShapeCodec.decode(item.payload)
-            val payload = reencode(decoded)
+            if (item.id !in ids) continue
+            val payload = when (item.kind) {
+                Shape.KIND -> reencode(ShapeCodec.decode(item.payload))
+                PathCodec.KIND -> reencodePath(PathCodec.decode(item.payload))
+                else -> continue
+            }
             if (payload.contentEquals(item.payload)) continue
             pairs += item to item.copy(payload = payload)
         }
@@ -3203,7 +3221,8 @@ class NoteEditorViewModel @Inject constructor(
         withContext(Dispatchers.Default) {
             val supported = items.toList().filter {
                 it.kind == NoteItem.KIND_STROKE ||
-                    it.kind == com.aichat.sandbox.ui.components.notes.Shape.KIND
+                    it.kind == com.aichat.sandbox.ui.components.notes.Shape.KIND ||
+                    it.kind == PathCodec.KIND
             }
             if (supported.isEmpty()) return@withContext null
             val frame = currentFrameBounds()

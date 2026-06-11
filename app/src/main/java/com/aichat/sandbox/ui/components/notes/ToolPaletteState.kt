@@ -149,6 +149,29 @@ class ToolPaletteState {
     /** Fill ARGB the surface should encode on the next shape — 0 when disabled. */
     fun activeShapeFillArgb(): Int = if (shapeFillEnabled) shapeFillColor else 0
 
+    // ── Sub-phase 12.5 — pen path cap / join ─────────────────────────────
+
+    /** Stroke cap for newly drawn paths — a [PathCodec] CAP_* value. */
+    var pathStrokeCap: Int by mutableStateOf(PathCodec.cap(PathCodec.DEFAULT_CAP_JOIN))
+        private set
+
+    /** Stroke join for newly drawn paths — a [PathCodec] JOIN_* value. */
+    var pathStrokeJoin: Int by mutableStateOf(PathCodec.join(PathCodec.DEFAULT_CAP_JOIN))
+        private set
+
+    fun setPathCap(cap: Int) {
+        if (cap !in PathCodec.CAP_BUTT..PathCodec.CAP_SQUARE) return
+        pathStrokeCap = cap
+    }
+
+    fun setPathJoin(join: Int) {
+        if (join !in PathCodec.JOIN_MITER..PathCodec.JOIN_BEVEL) return
+        pathStrokeJoin = join
+    }
+
+    /** Packed capJoin byte the surface encodes on the next path commit. */
+    fun activePathCapJoin(): Int = PathCodec.capJoinOf(pathStrokeCap, pathStrokeJoin)
+
     // ── Sub-phase 11.1 — sticky fill ─────────────────────────────────────
 
     /** Fill applied to newly dropped stickies — one of [StickyCodec.PRESET_FILLS]. */
