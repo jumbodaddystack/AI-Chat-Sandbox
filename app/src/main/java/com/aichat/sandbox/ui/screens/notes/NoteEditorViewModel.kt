@@ -155,6 +155,10 @@ class NoteEditorViewModel @Inject constructor(
     private val entrySource: String? = savedStateHandle["source"]
     private val entryStylus: Boolean = savedStateHandle["stylus"] ?: false
 
+    // Sub-phase 11.4 — `note/new?template=<id>` seeds a starter template
+    // into the fresh note (frames + shapes + stickies + text + connectors).
+    private val entryTemplate: String? = savedStateHandle["template"]
+
     private val _note = MutableStateFlow(emptyNote(resolvedNoteId))
     val note: StateFlow<Note> = _note.asStateFlow()
 
@@ -611,6 +615,28 @@ class NoteEditorViewModel @Inject constructor(
         )
         _frames.value = listOf(artboard)
         _currentFrameId.value = artboard.id
+    }
+
+    /**
+     * Sub-phase 11.4 — stamp [template]'s content into this fresh note.
+     * Seeded directly into state (no undo entries), same convention as
+     * [seedIconArtboard]: a template is the note's initial condition, and
+     * "undo right after open" shouldn't strip the scaffolding. Sets the
+     * note title to the template's display name so the list stays legible.
+     */
+    private fun seedTemplate(template: com.aichat.sandbox.data.notes.NoteTemplate) {
+        val content = com.aichat.sandbox.data.notes.NoteTemplates.build(
+            template = template,
+            noteId = resolvedNoteId,
+            layerId = _activeLayerId.value,
+        )
+        items.addAll(content.items)
+        refreshZIndexCounters(content.items)
+        if (content.frames.isNotEmpty()) {
+            _frames.value = content.frames
+            _currentFrameId.value = content.frames.minByOrNull { it.ordinal }?.id
+        }
+        _note.update { it.copy(title = template.displayName) }
     }
 
     /** Returns the world-bounds of the currently-selected frame, or null. */
@@ -1184,7 +1210,12 @@ class NoteEditorViewModel @Inject constructor(
             // has somewhere to land. Layer is persisted at save() time.
             addLayer("Ink")
             if (entrySource == ENTRY_SOURCE_ICON) seedIconArtboard()
+            com.aichat.sandbox.data.notes.NoteTemplate.fromId(entryTemplate)
+                ?.let { seedTemplate(it) }
             initialLoadComplete = true
+            // Templates carry real content — arm an autosave so backing out
+            // immediately still keeps the seeded note.
+            if (items.isNotEmpty()) scheduleAutosave()
         }
         // Seed the active brush preset once presets stream in.
         viewModelScope.launch {
