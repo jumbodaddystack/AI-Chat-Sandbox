@@ -694,9 +694,11 @@ fun NoteEditorScreen(
                     onAlign = viewModel::alignSelection,
                     onDistribute = viewModel::distributeSelection,
                     onReorder = viewModel::reorderSelection,
-                    // Phase 12.3 — node editing for a single selected path.
+                    // Phase 12.3/12.4 — node editing + convert to path.
                     canEditNodes = viewModel.selectionIsSinglePath(),
                     onEditNodes = viewModel::enterNodeEdit,
+                    canConvertToPath = viewModel.selectionHasConvertibles(),
+                    onConvertToPath = viewModel::convertSelectionToPaths,
                 )
                 // Sub-phase 12.3 — node-edit overlay replaces the selection
                 // overlay (the selection cleared when node editing began).

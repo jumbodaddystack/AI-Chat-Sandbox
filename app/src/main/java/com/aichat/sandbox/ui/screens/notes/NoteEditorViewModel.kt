@@ -45,6 +45,7 @@ import com.aichat.sandbox.ui.components.notes.ItemTransformer
 import com.aichat.sandbox.ui.components.notes.ConnectorCodec
 import com.aichat.sandbox.ui.components.notes.ConnectorResolver
 import com.aichat.sandbox.ui.components.notes.PathCodec
+import com.aichat.sandbox.ui.components.notes.PathConversions
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.ShapeCodec
 import com.aichat.sandbox.ui.components.notes.Snap
@@ -1722,6 +1723,70 @@ class NoteEditorViewModel @Inject constructor(
             removed = emptyList(),
             modified = listOf(before to after),
         ))
+    }
+
+    // ── Convert to path (sub-phase 12.4) ─────────────────────────────────
+
+    /** True when the selection has anything shape→path / stroke→path can eat. */
+    fun selectionHasConvertibles(): Boolean {
+        val ids = _selection.value
+        return items.any { it.id in ids && (it.kind == Shape.KIND || it.kind == STROKE_KIND) }
+    }
+
+    /**
+     * Replace every selected shape / stroke with its bezier-path
+     * equivalent — one `CompositeEdit("Convert to path")`, so a single undo
+     * restores the originals byte-identical. Colour / width / layer / z /
+     * group carry over; shape fill + stroke style move into the payload.
+     * Arrows expand to two items (shaft + filled head); other selected
+     * kinds are left untouched.
+     */
+    fun convertSelectionToPaths() {
+        val ids = _selection.value
+        if (ids.isEmpty()) return
+        val removed = ArrayList<NoteItem>()
+        val added = ArrayList<NoteItem>()
+        fun pathItem(source: NoteItem, payload: PathCodec.PathPayload) = NoteItem(
+            noteId = resolvedNoteId,
+            zIndex = source.zIndex,
+            kind = PathCodec.KIND,
+            tool = null,
+            colorArgb = source.colorArgb,
+            baseWidthPx = source.baseWidthPx,
+            payload = PathCodec.encode(payload),
+            layerId = source.layerId,
+            groupId = source.groupId,
+        )
+        for (item in items) {
+            if (item.id !in ids) continue
+            when (item.kind) {
+                Shape.KIND -> {
+                    val decoded = ShapeCodec.decode(item.payload)
+                    val payloads = PathConversions.fromShape(decoded, item.colorArgb)
+                    if (payloads.isEmpty()) continue
+                    removed += item
+                    payloads.forEach { added += pathItem(item, it) }
+                }
+                STROKE_KIND -> {
+                    val samples = StrokeCodec.decode(item.payload)
+                    val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+                    val payload = PathConversions.fromStroke(samples, count) ?: continue
+                    removed += item
+                    added += pathItem(item, payload)
+                }
+            }
+        }
+        if (added.isEmpty()) return
+        apply(EditorAction.CompositeEdit(
+            description = "Convert to path",
+            added = added,
+            removed = removed,
+            modified = emptyList(),
+        ))
+        // Select the conversions so the user can immediately edit nodes.
+        _selection.value = added.mapTo(HashSet(added.size)) { it.id }
+        _selectionWorldBounds.value = recomputeSelectionBounds()
+        _selectionMatrix.value = StrokeTransform.IDENTITY
     }
 
     /** Tap-like node edit (insert / delete / toggle) — commits immediately. */
