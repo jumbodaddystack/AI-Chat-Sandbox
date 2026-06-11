@@ -245,10 +245,12 @@ object EditPreviewController {
             val decoded = ImageItemCodec.decode(item.payload)
             item.copy(payload = ImageItemCodec.encode(ImageItemCodec.transform(decoded, matrix)))
         }
-        // Phase 11 — stickies and connectors route through the same shared
-        // transform as the undo action so AI edits behave identically.
+        // Phase 11/12 — stickies, connectors, and paths route through the
+        // same shared transform as the undo action so AI edits behave
+        // identically.
         com.aichat.sandbox.ui.components.notes.StickyCodec.KIND,
-        com.aichat.sandbox.ui.components.notes.ConnectorCodec.KIND ->
+        com.aichat.sandbox.ui.components.notes.ConnectorCodec.KIND,
+        com.aichat.sandbox.ui.components.notes.PathCodec.KIND ->
             com.aichat.sandbox.ui.components.notes.ItemTransformer.transform(item, matrix)
         else -> null
     }

@@ -9,6 +9,7 @@ import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.ui.components.notes.ConnectorCodec
 import com.aichat.sandbox.ui.components.notes.ConnectorResolver
 import com.aichat.sandbox.ui.components.notes.ImageItemCodec
+import com.aichat.sandbox.ui.components.notes.PathCodec
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.StickyCodec
 import com.aichat.sandbox.ui.components.notes.ShapeCodec
@@ -137,6 +138,7 @@ class NoteSvgExporter @Inject constructor(
                     NoteItem.KIND_IMAGE -> appendImage(sb, item, filesDir)
                     StickyCodec.KIND -> appendSticky(sb, item)
                     ConnectorCodec.KIND -> appendConnector(sb, item, connectorLookup)
+                    PathCodec.KIND -> appendPathItem(sb, item)
                 }
             }
             sb.append("  </g>\n</svg>\n")
@@ -440,6 +442,60 @@ class NoteSvgExporter @Inject constructor(
                 .append(fmt(hx1)).append(',').append(fmt(hy1)).append(' ')
                 .append(fmt(hx2)).append(',').append(fmt(hy2))
                 .append("\" fill=\"").append(color).append("\"/>\n")
+        }
+
+        /**
+         * 12.5 — bezier paths as native `<path d="M … C … (Z)">` with fill,
+         * dash, cap and join. Pure int math (no `android.graphics.Color`) so
+         * the wire format stays pinnable in plain JVM tests.
+         */
+        private fun appendPathItem(sb: StringBuilder, item: NoteItem) {
+            val payload = PathCodec.decode(item.payload)
+            if (payload.anchors.size < 2) return
+            val color = colorToHex(item.colorArgb)
+            val fill = if (payload.closed && payload.fillArgb != 0) {
+                colorToHex(payload.fillArgb)
+            } else {
+                "none"
+            }
+            val width = item.baseWidthPx
+            val dash = dashArrayFor(payload.strokeStyle, width)
+            sb.append("    <path d=\"").append(pathData(payload))
+                .append("\" fill=\"").append(fill).append('"')
+                .append(" stroke=\"").append(color).append('"')
+                .append(" stroke-width=\"").append(fmt(width)).append('"')
+                .append(" stroke-linecap=\"").append(capName(payload.capJoin)).append('"')
+                .append(" stroke-linejoin=\"").append(joinName(payload.capJoin)).append('"')
+            if (dash != null) sb.append(" stroke-dasharray=\"").append(dash).append('"')
+            sb.append("/>\n")
+        }
+
+        /** SVG path data for a [PathCodec.PathPayload] — shared with tests. */
+        internal fun pathData(payload: PathCodec.PathPayload): String {
+            val sb = StringBuilder(payload.anchors.size * 32)
+            val first = payload.anchors[0]
+            sb.append('M').append(fmt(first.x)).append(' ').append(fmt(first.y))
+            for (i in 0 until payload.segmentCount) {
+                val s = PathCodec.segment(payload, i)
+                sb.append('C')
+                    .append(fmt(s[2])).append(' ').append(fmt(s[3])).append(' ')
+                    .append(fmt(s[4])).append(' ').append(fmt(s[5])).append(' ')
+                    .append(fmt(s[6])).append(' ').append(fmt(s[7]))
+            }
+            if (payload.closed) sb.append('Z')
+            return sb.toString()
+        }
+
+        private fun capName(capJoin: Int): String = when (PathCodec.cap(capJoin)) {
+            PathCodec.CAP_BUTT -> "butt"
+            PathCodec.CAP_SQUARE -> "square"
+            else -> "round"
+        }
+
+        private fun joinName(capJoin: Int): String = when (PathCodec.join(capJoin)) {
+            PathCodec.JOIN_MITER -> "miter"
+            PathCodec.JOIN_BEVEL -> "bevel"
+            else -> "round"
         }
 
         private fun strokeMeanWidth(item: NoteItem): Float {

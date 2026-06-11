@@ -48,6 +48,11 @@ enum class Tool(
     // Sub-phase 11.2 — bound connectors. Drag from one item to another;
     // endpoints bind to the nearest anchor and re-resolve at render time.
     CONNECTOR("connector", "Connector"),
+
+    // Sub-phase 12.2 — vector pen. Tap places corner anchors, press-drag
+    // pulls symmetric handles, tapping the first anchor closes the path;
+    // switching tools commits whatever is in progress.
+    PATH_PEN("path_pen", "Pen path"),
     ;
 
     val isInk: Boolean get() = this == PEN || this == HIGHLIGHTER || this == PENCIL
@@ -60,6 +65,7 @@ enum class Tool(
     val isFrame: Boolean get() = this == FRAME
     val isSticky: Boolean get() = this == STICKY
     val isConnector: Boolean get() = this == CONNECTOR
+    val isPathPen: Boolean get() = this == PATH_PEN
 
     companion object {
         /** Resolve a persisted [id] back to its enum, or null for unknown ids. */
@@ -143,6 +149,29 @@ class ToolPaletteState {
     /** Fill ARGB the surface should encode on the next shape — 0 when disabled. */
     fun activeShapeFillArgb(): Int = if (shapeFillEnabled) shapeFillColor else 0
 
+    // ── Sub-phase 12.5 — pen path cap / join ─────────────────────────────
+
+    /** Stroke cap for newly drawn paths — a [PathCodec] CAP_* value. */
+    var pathStrokeCap: Int by mutableStateOf(PathCodec.cap(PathCodec.DEFAULT_CAP_JOIN))
+        private set
+
+    /** Stroke join for newly drawn paths — a [PathCodec] JOIN_* value. */
+    var pathStrokeJoin: Int by mutableStateOf(PathCodec.join(PathCodec.DEFAULT_CAP_JOIN))
+        private set
+
+    fun setPathCap(cap: Int) {
+        if (cap !in PathCodec.CAP_BUTT..PathCodec.CAP_SQUARE) return
+        pathStrokeCap = cap
+    }
+
+    fun setPathJoin(join: Int) {
+        if (join !in PathCodec.JOIN_MITER..PathCodec.JOIN_BEVEL) return
+        pathStrokeJoin = join
+    }
+
+    /** Packed capJoin byte the surface encodes on the next path commit. */
+    fun activePathCapJoin(): Int = PathCodec.capJoinOf(pathStrokeCap, pathStrokeJoin)
+
     // ── Sub-phase 11.1 — sticky fill ─────────────────────────────────────
 
     /** Fill applied to newly dropped stickies — one of [StickyCodec.PRESET_FILLS]. */
@@ -159,7 +188,8 @@ class ToolPaletteState {
         selected = tool
         if (tool.isInk) lastInkTool = tool
         if (tool.isEraser) lastEraserTool = tool
-        if (tool.isShape) lastShapeTool = tool
+        // 12.2 — the pen path tool lives in the grouped shapes button.
+        if (tool.isShape || tool.isPathPen) lastShapeTool = tool
         if (tool.isSticky || tool.isConnector) lastBoardTool = tool
     }
 

@@ -2,7 +2,6 @@ package com.aichat.sandbox.data.notes
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
@@ -15,6 +14,8 @@ import com.aichat.sandbox.ui.components.notes.ConnectorResolver
 import com.aichat.sandbox.ui.components.notes.HitTest
 import com.aichat.sandbox.ui.components.notes.ImageItemCodec
 import com.aichat.sandbox.ui.components.notes.ImageRenderer
+import com.aichat.sandbox.ui.components.notes.PathCodec
+import com.aichat.sandbox.ui.components.notes.PathRenderer
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.StickyCodec
 import com.aichat.sandbox.ui.components.notes.StickyRenderer
@@ -61,8 +62,12 @@ object NoteRasterizer {
     private const val GRID_SPACING_WORLD: Float = 32f
     private const val MIN_GRID_BITMAP_SPACING_PX: Float = 6f
     private const val DOT_RADIUS_PX: Float = 1.4f
-    private val GRID_COLOR: Int = Color.argb(40, 0, 0, 0)
-    private const val PAPER_COLOR: Int = Color.WHITE
+
+    // Raw ARGB literals (not android.graphics.Color statics) so this
+    // object's class init — and therefore the pure [computeBounds] path the
+    // SVG / VectorDrawable exporters lean on — works in plain JVM tests.
+    private const val GRID_COLOR: Int = 0x28000000 // 40-alpha black
+    private const val PAPER_COLOR: Int = 0xFFFFFFFF.toInt() // white
 
     /**
      * Render [items] cropped to [bounds] into a fresh ARGB bitmap. The longest
@@ -309,6 +314,7 @@ object NoteRasterizer {
                 kotlin.math.max(p.x0, p.x1), kotlin.math.max(p.y0, p.y1),
             )
         }
+        PathCodec.KIND -> PathCodec.boundsOf(PathCodec.decode(item.payload))
         else -> null
     }
 
@@ -356,6 +362,7 @@ object NoteRasterizer {
                     val endpoints = ConnectorResolver.resolve(payload, connectorLookup)
                     ConnectorRenderer.draw(canvas, item, payload, endpoints, paint, path)
                 }
+                PathCodec.KIND -> PathRenderer.draw(canvas, item, paint, path)
             }
         }
     }

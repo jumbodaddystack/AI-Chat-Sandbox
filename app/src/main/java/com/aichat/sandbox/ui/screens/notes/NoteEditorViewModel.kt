@@ -44,6 +44,8 @@ import com.aichat.sandbox.ui.components.notes.ImageItemCodec
 import com.aichat.sandbox.ui.components.notes.ItemTransformer
 import com.aichat.sandbox.ui.components.notes.ConnectorCodec
 import com.aichat.sandbox.ui.components.notes.ConnectorResolver
+import com.aichat.sandbox.ui.components.notes.PathCodec
+import com.aichat.sandbox.ui.components.notes.PathConversions
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.ShapeCodec
 import com.aichat.sandbox.ui.components.notes.Snap
@@ -977,6 +979,10 @@ class NoteEditorViewModel @Inject constructor(
                     )
                 )
             }
+            PathCodec.KIND -> {
+                val payload = PathCodec.decode(item.payload)
+                PathCodec.encode(PathCodec.transform(payload, shift))
+            }
             else -> item.payload.copyOf()
         }
         return item.copy(
@@ -1603,6 +1609,13 @@ class NoteEditorViewModel @Inject constructor(
                         polygon, vertexCount, polyBounds,
                     )
                 }
+                PathCodec.KIND -> {
+                    // 12.1 — lasso against the flattened curve.
+                    val payload = PathCodec.decode(item.payload)
+                    val b = PathCodec.boundsOf(payload) ?: continue
+                    itemBounds = b
+                    hit = HitTest.pathIntersectsPolygon(payload, polygon, vertexCount, polyBounds)
+                }
                 else -> continue
             }
             // Sub-phase 6.4 — locked-layer items don't fall into a lasso
@@ -1639,10 +1652,155 @@ class NoteEditorViewModel @Inject constructor(
     }
 
     fun clearSelection() {
+        // 12.3 — node-edit mode rides on the selection lifecycle: anything
+        // that clears the selection (stray stroke, presentation start) also
+        // backs out of node editing.
+        _nodeEditTarget.value = null
         if (_selection.value.isEmpty()) return
         _selection.value = emptySet()
         _selectionWorldBounds.value = null
         _selectionMatrix.value = StrokeTransform.IDENTITY
+    }
+
+    // ── Path node editing (sub-phase 12.3) ───────────────────────────────
+    //
+    // A single selected path can enter node-edit mode: the editor swaps the
+    // selection overlay for [PathNodeEditor], drags live-mutate the item's
+    // payload (no undo entries), and each finished gesture commits exactly
+    // one CompositeEdit with the gesture-start payload as `before`.
+
+    private val _nodeEditTarget = MutableStateFlow<String?>(null)
+    val nodeEditTarget: StateFlow<String?> = _nodeEditTarget.asStateFlow()
+
+    /** True when the selection is exactly one path item (gates "Edit nodes"). */
+    fun selectionIsSinglePath(): Boolean {
+        val ids = _selection.value
+        if (ids.size != 1) return false
+        val id = ids.first()
+        return items.any { it.id == id && it.kind == PathCodec.KIND }
+    }
+
+    fun enterNodeEdit() {
+        val ids = _selection.value
+        if (ids.size != 1) return
+        val item = items.firstOrNull { it.id == ids.first() } ?: return
+        if (item.kind != PathCodec.KIND) return
+        clearSelection()
+        _nodeEditTarget.value = item.id
+    }
+
+    fun exitNodeEdit() {
+        _nodeEditTarget.value = null
+    }
+
+    /**
+     * Live drag preview: replace the item's payload directly, bypassing the
+     * undo log. The matching [commitPathNodeGesture] turns the whole drag
+     * into one undo entry.
+     */
+    fun previewPathNodeEdit(itemId: String, payload: PathCodec.PathPayload) {
+        val idx = items.indexOfFirst { it.id == itemId }
+        if (idx < 0 || items[idx].kind != PathCodec.KIND) return
+        items[idx] = items[idx].copy(payload = PathCodec.encode(payload))
+    }
+
+    /**
+     * End-of-gesture commit: the item currently holds the live-previewed
+     * "after" payload; [beforePayload] is the gesture-start snapshot. The
+     * item is restored to `before` first so [apply]'s replay leaves the
+     * list exactly as a later undo/redo round-trip would.
+     */
+    fun commitPathNodeGesture(itemId: String, beforePayload: ByteArray, description: String) {
+        val idx = items.indexOfFirst { it.id == itemId }
+        if (idx < 0) return
+        val after = items[idx]
+        if (after.payload.contentEquals(beforePayload)) return
+        val before = after.copy(payload = beforePayload)
+        items[idx] = before
+        apply(EditorAction.CompositeEdit(
+            description = description,
+            added = emptyList(),
+            removed = emptyList(),
+            modified = listOf(before to after),
+        ))
+    }
+
+    // ── Convert to path (sub-phase 12.4) ─────────────────────────────────
+
+    /** True when the selection has anything shape→path / stroke→path can eat. */
+    fun selectionHasConvertibles(): Boolean {
+        val ids = _selection.value
+        return items.any { it.id in ids && (it.kind == Shape.KIND || it.kind == STROKE_KIND) }
+    }
+
+    /**
+     * Replace every selected shape / stroke with its bezier-path
+     * equivalent — one `CompositeEdit("Convert to path")`, so a single undo
+     * restores the originals byte-identical. Colour / width / layer / z /
+     * group carry over; shape fill + stroke style move into the payload.
+     * Arrows expand to two items (shaft + filled head); other selected
+     * kinds are left untouched.
+     */
+    fun convertSelectionToPaths() {
+        val ids = _selection.value
+        if (ids.isEmpty()) return
+        val removed = ArrayList<NoteItem>()
+        val added = ArrayList<NoteItem>()
+        fun pathItem(source: NoteItem, payload: PathCodec.PathPayload) = NoteItem(
+            noteId = resolvedNoteId,
+            zIndex = source.zIndex,
+            kind = PathCodec.KIND,
+            tool = null,
+            colorArgb = source.colorArgb,
+            baseWidthPx = source.baseWidthPx,
+            payload = PathCodec.encode(payload),
+            layerId = source.layerId,
+            groupId = source.groupId,
+        )
+        for (item in items) {
+            if (item.id !in ids) continue
+            when (item.kind) {
+                Shape.KIND -> {
+                    val decoded = ShapeCodec.decode(item.payload)
+                    val payloads = PathConversions.fromShape(decoded, item.colorArgb)
+                    if (payloads.isEmpty()) continue
+                    removed += item
+                    payloads.forEach { added += pathItem(item, it) }
+                }
+                STROKE_KIND -> {
+                    val samples = StrokeCodec.decode(item.payload)
+                    val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+                    val payload = PathConversions.fromStroke(samples, count) ?: continue
+                    removed += item
+                    added += pathItem(item, payload)
+                }
+            }
+        }
+        if (added.isEmpty()) return
+        apply(EditorAction.CompositeEdit(
+            description = "Convert to path",
+            added = added,
+            removed = removed,
+            modified = emptyList(),
+        ))
+        // Select the conversions so the user can immediately edit nodes.
+        _selection.value = added.mapTo(HashSet(added.size)) { it.id }
+        _selectionWorldBounds.value = recomputeSelectionBounds()
+        _selectionMatrix.value = StrokeTransform.IDENTITY
+    }
+
+    /** Tap-like node edit (insert / delete / toggle) — commits immediately. */
+    fun applyPathNodeEdit(itemId: String, payload: PathCodec.PathPayload, description: String) {
+        val item = items.firstOrNull { it.id == itemId } ?: return
+        if (item.kind != PathCodec.KIND) return
+        val encoded = PathCodec.encode(payload)
+        if (encoded.contentEquals(item.payload)) return
+        apply(EditorAction.CompositeEdit(
+            description = description,
+            added = emptyList(),
+            removed = emptyList(),
+            modified = listOf(item to item.copy(payload = encoded)),
+        ))
     }
 
     /**
@@ -1727,10 +1885,12 @@ class NoteEditorViewModel @Inject constructor(
 
     // ── Phase 10 — group / restyle / arrange ─────────────────────────────
 
-    /** True when the active selection contains at least one shape item. */
+    /** True when the selection has restyleable vector items (shapes / paths). */
     fun selectionHasShapes(): Boolean {
         val ids = _selection.value
-        return items.any { it.id in ids && it.kind == Shape.KIND }
+        return items.any {
+            it.id in ids && (it.kind == Shape.KIND || it.kind == PathCodec.KIND)
+        }
     }
 
     /** True when the active selection contains at least one grouped item. */
@@ -1768,34 +1928,50 @@ class NoteEditorViewModel @Inject constructor(
     }
 
     /**
-     * Re-fill every selected shape (10.2). `null` removes the fill. One
-     * CompositeEdit so the restyle is a single undo entry; non-shape items
-     * in the selection are untouched.
+     * Re-fill every selected shape / path (10.2, paths since 12.5). `null`
+     * removes the fill. One CompositeEdit so the restyle is a single undo
+     * entry; other kinds in the selection are untouched.
      */
     fun setSelectionFill(fillArgb: Int?) {
-        restyleSelectedShapes(if (fillArgb == null) "Remove fill" else "Set fill") { decoded ->
-            ShapeCodec.encode(decoded.shape, fillArgb ?: 0, decoded.strokeStyle)
-        }
+        restyleSelectedShapes(
+            description = if (fillArgb == null) "Remove fill" else "Set fill",
+            reencode = { decoded ->
+                ShapeCodec.encode(decoded.shape, fillArgb ?: 0, decoded.strokeStyle)
+            },
+            reencodePath = { payload ->
+                PathCodec.encode(payload.copy(fillArgb = fillArgb ?: 0))
+            },
+        )
     }
 
-    /** Re-style every selected shape's outline (10.3) — a [ShapeCodec] STROKE_STYLE_* value. */
+    /** Re-style every selected shape / path outline — a [ShapeCodec] STROKE_STYLE_* value. */
     fun setSelectionStrokeStyle(style: Int) {
-        restyleSelectedShapes("Line style") { decoded ->
-            ShapeCodec.encode(decoded.shape, decoded.fillArgb, style.toByte())
-        }
+        restyleSelectedShapes(
+            description = "Line style",
+            reencode = { decoded ->
+                ShapeCodec.encode(decoded.shape, decoded.fillArgb, style.toByte())
+            },
+            reencodePath = { payload ->
+                PathCodec.encode(payload.copy(strokeStyle = style.toByte()))
+            },
+        )
     }
 
     private fun restyleSelectedShapes(
         description: String,
         reencode: (ShapeCodec.DecodedShape) -> ByteArray,
+        reencodePath: (PathCodec.PathPayload) -> ByteArray,
     ) {
         val ids = _selection.value
         if (ids.isEmpty()) return
         val pairs = ArrayList<Pair<NoteItem, NoteItem>>()
         for (item in items) {
-            if (item.id !in ids || item.kind != Shape.KIND) continue
-            val decoded = ShapeCodec.decode(item.payload)
-            val payload = reencode(decoded)
+            if (item.id !in ids) continue
+            val payload = when (item.kind) {
+                Shape.KIND -> reencode(ShapeCodec.decode(item.payload))
+                PathCodec.KIND -> reencodePath(PathCodec.decode(item.payload))
+                else -> continue
+            }
             if (payload.contentEquals(item.payload)) continue
             pairs += item to item.copy(payload = payload)
         }
@@ -2507,6 +2683,7 @@ class NoteEditorViewModel @Inject constructor(
                 TextItemCodec.KIND -> TextItemRenderer.boundsOf(item)
                 Shape.KIND -> ShapeCodec.boundsOf(ShapeCodec.decode(item.payload).shape)
                 NoteItem.KIND_IMAGE -> ImageItemCodec.boundsOf(ImageItemCodec.decode(item.payload))
+                PathCodec.KIND -> PathCodec.boundsOf(PathCodec.decode(item.payload))
                 else -> null
             }
             rect?.let { rects.add(it) }
@@ -2884,6 +3061,10 @@ class NoteEditorViewModel @Inject constructor(
                     )
                 )
             }
+            PathCodec.KIND -> {
+                val payload = PathCodec.decode(source.payload)
+                PathCodec.encode(PathCodec.transform(payload, shifted))
+            }
             else -> source.payload.copyOf()
         }
         return source.copy(
@@ -2923,6 +3104,7 @@ class NoteEditorViewModel @Inject constructor(
                 maxOf(ep[0], ep[2]), maxOf(ep[1], ep[3]),
             )
         }
+        PathCodec.KIND -> PathCodec.boundsOf(PathCodec.decode(item.payload))
         else -> null
     }
 
@@ -3039,7 +3221,8 @@ class NoteEditorViewModel @Inject constructor(
         withContext(Dispatchers.Default) {
             val supported = items.toList().filter {
                 it.kind == NoteItem.KIND_STROKE ||
-                    it.kind == com.aichat.sandbox.ui.components.notes.Shape.KIND
+                    it.kind == com.aichat.sandbox.ui.components.notes.Shape.KIND ||
+                    it.kind == PathCodec.KIND
             }
             if (supported.isEmpty()) return@withContext null
             val frame = currentFrameBounds()

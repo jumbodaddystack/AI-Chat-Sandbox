@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Pentagon
 import androidx.compose.material.icons.filled.Polyline
 import androidx.compose.material.icons.filled.StickyNote2
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.outlined.Backspace
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.DropdownMenu
@@ -110,6 +111,13 @@ fun ToolPalette(
                 // Sub-phase 11.2 — connectors reuse the active ink colour + width.
                 InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
                 ConnectorHintRow()
+            } else if (selected.isPathPen) {
+                // Sub-phase 12.2 — the pen shares the ink colour/width row and
+                // the shape fill / line-style row (paths encode both).
+                // 12.5 adds cap / join chips.
+                InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
+                ShapeStyleRow(state = state, onPickShapeFillColor = onPickShapeFillColor)
+                PathCapJoinRow(state = state)
             }
         }
     }
@@ -146,7 +154,10 @@ private fun ToolRow(state: ToolPaletteState) {
         ToolIconButton(state, Tool.TEXT, Modifier.weight(1f))
         GroupedToolButton(
             state = state,
-            groupTools = listOf(Tool.LINE, Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.POLYGON),
+            // 12.2 — the vector pen joins the shapes roster.
+            groupTools = listOf(
+                Tool.LINE, Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.POLYGON, Tool.PATH_PEN,
+            ),
             lastUsed = state.lastShapeTool,
             // The group button wears the last-used shape's glyph so the next
             // tap's outcome is visible before tapping.
@@ -299,6 +310,7 @@ private fun Tool.icon(): ImageVector = when (this) {
     Tool.FRAME -> Icons.Filled.CropFree
     Tool.STICKY -> Icons.Filled.StickyNote2
     Tool.CONNECTOR -> Icons.Filled.Polyline
+    Tool.PATH_PEN -> Icons.Filled.Timeline
 }
 
 @Composable
@@ -484,6 +496,59 @@ private fun ConnectorHintRow() {
             style = MaterialTheme.typography.labelMedium,
         )
     }
+}
+
+/**
+ * Sub-phase 12.5 — cap / join chips for newly drawn paths. Round / round
+ * is the default (matches the ink feel); the chips swap the
+ * [PathCodec] capJoin byte the pen encodes on commit.
+ */
+@Composable
+private fun PathCapJoinRow(state: ToolPaletteState) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "Cap",
+            style = MaterialTheme.typography.labelMedium,
+        )
+        CapJoinChip("Round", state.pathStrokeCap == PathCodec.CAP_ROUND) {
+            state.setPathCap(PathCodec.CAP_ROUND)
+        }
+        CapJoinChip("Square", state.pathStrokeCap == PathCodec.CAP_SQUARE) {
+            state.setPathCap(PathCodec.CAP_SQUARE)
+        }
+        CapJoinChip("Flat", state.pathStrokeCap == PathCodec.CAP_BUTT) {
+            state.setPathCap(PathCodec.CAP_BUTT)
+        }
+        Text(
+            text = "Join",
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+        CapJoinChip("Round", state.pathStrokeJoin == PathCodec.JOIN_ROUND) {
+            state.setPathJoin(PathCodec.JOIN_ROUND)
+        }
+        CapJoinChip("Miter", state.pathStrokeJoin == PathCodec.JOIN_MITER) {
+            state.setPathJoin(PathCodec.JOIN_MITER)
+        }
+        CapJoinChip("Bevel", state.pathStrokeJoin == PathCodec.JOIN_BEVEL) {
+            state.setPathJoin(PathCodec.JOIN_BEVEL)
+        }
+    }
+}
+
+@Composable
+private fun CapJoinChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label) },
+    )
 }
 
 @Composable

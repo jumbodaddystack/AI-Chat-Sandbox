@@ -191,6 +191,59 @@ object HitTest {
         return false
     }
 
+    /**
+     * Sub-phase 12.1 — point-in-path for the eraser and tap-pick paths.
+     * Operates on the flattened polyline: closed paths hit-test interior +
+     * edge proximity (mirroring closed polygons), open paths as segments
+     * with [radius] tolerance.
+     */
+    fun pathContainsPoint(
+        payload: PathCodec.PathPayload,
+        px: Float,
+        py: Float,
+        radius: Float,
+    ): Boolean {
+        val pts = PathCodec.flatten(payload)
+        val n = pts.size / 2
+        if (n < 2) return false
+        if (payload.closed && LassoController.polygonContainsPoint(pts, n, px, py)) return true
+        val r2 = radius * radius
+        for (i in 1 until n) {
+            if (pointToSegmentDistanceSquared(
+                    px, py,
+                    pts[(i - 1) * 2], pts[(i - 1) * 2 + 1],
+                    pts[i * 2], pts[i * 2 + 1],
+                ) <= r2
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Sub-phase 12.1 — lasso intersection for paths: any flattened point
+     * inside the polygon selects, mirroring the stroke / shape contracts.
+     */
+    fun pathIntersectsPolygon(
+        payload: PathCodec.PathPayload,
+        polygon: FloatArray,
+        vertexCount: Int,
+        polygonBounds: FloatArray,
+    ): Boolean {
+        val pb = PathCodec.boundsOf(payload) ?: return false
+        if (!LassoController.boundsOverlap(pb, polygonBounds)) return false
+        val pts = PathCodec.flatten(payload)
+        var i = 0
+        while (i < pts.size) {
+            if (LassoController.polygonContainsPoint(polygon, vertexCount, pts[i], pts[i + 1])) {
+                return true
+            }
+            i += 2
+        }
+        return false
+    }
+
     /** Squared distance from (`px`,`py`) to the closest point on segment `a→b`. */
     private fun pointToSegmentDistanceSquared(
         px: Float, py: Float,
