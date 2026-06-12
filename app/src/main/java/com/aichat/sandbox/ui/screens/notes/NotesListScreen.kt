@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -70,6 +71,7 @@ fun NotesListScreen(
     notebooksViewModel: NotebooksListViewModel = hiltViewModel(),
 ) {
     val notes by viewModel.notes.collectAsState()
+    val userTemplates by viewModel.userTemplates.collectAsState()
     val notebooks by notebooksViewModel.notebooks.collectAsState()
     val pendingNav by notebooksViewModel.pendingNavigation.collectAsState()
 
@@ -141,6 +143,40 @@ fun NotesListScreen(
                                 onNewNoteFromTemplate(template.id)
                             },
                         )
+                    }
+                    // 14.3 — user-saved templates ("Save as template" in the
+                    // editor). Same pick flow with a `user:`-prefixed id;
+                    // the trailing icon deletes the template.
+                    if (userTemplates.isNotEmpty()) {
+                        HorizontalDivider()
+                        Text(
+                            text = "Your templates",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        )
+                        userTemplates.forEach { template ->
+                            DropdownMenuItem(
+                                text = { Text(template.name) },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Dashboard, contentDescription = null)
+                                },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { viewModel.deleteUserTemplate(template.id) },
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Delete,
+                                            contentDescription = "Delete template ${template.name}",
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    createMenuOpen = false
+                                    onNewNoteFromTemplate(USER_TEMPLATE_PREFIX + template.id)
+                                },
+                            )
+                        }
                     }
                 }
             }

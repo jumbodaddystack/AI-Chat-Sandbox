@@ -13,6 +13,7 @@ import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.data.model.NoteLayer
 import com.aichat.sandbox.data.model.Notebook
 import com.aichat.sandbox.data.model.Stamp
+import com.aichat.sandbox.data.model.UserTemplate
 import com.aichat.sandbox.data.model.VectorSymbolEntity
 import com.aichat.sandbox.data.model.VectorTuneupProjectEntity
 import com.aichat.sandbox.data.model.VectorTuneupVersionEntity
@@ -35,13 +36,14 @@ import com.aichat.sandbox.data.model.VectorTuneupVersionEntity
         BrushPreset::class,
         NoteFrame::class,
         Stamp::class,
+        UserTemplate::class,
         Notebook::class,
         NoteAudio::class,
         VectorTuneupProjectEntity::class,
         VectorTuneupVersionEntity::class,
         VectorSymbolEntity::class,
     ],
-    version = 19,
+    version = 20,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -50,6 +52,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun brushPresetDao(): BrushPresetDao
     abstract fun noteFrameDao(): NoteFrameDao
     abstract fun stampDao(): StampDao
+    abstract fun userTemplateDao(): UserTemplateDao
     abstract fun notebookDao(): NotebookDao
     abstract fun noteSearchDao(): NoteSearchDao
     abstract fun noteAudioDao(): NoteAudioDao

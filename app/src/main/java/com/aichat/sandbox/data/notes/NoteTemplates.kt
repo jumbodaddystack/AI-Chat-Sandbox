@@ -28,6 +28,12 @@ enum class NoteTemplate(
     KANBAN("kanban", "Kanban board", "To do / Doing / Done columns"),
     MIND_MAP("mindmap", "Mind map", "Central idea with four connected branches"),
     CORNELL("cornell", "Cornell notes", "Cue column, notes area, summary strip"),
+
+    // Sub-phase 14.3 — gallery growth.
+    WEEKLY("weekly", "Weekly planner", "Seven day columns, Monday through Sunday"),
+    RETRO("retro", "Retrospective", "Went well / To improve / Action items"),
+    SWOT("swot", "SWOT analysis", "Strengths, weaknesses, opportunities, threats"),
+    STORYBOARD("storyboard", "Storyboard", "Six caption-lined panels"),
     ;
 
     companion object {
@@ -48,6 +54,10 @@ object NoteTemplates {
             NoteTemplate.KANBAN -> Builder(noteId, layerId).kanban()
             NoteTemplate.MIND_MAP -> Builder(noteId, layerId).mindMap()
             NoteTemplate.CORNELL -> Builder(noteId, layerId).cornell()
+            NoteTemplate.WEEKLY -> Builder(noteId, layerId).weekly()
+            NoteTemplate.RETRO -> Builder(noteId, layerId).retro()
+            NoteTemplate.SWOT -> Builder(noteId, layerId).swot()
+            NoteTemplate.STORYBOARD -> Builder(noteId, layerId).storyboard()
         }
 
     private class Builder(
@@ -128,6 +138,66 @@ object NoteTemplates {
             text("Cues", 24f, 120f, fontSize = 26f)
             text("Notes", 264f, 120f, fontSize = 26f)
             text("Summary", 24f, 1000f, fontSize = 26f)
+            return content()
+        }
+
+        // ---- 14.3 gallery growth ----
+
+        fun weekly(): TemplateContent {
+            frame("Weekly planner", 0f, 0f, 1480f, 820f)
+            val days = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+            for (i in days.indices) {
+                val left = 20f + i * 208f
+                text(days[i], left + 12f, 36f, fontSize = 28f)
+                rect(left, 100f, left + 192f, 780f, fillArgb = COLUMN_FILL, cornerRadius = 12f)
+            }
+            return content()
+        }
+
+        fun retro(): TemplateContent {
+            frame("Retrospective", 0f, 0f, 1240f, 820f)
+            val headers = listOf("Went well", "To improve", "Action items")
+            val fills = listOf(RETRO_GOOD_FILL, RETRO_BAD_FILL, RETRO_ACTION_FILL)
+            for (i in 0..2) {
+                val left = 40f + i * 400f
+                text(headers[i], left + 12f, 36f, fontSize = 32f)
+                rect(left, 100f, left + 360f, 780f, fillArgb = fills[i], cornerRadius = 12f)
+                sticky(left + 24f, 128f, StickyCodec.PRESET_FILLS[i * 2 % StickyCodec.PRESET_FILLS.size])
+            }
+            return content()
+        }
+
+        fun swot(): TemplateContent {
+            frame("SWOT analysis", 0f, 0f, 1100f, 820f)
+            text("SWOT", 24f, 24f, fontSize = 34f)
+            val quadrants = listOf(
+                Triple("Strengths", 40f to 100f, RETRO_GOOD_FILL),
+                Triple("Weaknesses", 570f to 100f, RETRO_BAD_FILL),
+                Triple("Opportunities", 40f to 470f, CENTER_FILL),
+                Triple("Threats", 570f to 470f, THREAT_FILL),
+            )
+            for ((label, corner, fill) in quadrants) {
+                val (left, top) = corner
+                rect(left, top, left + 490f, top + 340f, fillArgb = fill, cornerRadius = 12f)
+                text(label, left + 16f, top + 12f, fontSize = 28f)
+            }
+            return content()
+        }
+
+        fun storyboard(): TemplateContent {
+            frame("Storyboard", 0f, 0f, 1240f, 940f)
+            var scene = 1
+            for (row in 0..1) {
+                for (col in 0..2) {
+                    val left = 40f + col * 400f
+                    val top = 40f + row * 450f
+                    rect(left, top, left + 360f, top + 280f, fillArgb = 0, cornerRadius = 4f)
+                    text("Scene $scene", left, top + 296f, fontSize = 22f)
+                    line(left, top + 360f, left + 360f, top + 360f)
+                    line(left, top + 400f, left + 360f, top + 400f)
+                    scene++
+                }
+            }
             return content()
         }
 
@@ -244,4 +314,10 @@ object NoteTemplates {
     private const val COLUMN_FILL: Int = 0x14000000
     private const val CENTER_FILL: Int = 0x402463EB
     private const val BRANCH_FILL: Int = 0x40109F5C
+
+    // 14.3 — retro / SWOT quadrant tints.
+    private const val RETRO_GOOD_FILL: Int = 0x28109F5C
+    private const val RETRO_BAD_FILL: Int = 0x28D62828
+    private const val RETRO_ACTION_FILL: Int = 0x282463EB
+    private const val THREAT_FILL: Int = 0x28FF9F1C
 }
