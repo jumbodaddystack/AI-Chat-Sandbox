@@ -91,6 +91,8 @@ import javax.inject.Inject
 const val NOTE_ID_NEW = "new"
 /** `note/new?source=icon` — seeds icon mode (artboard + grid + AI prompt). */
 const val ENTRY_SOURCE_ICON = "icon"
+/** 14.3 — `note/new?template=user:<id>` seeds a user-saved template. */
+const val USER_TEMPLATE_PREFIX = "user:"
 private const val DEFAULT_TITLE = "Untitled"
 private const val DEFAULT_BACKGROUND_STYLE = "plain"
 private const val CURRENT_SCHEMA_VERSION = 1
@@ -135,6 +137,7 @@ class NoteEditorViewModel @Inject constructor(
     private val brushPresets: BrushPresetRepository,
     private val noteImageStore: NoteImageStore,
     private val stampRepository: StampRepository,
+    private val userTemplateRepository: com.aichat.sandbox.data.repository.UserTemplateRepository,
     private val favoritesStore: com.aichat.sandbox.data.notes.FavoritesStore,
     val frameThumbnailRenderer: com.aichat.sandbox.data.notes.FrameThumbnailRenderer,
     // Sub-phase 9.4 — audio-synced ink. Recorder + player + persistence.
@@ -680,6 +683,55 @@ class NoteEditorViewModel @Inject constructor(
         }
         _note.update { it.copy(title = template.displayName) }
     }
+
+    /**
+     * Sub-phase 14.3 — seed a user-saved template. Same convention as
+     * [seedTemplate], but the content instantiates from the persisted JSON
+     * via [com.aichat.sandbox.data.notes.TemplatePayloadCodec] — every item
+     * and frame re-keyed fresh, connector bindings and groupIds remapped.
+     */
+    private suspend fun seedUserTemplate(templateId: String) {
+        val template = userTemplateRepository.get(templateId) ?: return
+        val content = com.aichat.sandbox.data.notes.TemplatePayloadCodec.instantiate(
+            json = template.payloadJson,
+            noteId = resolvedNoteId,
+            layerId = _activeLayerId.value,
+        ) ?: return
+        items.addAll(content.items)
+        refreshZIndexCounters(content.items)
+        if (content.frames.isNotEmpty()) {
+            _frames.value = content.frames
+            _currentFrameId.value = content.frames.minByOrNull { it.ordinal }?.id
+        }
+        _note.update { it.copy(title = template.name) }
+        userTemplateRepository.touchLastUsed(templateId)
+    }
+
+    /**
+     * Sub-phase 14.3 — "save this note as a template": snapshot the current
+     * items + frames into the template codec under the note's title. The
+     * new-note flow lists it alongside the built-ins.
+     */
+    fun saveNoteAsTemplate() {
+        val snapshot = items.toList()
+        val frames = _frames.value
+        if (snapshot.isEmpty() && frames.isEmpty()) return
+        val name = _note.value.title.ifBlank { "Untitled template" }
+        viewModelScope.launch {
+            userTemplateRepository.save(
+                name = name,
+                payloadJson = com.aichat.sandbox.data.notes.TemplatePayloadCodec.encode(
+                    items = snapshot,
+                    frames = frames,
+                ),
+            )
+            _templateSaved.tryEmit(name)
+        }
+    }
+
+    /** One-shot "saved as template" feedback, mirroring [stampSaved]. */
+    private val _templateSaved = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val templateSaved: SharedFlow<String> = _templateSaved.asSharedFlow()
 
     /** Returns the world-bounds of the currently-selected frame, or null. */
     fun currentFrameBounds(): FloatArray? {
@@ -1256,12 +1308,27 @@ class NoteEditorViewModel @Inject constructor(
             // has somewhere to land. Layer is persisted at save() time.
             addLayer("Ink")
             if (entrySource == ENTRY_SOURCE_ICON) seedIconArtboard()
-            com.aichat.sandbox.data.notes.NoteTemplate.fromId(entryTemplate)
-                ?.let { seedTemplate(it) }
-            initialLoadComplete = true
-            // Templates carry real content — arm an autosave so backing out
-            // immediately still keeps the seeded note.
-            if (items.isNotEmpty()) scheduleAutosave()
+            val userTemplateId = entryTemplate
+                ?.takeIf { it.startsWith(USER_TEMPLATE_PREFIX) }
+                ?.removePrefix(USER_TEMPLATE_PREFIX)
+            if (userTemplateId != null) {
+                // 14.3 — user templates live in the DB, so seeding is async;
+                // gate save() on it (via initialLoad) exactly like an
+                // existing note's load so an early back-press can't persist
+                // the still-empty note.
+                initialLoad = viewModelScope.launch {
+                    seedUserTemplate(userTemplateId)
+                    initialLoadComplete = true
+                    if (items.isNotEmpty()) scheduleAutosave()
+                }
+            } else {
+                com.aichat.sandbox.data.notes.NoteTemplate.fromId(entryTemplate)
+                    ?.let { seedTemplate(it) }
+                initialLoadComplete = true
+                // Templates carry real content — arm an autosave so backing
+                // out immediately still keeps the seeded note.
+                if (items.isNotEmpty()) scheduleAutosave()
+            }
         }
         // Seed the active brush preset once presets stream in.
         viewModelScope.launch {

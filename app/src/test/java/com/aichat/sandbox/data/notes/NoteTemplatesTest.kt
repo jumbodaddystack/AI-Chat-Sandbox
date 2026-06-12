@@ -85,6 +85,32 @@ class NoteTemplatesTest {
         assertTrue(maxConnectorZ < minEllipseZ)
     }
 
+    // ── 14.3 — gallery growth ────────────────────────────────────────────
+
+    @Test
+    fun weeklyHasSevenDayColumns() {
+        val content = build(NoteTemplate.WEEKLY)
+        val rects = content.items.filter {
+            it.kind == Shape.KIND && ShapeCodec.decode(it.payload).shape is Shape.Rect
+        }
+        assertEquals(7, rects.size)
+        assertEquals(7, content.items.count { it.kind == TextItemCodec.KIND })
+    }
+
+    @Test
+    fun storyboardHasSixPanels() {
+        val content = build(NoteTemplate.STORYBOARD)
+        val rects = content.items.filter {
+            it.kind == Shape.KIND && ShapeCodec.decode(it.payload).shape is Shape.Rect
+        }
+        assertEquals(6, rects.size)
+        // Two caption lines per panel.
+        val lines = content.items.filter {
+            it.kind == Shape.KIND && ShapeCodec.decode(it.payload).shape is Shape.Line
+        }
+        assertEquals(12, lines.size)
+    }
+
     @Test
     fun unknownTemplateIdResolvesNull() {
         assertNull(NoteTemplate.fromId("not-a-template"))

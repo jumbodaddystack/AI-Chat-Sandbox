@@ -654,3 +654,31 @@ val MIGRATION_18_19 = object : Migration(18, 19) {
         db.execSQL("ALTER TABLE `note_items` ADD COLUMN `groupId` TEXT")
     }
 }
+
+/**
+ * Migration from version 19 to 20:
+ * Sub-phase 14.3 — "save this note as a template". Adds the
+ * `user_templates` table holding whole-note layouts (items + frames) as
+ * [com.aichat.sandbox.data.notes.TemplatePayloadCodec] JSON. App-scoped,
+ * mirroring `stamps` minus the thumbnail.
+ */
+val MIGRATION_19_20 = object : Migration(19, 20) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `user_templates` (
+                `id` TEXT NOT NULL,
+                `name` TEXT NOT NULL,
+                `payloadJson` TEXT NOT NULL,
+                `createdAt` INTEGER NOT NULL,
+                `lastUsedAt` INTEGER,
+                PRIMARY KEY(`id`)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_user_templates_lastUsedAt` " +
+                "ON `user_templates` (`lastUsedAt`)"
+        )
+    }
+}

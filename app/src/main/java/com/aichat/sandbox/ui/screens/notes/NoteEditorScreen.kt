@@ -255,6 +255,11 @@ fun NoteEditorScreen(
             snackbarHostState.showSnackbar("Saved \"$name\" to stamps")
         }
     }
+    LaunchedEffect(Unit) {
+        viewModel.templateSaved.collect { name ->
+            snackbarHostState.showSnackbar("Saved \"$name\" as a template")
+        }
+    }
 
     // Icons are a *bounded* canvas: keep the artboard rubber-banded into the
     // viewport so it can never be flung off-screen (notes stay infinite). This
@@ -569,6 +574,10 @@ fun NoteEditorScreen(
                             onPresent = {
                                 menuExpanded = false
                                 viewModel.startPresentation()
+                            },
+                            onSaveAsTemplate = {
+                                menuExpanded = false
+                                viewModel.saveNoteAsTemplate()
                             },
                         )
                     }
@@ -1215,6 +1224,7 @@ private fun EditorOverflowMenu(
     onExportFrameSvg: () -> Unit,
     canPresent: Boolean = false,
     onPresent: () -> Unit = {},
+    onSaveAsTemplate: () -> Unit = {},
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         // Sub-phase 11.5 — full-screen frame stepper. Gated on having at
@@ -1262,6 +1272,15 @@ private fun EditorOverflowMenu(
                 Icon(Icons.Filled.MoreVert, contentDescription = null)
             },
             onClick = onToggleBrushSheet,
+        )
+        // 14.3 — snapshot this note (items + frames) as a reusable template;
+        // it appears under "Your templates" in the new-note menu.
+        DropdownMenuItem(
+            text = { Text("Save as template") },
+            leadingIcon = {
+                Icon(Icons.Filled.Dashboard, contentDescription = null)
+            },
+            onClick = onSaveAsTemplate,
         )
         // "Draw with finger" — lets phones without a stylus ink at all.
         // Off: classic routing (finger pans, stylus inks). On: one finger
