@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Grid4x4
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Dashboard
@@ -144,6 +145,7 @@ fun NoteEditorScreen(
     var vectorXmlDialogVisible by remember { mutableStateOf(false) }
     var svgDialogVisible by remember { mutableStateOf(false) }
     var svgDialogForFrame by remember { mutableStateOf(false) }
+    var iconSetDialogVisible by remember { mutableStateOf(false) }
     // Live preview + skipped-item count for the vector-XML export dialog,
     // recomputed off the main thread each time the dialog opens.
     var vectorPreview by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
@@ -488,6 +490,10 @@ fun NoteEditorScreen(
                             iconPixelGrid = iconPixelGrid,
                             onToggleIconPixelGrid = {
                                 viewModel.setIconPixelGrid(!iconPixelGrid)
+                            },
+                            onExportIconSet = {
+                                menuExpanded = false
+                                iconSetDialogVisible = true
                             },
                             onResizeArtboard = {
                                 menuExpanded = false
@@ -992,6 +998,34 @@ fun NoteEditorScreen(
                 },
             )
         }
+        if (iconSetDialogVisible) {
+            ExportSvgDialog(
+                title = "Export icon set",
+                onCancel = { iconSetDialogVisible = false },
+                onExport = { preservePressure ->
+                    iconSetDialogVisible = false
+                    scope.launch {
+                        val result = viewModel.shareIconSet(preservePressure)
+                        if (result.skippedCount > 0) {
+                            Toast.makeText(
+                                context,
+                                "${result.skippedCount} text/image item(s) skipped in the " +
+                                    "XML sizes — not supported by vector drawables",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "application/zip"
+                            putExtra(Intent.EXTRA_STREAM, result.uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(send, "Share icon set")
+                        )
+                    }
+                },
+            )
+        }
         if (svgDialogVisible) {
             ExportSvgDialog(
                 title = if (svgDialogForFrame) "Share frame as SVG" else "Share note as SVG",
@@ -1248,6 +1282,7 @@ private fun EditorOverflowMenu(
     onToggleFingerDrawing: () -> Unit,
     iconPixelGrid: Boolean,
     onToggleIconPixelGrid: () -> Unit,
+    onExportIconSet: () -> Unit,
     onResizeArtboard: () -> Unit,
     onDismiss: () -> Unit,
     onBackgroundSelect: (String) -> Unit,
@@ -1305,6 +1340,14 @@ private fun EditorOverflowMenu(
                     }
                 },
                 onClick = onToggleIconPixelGrid,
+            )
+            // Phase 15.4 — XML at 24/48/108 dp + SVG + PNG in one zip.
+            DropdownMenuItem(
+                text = { Text("Export icon set…") },
+                leadingIcon = {
+                    Icon(Icons.Filled.FolderZip, contentDescription = null)
+                },
+                onClick = onExportIconSet,
             )
             HorizontalDivider()
         }

@@ -132,6 +132,7 @@ class NoteEditorViewModel @Inject constructor(
     private val noteExporter: NoteExporter,
     private val noteSvgExporter: NoteSvgExporter,
     private val noteVectorDrawableExporter: com.aichat.sandbox.data.notes.NoteVectorDrawableExporter,
+    private val noteIconSetExporter: com.aichat.sandbox.data.notes.NoteIconSetExporter,
     private val recentColorsStore: RecentColorsStore,
     private val palettePrefsStore: ToolPalettePrefsStore,
     private val brushPresets: BrushPresetRepository,
@@ -3521,6 +3522,24 @@ class NoteEditorViewModel @Inject constructor(
             note = _note.value,
             items = items.toList(),
             sizeDp = sizeDp,
+            frameBounds = currentFrameBounds(),
+            preservePressure = preservePressure,
+        )
+    }
+
+    /**
+     * Phase 15.4 — export the icon as a complete set (VectorDrawable XML at
+     * 24/48/108 dp + SVG + 512 px PNG) zipped into one share-able file.
+     * Same save-first contract as [shareSvg].
+     */
+    suspend fun shareIconSet(
+        preservePressure: Boolean = false,
+    ): com.aichat.sandbox.data.notes.NoteIconSetExporter.Result {
+        commitTextEdit()
+        save()
+        return noteIconSetExporter.exportIconSet(
+            note = _note.value,
+            items = items.toList(),
             frameBounds = currentFrameBounds(),
             preservePressure = preservePressure,
         )
