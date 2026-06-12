@@ -140,6 +140,8 @@ fun NoteEditorScreen(
     var panelsMenuExpanded by remember { mutableStateOf(false) }
     var pdfDialogVisible by remember { mutableStateOf(false) }
     var vectorXmlDialogVisible by remember { mutableStateOf(false) }
+    var svgDialogVisible by remember { mutableStateOf(false) }
+    var svgDialogForFrame by remember { mutableStateOf(false) }
     // Live preview + skipped-item count for the vector-XML export dialog,
     // recomputed off the main thread each time the dialog opens.
     var vectorPreview by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
@@ -522,17 +524,8 @@ fun NoteEditorScreen(
                             },
                             onShareSvg = {
                                 menuExpanded = false
-                                scope.launch {
-                                    val uri = viewModel.shareSvg()
-                                    val send = Intent(Intent.ACTION_SEND).apply {
-                                        type = "image/svg+xml"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(
-                                        Intent.createChooser(send, "Share note as SVG")
-                                    )
-                                }
+                                svgDialogForFrame = false
+                                svgDialogVisible = true
                             },
                             onExportVectorXml = {
                                 menuExpanded = false
@@ -558,17 +551,8 @@ fun NoteEditorScreen(
                             },
                             onExportFrameSvg = {
                                 menuExpanded = false
-                                scope.launch {
-                                    val uri = viewModel.shareSvgForCurrentFrame() ?: return@launch
-                                    val send = Intent(Intent.ACTION_SEND).apply {
-                                        type = "image/svg+xml"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(
-                                        Intent.createChooser(send, "Share frame as SVG")
-                                    )
-                                }
+                                svgDialogForFrame = true
+                                svgDialogVisible = true
                             },
                             canPresent = frames.isNotEmpty(),
                             onPresent = {
@@ -984,6 +968,34 @@ fun NoteEditorScreen(
                 },
             )
         }
+        if (svgDialogVisible) {
+            ExportSvgDialog(
+                title = if (svgDialogForFrame) "Share frame as SVG" else "Share note as SVG",
+                onCancel = { svgDialogVisible = false },
+                onExport = { preservePressure ->
+                    svgDialogVisible = false
+                    val forFrame = svgDialogForFrame
+                    scope.launch {
+                        val uri = if (forFrame) {
+                            viewModel.shareSvgForCurrentFrame(preservePressure) ?: return@launch
+                        } else {
+                            viewModel.shareSvg(preservePressure)
+                        }
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "image/svg+xml"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(
+                                send,
+                                if (forFrame) "Share frame as SVG" else "Share note as SVG",
+                            )
+                        )
+                    }
+                },
+            )
+        }
         if (vectorXmlDialogVisible) {
             LaunchedEffect(Unit) {
                 vectorSkippedCount = viewModel.vectorExportSkippedCount()
@@ -996,10 +1008,10 @@ fun NoteEditorScreen(
                     vectorXmlDialogVisible = false
                     vectorPreview = null
                 },
-                onExport = { sizeDp ->
+                onExport = { sizeDp, preservePressure ->
                     vectorXmlDialogVisible = false
                     scope.launch {
-                        val result = viewModel.shareVectorXml(sizeDp)
+                        val result = viewModel.shareVectorXml(sizeDp, preservePressure)
                         if (result.skippedCount > 0) {
                             Toast.makeText(
                                 context,

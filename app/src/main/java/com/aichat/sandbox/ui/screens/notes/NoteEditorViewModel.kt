@@ -3404,7 +3404,7 @@ class NoteEditorViewModel @Inject constructor(
     }
 
     /** Sub-phase 8.1 — SVG export bounded to the active frame. */
-    suspend fun shareSvgForCurrentFrame(): Uri? {
+    suspend fun shareSvgForCurrentFrame(preservePressure: Boolean = false): Uri? {
         val bounds = currentFrameBounds() ?: return null
         commitTextEdit()
         save()
@@ -3412,6 +3412,7 @@ class NoteEditorViewModel @Inject constructor(
             note = _note.value,
             items = items.toList(),
             frameBounds = bounds,
+            preservePressure = preservePressure,
         )
     }
 
@@ -3420,10 +3421,14 @@ class NoteEditorViewModel @Inject constructor(
      * [sharePng] / [sharePdf] so the resulting SVG reflects the user's most
      * recent geometry.
      */
-    suspend fun shareSvg(): Uri {
+    suspend fun shareSvg(preservePressure: Boolean = false): Uri {
         commitTextEdit()
         save()
-        return noteSvgExporter.exportSvg(note = _note.value, items = items.toList())
+        return noteSvgExporter.exportSvg(
+            note = _note.value,
+            items = items.toList(),
+            preservePressure = preservePressure,
+        )
     }
 
     /**
@@ -3434,6 +3439,7 @@ class NoteEditorViewModel @Inject constructor(
      */
     suspend fun shareVectorXml(
         sizeDp: Int,
+        preservePressure: Boolean = false,
     ): com.aichat.sandbox.data.notes.NoteVectorDrawableExporter.ExportResult {
         commitTextEdit()
         save()
@@ -3442,6 +3448,7 @@ class NoteEditorViewModel @Inject constructor(
             items = items.toList(),
             sizeDp = sizeDp,
             frameBounds = currentFrameBounds(),
+            preservePressure = preservePressure,
         )
     }
 

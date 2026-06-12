@@ -45,6 +45,56 @@ class NoteSvgExporterTest {
         assertTrue(svg.contains("M0 0"))
     }
 
+    private fun pressureStroke(vararg pressures: Float): NoteItem {
+        val samples = FloatArray(pressures.size * StrokeCodec.FLOATS_PER_SAMPLE)
+        for ((i, p) in pressures.withIndex()) {
+            samples[i * 4] = i * 50f
+            samples[i * 4 + 1] = 0f
+            samples[i * 4 + 2] = p
+            samples[i * 4 + 3] = 0f
+        }
+        return NoteItem(
+            noteId = "test",
+            zIndex = 0,
+            kind = "stroke",
+            tool = "pen",
+            colorArgb = 0xFF000000.toInt(),
+            baseWidthPx = 4f,
+            payload = StrokeCodec.encode(samples),
+        )
+    }
+
+    @Test
+    fun pressureStrokeFlattensToMeanWidthByDefault() {
+        val svg = NoteSvgExporter.renderSvg(emptyNote(), listOf(pressureStroke(0.2f, 0.6f, 1f)))
+        assertTrue(svg.contains("fill=\"none\""))
+        assertTrue(svg.contains("stroke-width=\""))
+    }
+
+    @Test
+    fun preservePressureEmitsFilledOutline() {
+        val svg = NoteSvgExporter.renderSvg(
+            emptyNote(),
+            listOf(pressureStroke(0.2f, 0.6f, 1f)),
+            preservePressure = true,
+        )
+        assertTrue(svg.contains("fill=\"#000000\" stroke=\"none\""))
+        assertTrue("outline path must be closed", svg.contains("Z\" fill=\"#000000\""))
+        assertTrue("no stroked fallback expected", !svg.contains("fill=\"none\""))
+    }
+
+    @Test
+    fun preservePressureFallsBackToStrokeForUniformWidth() {
+        val svg = NoteSvgExporter.renderSvg(
+            emptyNote(),
+            listOf(pressureStroke(1f, 1f, 1f)),
+            preservePressure = true,
+        )
+        // Constant width gains nothing from outlining — keep the lean format.
+        assertTrue(svg.contains("fill=\"none\""))
+        assertTrue(svg.contains("stroke-width=\""))
+    }
+
     @Test
     fun shapeLineEmitsLineElement() {
         val item = NoteItem(

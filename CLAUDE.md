@@ -54,12 +54,14 @@ Then run the usual tasks:
 
 ## Known pre-existing unit-test failures (NOT regressions)
 
-`./gradlew :app:testDebugUnitTest` reports 5 failures: 1 in
-`NoteSvgExporterTest`, 3 in `NoteVectorDrawableExporterTest`, 1 in
-`NoteAiServiceTest`. They all throw `android.graphics.Color` /
-`android.util.Log` **"not mocked"** errors — these tests exercise stroke /
-text rendering or logging paths that touch real Android framework classes
-not stubbed in plain JVM unit tests. (This used to be ~22 failures; Phase
-12.5 made `NoteRasterizer.computeBounds` JVM-pure, which fixed the rest.)
+`./gradlew :app:testDebugUnitTest` reports 2 failures:
+`NoteVectorDrawableExporterTest.textIsSkippedAndCounted` and
+`NoteAiServiceTest.editModeMalformedReplyEmitsError`. They throw
+`android.graphics.Paint` / `android.util.Log` **"not mocked"** errors —
+these tests exercise text-bounds or logging paths that touch real Android
+framework classes not stubbed in plain JVM unit tests. (This used to be
+~22 failures; Phase 12.5 made `NoteRasterizer.computeBounds` JVM-pure, and
+Phase 15.1 replaced the exporters' `android.graphics.Color` calls with
+pure int math, which fixed the rest.)
 Treat the suite as green if these are the only failures; focus on the
 tests relevant to your change.

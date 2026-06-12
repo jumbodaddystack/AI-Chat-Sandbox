@@ -44,6 +44,33 @@ class NoteVectorDrawableExporterTest {
         assertTrue(xml.contains("android:fillColor=\"#00000000\""))
     }
 
+    private fun pressureStroke() = NoteItem(
+        noteId = "test", zIndex = 0, kind = "stroke", tool = "pen",
+        colorArgb = 0xFF000000.toInt(), baseWidthPx = 4f,
+        payload = StrokeCodec.encode(
+            floatArrayOf(0f, 0f, 0.2f, 0f, 50f, 0f, 0.6f, 0f, 100f, 0f, 1f, 0f)
+        ),
+    )
+
+    @Test
+    fun preservePressureEmitsFilledOutline() {
+        val xml = NoteVectorDrawableExporter.renderVectorDrawable(
+            listOf(pressureStroke()), sizeDp = 24, preservePressure = true,
+        )
+        assertTrue(xml.contains("android:fillColor=\"#000000\""))
+        assertFalse("outline is fill-only", xml.contains("android:strokeColor"))
+        assertTrue("outline path must be closed", xml.contains("Z\""))
+    }
+
+    @Test
+    fun preservePressureFallsBackToStrokeForUniformWidth() {
+        val xml = NoteVectorDrawableExporter.renderVectorDrawable(
+            listOf(stroke()), sizeDp = 24, preservePressure = true,
+        )
+        assertTrue(xml.contains("android:strokeColor=\"#000000\""))
+        assertTrue(xml.contains("android:fillColor=\"#00000000\""))
+    }
+
     @Test
     fun rectWithCornerEmitsArcs() {
         val item = NoteItem(

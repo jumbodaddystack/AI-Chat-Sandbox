@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -49,9 +50,10 @@ fun ExportVectorXmlDialog(
     preview: ImageBitmap?,
     initialSize: IconSize = IconSize.MEDIUM_48,
     onCancel: () -> Unit,
-    onExport: (sizeDp: Int) -> Unit,
+    onExport: (sizeDp: Int, preservePressure: Boolean) -> Unit,
 ) {
     var size by remember { mutableStateOf(initialSize) }
+    var preservePressure by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onCancel,
@@ -71,6 +73,10 @@ fun ExportVectorXmlDialog(
                         onSelect = { size = option },
                     )
                 }
+                PreservePressureRow(
+                    checked = preservePressure,
+                    onCheckedChange = { preservePressure = it },
+                )
                 if (skippedCount > 0) {
                     Text(
                         text = "$skippedCount text/image item(s) will be skipped — Android " +
@@ -83,7 +89,7 @@ fun ExportVectorXmlDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onExport(size.dp) }) {
+            TextButton(onClick = { onExport(size.dp, preservePressure) }) {
                 Text("Export")
             }
         },
@@ -123,6 +129,38 @@ private fun IconPreview(preview: ImageBitmap?) {
                     color = Color.Gray,
                 )
             }
+        }
+    }
+}
+
+/**
+ * Phase 15.1 — opt-in toggle for pressure-preserving export. Variable-width
+ * strokes become filled outlines instead of flattening to their mean width.
+ * Shared by the XML and SVG export dialogs.
+ */
+@Composable
+internal fun PreservePressureRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = checked, onClick = { onCheckedChange(!checked) }, role = Role.Checkbox)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null)
+        Column(modifier = Modifier.padding(start = 8.dp)) {
+            Text(
+                text = "Preserve pressure",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "Export variable-width strokes as filled outlines",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
