@@ -9,7 +9,7 @@ import com.aichat.sandbox.data.vector.edit.EditablePath
 import com.aichat.sandbox.data.vector.edit.boolean.PathBoolean
 
 /**
- * Sub-phase 13.1 — boolean ops for notes paths.
+ * Sub-phase 13.1 — boolean ops for notes paths. Phase 16.1 — multi-subpath.
  *
  * Bridges [PathCodec.PathPayload]s to the vector tune-up lane's pure
  * flatten → clip → refit pipeline ([PathBoolean] / `PolygonClipper` /
@@ -20,11 +20,10 @@ import com.aichat.sandbox.data.vector.edit.boolean.PathBoolean
  * pure Kotlin, and already refits rings to smooth/corner cubic anchors.
  *
  * Booleans are area ops: open inputs are implicitly closed by the
- * flattener and every result ring comes back closed. [PathCodec] is
- * single-subpath, so a multi-ring result maps to multiple payloads — the
- * caller lands them as separate (grouped) items. Hole rings are emitted as
- * their own payloads too (documented limitation: they render filled on
- * top rather than punching through).
+ * flattener and every result ring comes back closed. Since 16.1 the result
+ * is **one payload carrying every ring as a subpath** (holes included, with
+ * the clipper's fill rule), so a subtracted donut actually punches through
+ * instead of rendering as a filled blob on top.
  */
 object PathBooleanBridge {
 
@@ -33,32 +32,38 @@ object PathBooleanBridge {
      * **subject** (Subtract removes every later item from it). Items whose
      * payloads are all degenerate (< 2 anchors) are dropped; fewer than two
      * usable inputs — or an empty result (e.g. a disjoint intersect) —
-     * return an empty list. Result payloads carry geometry only (closed
-     * rings, default style); the caller stamps fill / stroke style.
+     * return null. The result carries geometry + fill rule only; the caller
+     * stamps fill / stroke style.
      */
     fun combine(
         itemPayloads: List<List<PathCodec.PathPayload>>,
         op: PathBoolean.Op,
-    ): List<PathCodec.PathPayload> {
+    ): PathCodec.PathPayload? {
         val paths = itemPayloads.mapIndexedNotNull { i, payloads ->
-            val subs = payloads.mapIndexedNotNull { j, p -> toSubpath(p, "in$i.s$j") }
+            // 16.1 — expand *every* subpath of every payload into the
+            // clipper input; reading only subpath 0 here would silently
+            // drop the holes of a previous boolean result being re-combined.
+            val subs = payloads.flatMapIndexed { j, p -> toSubpaths(p, "in$i.s$j") }
             if (subs.isEmpty()) {
                 null
             } else {
                 EditablePath(pathId = "in$i", subpaths = subs, style = VectorStyle())
             }
         }
-        if (paths.size < 2) return emptyList()
-        val result = PathBoolean.combine(paths, op, "bool") ?: return emptyList()
-        return result.subpaths
-            .filter { it.anchors.size >= 2 }
-            .map { fromSubpath(it) }
+        if (paths.size < 2) return null
+        val result = PathBoolean.combine(paths, op, "bool") ?: return null
+        return fromEditablePath(result)
     }
 
+    /** 16.1 — every non-degenerate subpath of [payload] as an [EditSubpath]. */
+    fun toSubpaths(payload: PathCodec.PathPayload, idPrefix: String): List<EditSubpath> =
+        payload.subpaths.mapIndexedNotNull { k, sub ->
+            if (sub.anchors.size < 2) null else toSubpath(sub, "$idPrefix.p$k")
+        }
+
     /** Relative handle deltas → absolute control points (zero delta = no handle). */
-    fun toSubpath(payload: PathCodec.PathPayload, id: String): EditSubpath? {
-        if (payload.anchors.size < 2) return null
-        val anchors = payload.anchors.mapIndexed { i, a ->
+    fun toSubpath(sub: PathCodec.Subpath, id: String): EditSubpath {
+        val anchors = sub.anchors.mapIndexed { i, a ->
             EditAnchor(
                 id = "$id.a$i",
                 x = a.x,
@@ -80,11 +85,32 @@ object PathBooleanBridge {
                 },
             )
         }
-        return EditSubpath(id = id, anchors = anchors, closed = payload.closed)
+        return EditSubpath(id = id, anchors = anchors, closed = sub.closed)
     }
 
-    /** Absolute control points → relative handle deltas; boolean rings are closed. */
-    fun fromSubpath(sub: EditSubpath): PathCodec.PathPayload = PathCodec.PathPayload(
+    /**
+     * 16.1 — an [EditablePath] as **one** multi-subpath payload, fill rule
+     * lifted from the path's style (`fillType == "evenOdd"`). The bridging
+     * primitive shared by boolean results and document → note import.
+     * Returns null when every subpath is degenerate.
+     */
+    fun fromEditablePath(path: EditablePath): PathCodec.PathPayload? {
+        val subs = path.subpaths
+            .filter { it.anchors.size >= 2 }
+            .map { subpathOf(it) }
+        if (subs.isEmpty()) return null
+        return PathCodec.PathPayload(
+            subpaths = subs,
+            fillRule = if (path.style.fillType.equals("evenOdd", ignoreCase = true)) {
+                PathCodec.FILL_RULE_EVEN_ODD
+            } else {
+                PathCodec.FILL_RULE_NON_ZERO
+            },
+        )
+    }
+
+    /** Absolute control points → relative handle deltas. */
+    fun subpathOf(sub: EditSubpath): PathCodec.Subpath = PathCodec.Subpath(
         anchors = sub.anchors.map { a ->
             PathCodec.Anchor(
                 x = a.x,
@@ -100,6 +126,6 @@ object PathBooleanBridge {
                 },
             )
         },
-        closed = true,
+        closed = sub.closed,
     )
 }

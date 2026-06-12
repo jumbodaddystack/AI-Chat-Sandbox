@@ -278,23 +278,33 @@ class NoteVectorDrawableExporter @Inject constructor(
 
         private fun appendBezierPath(sb: StringBuilder, item: NoteItem, t: Transform) {
             val payload = PathCodec.decode(item.payload)
-            if (payload.anchors.size < 2) return
-            val first = payload.anchors[0]
-            val d = StringBuilder(payload.anchors.size * 32)
-            d.append('M').append(f(t.x(first.x))).append(',').append(f(t.y(first.y)))
-            for (i in 0 until payload.segmentCount) {
-                val s = PathCodec.segment(payload, i)
-                d.append('C')
-                    .append(f(t.x(s[2]))).append(',').append(f(t.y(s[3]))).append(' ')
-                    .append(f(t.x(s[4]))).append(',').append(f(t.y(s[5]))).append(' ')
-                    .append(f(t.x(s[6]))).append(',').append(f(t.y(s[7])))
+            if (payload.subpaths.none { it.anchors.size >= 2 }) return
+            // 16.1 — every subpath in one android:pathData so holes punch
+            // through the shared fill.
+            val d = StringBuilder(payload.subpaths.sumOf { it.anchors.size } * 32)
+            for (sub in payload.subpaths) {
+                val first = sub.anchors.firstOrNull() ?: continue
+                d.append('M').append(f(t.x(first.x))).append(',').append(f(t.y(first.y)))
+                for (i in 0 until sub.segmentCount) {
+                    val s = PathCodec.segment(sub, i)
+                    d.append('C')
+                        .append(f(t.x(s[2]))).append(',').append(f(t.y(s[3]))).append(' ')
+                        .append(f(t.x(s[4]))).append(',').append(f(t.y(s[5]))).append(' ')
+                        .append(f(t.x(s[6]))).append(',').append(f(t.y(s[7])))
+                }
+                if (sub.closed) d.append('Z')
             }
-            if (payload.closed) d.append('Z')
+            val filled = payload.anyClosed && payload.fillArgb != 0
             appendPath(
                 sb,
                 pathData = d.toString(),
-                fillColor = if (payload.closed && payload.fillArgb != 0) {
+                fillColor = if (filled) {
                     colorToHex(payload.fillArgb)
+                } else {
+                    null
+                },
+                fillType = if (filled && payload.fillRule == PathCodec.FILL_RULE_EVEN_ODD) {
+                    "evenOdd"
                 } else {
                     null
                 },
@@ -431,12 +441,16 @@ class NoteVectorDrawableExporter @Inject constructor(
             indent: String = "  ",
             join: String = "round",
             fillAlpha: Float = 1f,
+            fillType: String? = null,
         ) {
             sb.append(indent).append("<path\n")
             sb.append(indent).append("    android:pathData=\"").append(pathData).append("\"\n")
             sb.append(indent).append("    android:fillColor=\"").append(fillColor ?: "#00000000").append("\"")
             if (fillColor != null && fillAlpha < 1f) {
                 sb.append("\n").append(indent).append("    android:fillAlpha=\"").append(f(fillAlpha)).append("\"")
+            }
+            if (fillColor != null && fillType != null) {
+                sb.append("\n").append(indent).append("    android:fillType=\"").append(fillType).append("\"")
             }
             if (strokeColor != null) {
                 sb.append("\n").append(indent).append("    android:strokeColor=\"").append(strokeColor).append("\"")

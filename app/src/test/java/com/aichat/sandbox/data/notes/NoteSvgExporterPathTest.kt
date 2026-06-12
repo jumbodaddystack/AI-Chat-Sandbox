@@ -99,4 +99,41 @@ class NoteSvgExporterPathTest {
         )
         assertTrue(svg.contains("fill=\"none\""))
     }
+
+    // ── 16.1 — multi-subpath + fill rule ─────────────────────────────────
+
+    private fun rectSub(x0: Float, y0: Float, x1: Float, y1: Float) = PathCodec.Subpath(
+        anchors = listOf(
+            PathCodec.Anchor(x0, y0),
+            PathCodec.Anchor(x1, y0),
+            PathCodec.Anchor(x1, y1),
+            PathCodec.Anchor(x0, y1),
+        ),
+        closed = true,
+    )
+
+    @Test
+    fun multiSubpathEmitsOnePathWithTwoRunsAndEvenOddRule() {
+        val donut = PathCodec.PathPayload(
+            subpaths = listOf(rectSub(0f, 0f, 100f, 100f), rectSub(25f, 25f, 75f, 75f)),
+            fillRule = PathCodec.FILL_RULE_EVEN_ODD,
+            fillArgb = 0xFF2463EB.toInt(),
+        )
+        val svg = NoteSvgExporter.renderSvg(emptyNote(), listOf(pathItem(donut)))
+        // One element, both rings in one d attribute.
+        assertTrue(svg.contains("M0 0"))
+        assertTrue(svg.contains("M25 25"))
+        assertTrue("two closed runs", Regex("Z").findAll(svg).count() >= 2)
+        assertTrue(svg.contains("fill=\"#2463EB\""))
+        assertTrue(svg.contains("fill-rule=\"evenodd\""))
+    }
+
+    @Test
+    fun nonZeroFillRuleEmitsNoFillRuleAttribute() {
+        val svg = NoteSvgExporter.renderSvg(
+            emptyNote(),
+            listOf(pathItem(curved(closed = true, fill = 0xFF2463EB.toInt()))),
+        )
+        assertFalse(svg.contains("fill-rule"))
+    }
 }

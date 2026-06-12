@@ -70,7 +70,7 @@ class PathNodeMathTest {
 
     @Test
     fun insertIntoClosingSegmentKeepsOrder() {
-        val payload = curved().copy(closed = true)
+        val payload = curved().let { it.withSingleSubpath(it.anchors, closed = true) }
         val segs = payload.segmentCount
         val after = PathNodeMath.insertAnchor(payload, segs - 1, 0.5f)
         assertEquals(payload.anchors.size + 1, after.anchors.size)

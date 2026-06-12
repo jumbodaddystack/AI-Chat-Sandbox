@@ -240,7 +240,7 @@ class NoteSvgExporter @Inject constructor(
                     when (item.kind) {
                         Shape.KIND -> ShapeCodec.decode(item.payload).gradient
                         PathCodec.KIND -> PathCodec.decode(item.payload)
-                            .takeIf { it.closed }?.gradient
+                            .takeIf { it.anyClosed }?.gradient
                         StickyCodec.KIND -> StickyCodec.decode(item.payload).gradient
                         else -> null
                     }
@@ -579,18 +579,23 @@ class NoteSvgExporter @Inject constructor(
          */
         private fun appendPathItem(sb: StringBuilder, item: NoteItem, gradId: String? = null) {
             val payload = PathCodec.decode(item.payload)
-            if (payload.anchors.size < 2) return
+            if (payload.subpaths.none { it.anchors.size >= 2 }) return
             val color = colorToHex(item.colorArgb)
+            val filled = payload.anyClosed && (gradId != null || payload.fillArgb != 0)
             val fill = when {
-                payload.closed && gradId != null -> "url(#$gradId)"
-                payload.closed && payload.fillArgb != 0 -> colorToHex(payload.fillArgb)
+                payload.anyClosed && gradId != null -> "url(#$gradId)"
+                payload.anyClosed && payload.fillArgb != 0 -> colorToHex(payload.fillArgb)
                 else -> "none"
             }
             val width = item.baseWidthPx
             val dash = dashArrayFor(payload.strokeStyle, width)
             sb.append("    <path d=\"").append(pathData(payload))
                 .append("\" fill=\"").append(fill).append('"')
-                .append(" stroke=\"").append(color).append('"')
+            // 16.1 — multi-subpath even-odd fills (imported icons with holes).
+            if (filled && payload.fillRule == PathCodec.FILL_RULE_EVEN_ODD) {
+                sb.append(" fill-rule=\"evenodd\"")
+            }
+            sb.append(" stroke=\"").append(color).append('"')
                 .append(" stroke-width=\"").append(fmt(width)).append('"')
                 .append(" stroke-linecap=\"").append(capName(payload.capJoin)).append('"')
                 .append(" stroke-linejoin=\"").append(joinName(payload.capJoin)).append('"')
@@ -598,19 +603,25 @@ class NoteSvgExporter @Inject constructor(
             sb.append("/>\n")
         }
 
-        /** SVG path data for a [PathCodec.PathPayload] — shared with tests. */
+        /**
+         * SVG path data for a [PathCodec.PathPayload] — shared with tests.
+         * 16.1 — one `M …C…(Z)` run per subpath in a single `d` string, so
+         * hole rings stay inside the same fill.
+         */
         internal fun pathData(payload: PathCodec.PathPayload): String {
-            val sb = StringBuilder(payload.anchors.size * 32)
-            val first = payload.anchors[0]
-            sb.append('M').append(fmt(first.x)).append(' ').append(fmt(first.y))
-            for (i in 0 until payload.segmentCount) {
-                val s = PathCodec.segment(payload, i)
-                sb.append('C')
-                    .append(fmt(s[2])).append(' ').append(fmt(s[3])).append(' ')
-                    .append(fmt(s[4])).append(' ').append(fmt(s[5])).append(' ')
-                    .append(fmt(s[6])).append(' ').append(fmt(s[7]))
+            val sb = StringBuilder(payload.subpaths.sumOf { it.anchors.size } * 32)
+            for (sub in payload.subpaths) {
+                val first = sub.anchors.firstOrNull() ?: continue
+                sb.append('M').append(fmt(first.x)).append(' ').append(fmt(first.y))
+                for (i in 0 until sub.segmentCount) {
+                    val s = PathCodec.segment(sub, i)
+                    sb.append('C')
+                        .append(fmt(s[2])).append(' ').append(fmt(s[3])).append(' ')
+                        .append(fmt(s[4])).append(' ').append(fmt(s[5])).append(' ')
+                        .append(fmt(s[6])).append(' ').append(fmt(s[7]))
+                }
+                if (sub.closed) sb.append('Z')
             }
-            if (payload.closed) sb.append('Z')
             return sb.toString()
         }
 

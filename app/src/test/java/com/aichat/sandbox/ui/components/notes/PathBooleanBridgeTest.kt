@@ -2,15 +2,19 @@ package com.aichat.sandbox.ui.components.notes
 
 import com.aichat.sandbox.data.vector.edit.boolean.PathBoolean
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
 
 /**
  * 13.1 — boolean ops over [PathCodec.PathPayload]s via the pure
- * flatten → clip → refit pipeline. Areas are checked by shoelace over the
- * flattened result, with a tolerance covering the refit error budget.
+ * flatten → clip → refit pipeline. 16.1 — results come back as ONE
+ * multi-subpath payload so holes survive. Areas are checked by shoelace
+ * over the flattened rings, with a tolerance covering the refit error
+ * budget.
  */
 class PathBooleanBridgeTest {
 
@@ -25,8 +29,7 @@ class PathBooleanBridgeTest {
             closed = closed,
         )
 
-    private fun areaOf(payload: PathCodec.PathPayload): Float {
-        val pts = PathCodec.flatten(payload)
+    private fun ringArea(pts: FloatArray): Float {
         var sum = 0.0
         var i = 0
         while (i + 3 < pts.size) {
@@ -36,6 +39,10 @@ class PathBooleanBridgeTest {
         sum += pts[pts.size - 2].toDouble() * pts[1] - pts[0].toDouble() * pts[pts.size - 1]
         return abs(sum / 2.0).toFloat()
     }
+
+    /** Sum of per-ring |areas| — for crescents; holes count positive too. */
+    private fun totalRingArea(payload: PathCodec.PathPayload): Float =
+        payload.subpaths.map { ringArea(PathCodec.flatten(it)) }.sum()
 
     private fun combine(op: PathBoolean.Op, vararg payloads: PathCodec.PathPayload) =
         PathBooleanBridge.combine(payloads.map { listOf(it) }, op)
@@ -51,94 +58,137 @@ class PathBooleanBridgeTest {
 
     @Test
     fun unionOfOverlappingRectsIsOneRing() {
-        val results = combine(
+        val result = combine(
             PathBoolean.Op.UNION,
             rectPath(0f, 0f, 100f, 100f),
             rectPath(50f, 50f, 150f, 150f),
         )
-        assertEquals(1, results.size)
-        val result = results[0]
+        assertNotNull(result)
+        assertEquals(1, result!!.subpaths.size)
         assertTrue(result.closed)
         assertBoundsClose(floatArrayOf(0f, 0f, 150f, 150f), PathCodec.boundsOf(result)!!)
         // 2 × 100² − 50² overlap.
-        assertEquals(17500f, areaOf(result), 350f)
+        assertEquals(17500f, totalRingArea(result), 350f)
     }
 
     @Test
     fun subtractRemovesTheTopItemFromTheSubject() {
-        val results = combine(
+        val result = combine(
             PathBoolean.Op.SUBTRACT,
             rectPath(0f, 0f, 100f, 100f),
             rectPath(50f, 50f, 150f, 150f),
         )
-        assertEquals(1, results.size)
-        assertBoundsClose(floatArrayOf(0f, 0f, 100f, 100f), PathCodec.boundsOf(results[0])!!)
-        assertEquals(7500f, areaOf(results[0]), 150f)
+        assertNotNull(result)
+        assertBoundsClose(floatArrayOf(0f, 0f, 100f, 100f), PathCodec.boundsOf(result!!)!!)
+        assertEquals(7500f, totalRingArea(result), 150f)
     }
 
     @Test
     fun intersectKeepsTheOverlap() {
-        val results = combine(
+        val result = combine(
             PathBoolean.Op.INTERSECT,
             rectPath(0f, 0f, 100f, 100f),
             rectPath(50f, 50f, 150f, 150f),
         )
-        assertEquals(1, results.size)
-        assertBoundsClose(floatArrayOf(50f, 50f, 100f, 100f), PathCodec.boundsOf(results[0])!!)
-        assertEquals(2500f, areaOf(results[0]), 50f)
+        assertNotNull(result)
+        assertEquals(1, result!!.subpaths.size)
+        assertBoundsClose(floatArrayOf(50f, 50f, 100f, 100f), PathCodec.boundsOf(result)!!)
+        assertEquals(2500f, totalRingArea(result), 50f)
     }
 
     @Test
-    fun excludeYieldsBothCrescents() {
-        val results = combine(
+    fun excludeYieldsOnePayloadWithBothCrescents() {
+        // 16.1 — was two separate payloads; now one payload, two subpaths.
+        val result = combine(
             PathBoolean.Op.EXCLUDE,
             rectPath(0f, 0f, 100f, 100f),
             rectPath(50f, 50f, 150f, 150f),
         )
-        assertEquals(2, results.size)
-        assertEquals(15000f, results.sumOf { areaOf(it).toDouble() }.toFloat(), 300f)
+        assertNotNull(result)
+        assertEquals(2, result!!.subpaths.size)
+        assertTrue(result.subpaths.all { it.closed })
+        assertEquals(15000f, totalRingArea(result), 300f)
+    }
+
+    @Test
+    fun subtractConcentricRectsKeepsHoleAsSubpath() {
+        // 16.1 — the donut case the pre-16.1 bridge couldn't represent.
+        val result = combine(
+            PathBoolean.Op.SUBTRACT,
+            rectPath(0f, 0f, 100f, 100f),
+            rectPath(25f, 25f, 75f, 75f),
+        )
+        assertNotNull(result)
+        assertEquals(2, result!!.subpaths.size)
+        // |outer| + |hole| ring areas: 100² + 50².
+        assertEquals(12500f, totalRingArea(result), 300f)
+        // The hole actually punches through: a point in the ring hits, a
+        // point inside the hole does not.
+        assertTrue(HitTest.pathContainsPoint(result, 10f, 50f, radius = 0.5f))
+        assertFalse(HitTest.pathContainsPoint(result, 50f, 50f, radius = 0.5f))
+    }
+
+    @Test
+    fun recombiningAHoleResultKeepsTheHole() {
+        // 16.1 input-side expansion: a multi-subpath payload fed back into
+        // combine must contribute all its rings, not just subpath 0.
+        val donut = combine(
+            PathBoolean.Op.SUBTRACT,
+            rectPath(0f, 0f, 100f, 100f),
+            rectPath(25f, 25f, 75f, 75f),
+        )!!
+        val result = PathBooleanBridge.combine(
+            listOf(listOf(donut), listOf(rectPath(200f, 0f, 250f, 50f))),
+            PathBoolean.Op.UNION,
+        )
+        assertNotNull(result)
+        // Donut ring + hole + the disjoint rect.
+        assertEquals(3, result!!.subpaths.size)
+        assertFalse(HitTest.pathContainsPoint(result, 50f, 50f, radius = 0.5f))
+        assertTrue(HitTest.pathContainsPoint(result, 225f, 25f, radius = 0.5f))
     }
 
     @Test
     fun disjointIntersectIsEmpty() {
-        val results = combine(
-            PathBoolean.Op.INTERSECT,
-            rectPath(0f, 0f, 10f, 10f),
-            rectPath(500f, 500f, 510f, 510f),
+        assertNull(
+            combine(
+                PathBoolean.Op.INTERSECT,
+                rectPath(0f, 0f, 10f, 10f),
+                rectPath(500f, 500f, 510f, 510f),
+            ),
         )
-        assertTrue(results.isEmpty())
     }
 
     @Test
     fun openInputsAreImplicitlyClosed() {
-        val results = combine(
+        val result = combine(
             PathBoolean.Op.UNION,
             rectPath(0f, 0f, 100f, 100f, closed = false),
             rectPath(50f, 50f, 150f, 150f),
         )
-        assertEquals(1, results.size)
-        assertEquals(17500f, areaOf(results[0]), 350f)
+        assertNotNull(result)
+        assertEquals(17500f, totalRingArea(result!!), 350f)
     }
 
     @Test
     fun fewerThanTwoUsableInputsIsEmpty() {
-        assertTrue(PathBooleanBridge.combine(emptyList(), PathBoolean.Op.UNION).isEmpty())
-        assertTrue(
+        assertNull(PathBooleanBridge.combine(emptyList(), PathBoolean.Op.UNION))
+        assertNull(
             PathBooleanBridge.combine(
                 listOf(listOf(rectPath(0f, 0f, 10f, 10f))),
                 PathBoolean.Op.UNION,
-            ).isEmpty(),
+            ),
         )
         // A degenerate (single-anchor) second input drops out.
         val degenerate = PathCodec.PathPayload(
             anchors = listOf(PathCodec.Anchor(0f, 0f)),
             closed = false,
         )
-        assertTrue(
+        assertNull(
             PathBooleanBridge.combine(
                 listOf(listOf(rectPath(0f, 0f, 10f, 10f)), listOf(degenerate)),
                 PathBoolean.Op.UNION,
-            ).isEmpty(),
+            ),
         )
     }
 
@@ -156,9 +206,8 @@ class PathBooleanBridgeTest {
             ),
             closed = true,
         )
-        val sub = PathBooleanBridge.toSubpath(payload, "t")
-        assertNotNull(sub)
-        val back = PathBooleanBridge.fromSubpath(sub!!)
+        val sub = PathBooleanBridge.toSubpath(payload.subpaths[0], "t")
+        val back = PathBooleanBridge.subpathOf(sub)
         assertEquals(payload.anchors.size, back.anchors.size)
         for ((a, b) in payload.anchors.zip(back.anchors)) {
             assertEquals(a.x, b.x, 1e-4f)

@@ -1768,21 +1768,33 @@ class NoteEditorViewModel @Inject constructor(
     private val _nodeEditTarget = MutableStateFlow<String?>(null)
     val nodeEditTarget: StateFlow<String?> = _nodeEditTarget.asStateFlow()
 
-    /** True when the selection is exactly one path item (gates "Edit nodes"). */
+    /**
+     * True when the selection is exactly one **single-subpath** path item
+     * (gates "Edit nodes"). 16.1 — multi-subpath payloads (boolean results
+     * with holes, imported vectors) are excluded: the node editor's
+     * selection model is flat anchor indices over one contour.
+     */
     fun selectionIsSinglePath(): Boolean {
         val ids = _selection.value
         if (ids.size != 1) return false
         val id = ids.first()
-        return items.any { it.id == id && it.kind == PathCodec.KIND }
+        val item = items.firstOrNull { it.id == id && it.kind == PathCodec.KIND } ?: return false
+        return isSingleSubpath(item)
     }
 
     fun enterNodeEdit() {
         val ids = _selection.value
         if (ids.size != 1) return
         val item = items.firstOrNull { it.id == ids.first() } ?: return
-        if (item.kind != PathCodec.KIND) return
+        if (item.kind != PathCodec.KIND || !isSingleSubpath(item)) return
         clearSelection()
         _nodeEditTarget.value = item.id
+    }
+
+    private fun isSingleSubpath(item: NoteItem): Boolean = try {
+        PathCodec.decode(item.payload).subpaths.size == 1
+    } catch (_: IllegalArgumentException) {
+        false
     }
 
     fun exitNodeEdit() {
@@ -2182,8 +2194,10 @@ class NoteEditorViewModel @Inject constructor(
      * ordered by zIndex ascending; the bottom-most item is the subject, so
      * Subtract removes everything stacked above it ("minus front"). One
      * `CompositeEdit("Union 2 paths")` removes the inputs and adds the
-     * result ring(s) — multi-ring results land grouped so they keep moving
-     * as one. Empty results (disjoint intersect) are a silent no-op.
+     * result as **one** path item — 16.1: all result rings (holes included)
+     * land as subpaths of a single payload, so they punch through instead
+     * of stacking as filled blobs. Empty results (disjoint intersect) are a
+     * silent no-op.
      */
     fun combineSelection(op: PathBoolean.Op) {
         val ids = _selection.value
@@ -2197,8 +2211,7 @@ class NoteEditorViewModel @Inject constructor(
                 else -> listOf(PathCodec.decode(item.payload))
             }
         }
-        val results = PathBooleanBridge.combine(geometries, op)
-        if (results.isEmpty()) return
+        val result = PathBooleanBridge.combine(geometries, op) ?: return
         // An area op should produce a visible area: the subject's fill when
         // it had one, else its stroke colour. Stroke styling rides along.
         val subject = eligible.first()
@@ -2219,8 +2232,7 @@ class NoteEditorViewModel @Inject constructor(
             subjectStrokeStyle = d.strokeStyle
             subjectCapJoin = PathCodec.DEFAULT_CAP_JOIN
         }
-        val groupId = if (results.size > 1) UUID.randomUUID().toString() else null
-        val added = results.map { payload ->
+        val added = listOf(
             NoteItem(
                 noteId = resolvedNoteId,
                 zIndex = subject.zIndex,
@@ -2228,16 +2240,15 @@ class NoteEditorViewModel @Inject constructor(
                 tool = null,
                 colorArgb = subject.colorArgb,
                 baseWidthPx = subject.baseWidthPx,
-                payload = PathCodec.encode(payload.copy(
+                payload = PathCodec.encode(result.copy(
                     fillArgb = subjectFill,
                     strokeStyle = subjectStrokeStyle,
                     capJoin = subjectCapJoin,
                     gradient = subjectGradient,
                 )),
                 layerId = subject.layerId,
-                groupId = groupId,
-            )
-        }
+            ),
+        )
         val opName = when (op) {
             PathBoolean.Op.UNION -> "Union"
             PathBoolean.Op.SUBTRACT -> "Subtract"
