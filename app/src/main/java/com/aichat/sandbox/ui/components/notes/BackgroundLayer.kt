@@ -20,8 +20,12 @@ object BackgroundLayer {
     const val STYLE_LINE = "line"
     const val STYLE_GRAPH = "graph"
 
-    /** Grid spacing in world units. */
-    private const val SPACING_WORLD = 32f
+    /**
+     * Grid spacing in world units. Public since phase 15.3: icon artboards
+     * are sized at one graph cell per icon pixel (e.g. 24 px → 768 world),
+     * so this constant doubles as the icon pixel-grid step.
+     */
+    const val SPACING_WORLD = 32f
 
     /** Below this on-screen spacing we skip the pattern entirely (too dense). */
     private const val MIN_SCREEN_SPACING_PX = 6f

@@ -1428,6 +1428,23 @@ class NoteEditorViewModel @Inject constructor(
         }
     }
 
+    // ── Icon pixel grid (phase 15.3) ─────────────────────────────────────
+
+    /** Snap-to-pixel + keyline overlay on icon artboards. On by default. */
+    val iconPixelGrid: StateFlow<Boolean> = palettePrefsStore.prefs
+        .map { it.iconPixelGrid }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = true,
+        )
+
+    fun setIconPixelGrid(enabled: Boolean) {
+        viewModelScope.launch {
+            palettePrefsStore.setIconPixelGrid(enabled)
+        }
+    }
+
     fun setTitle(title: String) {
         _note.update { it.copy(title = title) }
         scheduleAutosave()
@@ -1862,6 +1879,63 @@ class NoteEditorViewModel @Inject constructor(
             modified = emptyList(),
         ))
         // Select the conversions so the user can immediately edit nodes.
+        _selection.value = added.mapTo(HashSet(added.size)) { it.id }
+        _selectionWorldBounds.value = recomputeSelectionBounds()
+        _selectionMatrix.value = StrokeTransform.IDENTITY
+    }
+
+    // ── Outline stroke (phase 15.2) ───────────────────────────────────────
+
+    /** True when the selection contains at least one freehand stroke. */
+    fun selectionHasOutlinableStrokes(): Boolean {
+        val ids = _selection.value
+        return items.any { it.id in ids && it.kind == STROKE_KIND }
+    }
+
+    /**
+     * Replace every selected stroke with its pressure-faithful filled
+     * outline path ([PathConversions.fromStrokeOutline]) — the icon-studio
+     * "outline stroke" primitive: the result combines cleanly with boolean
+     * ops and exports as plain filled geometry. One
+     * `CompositeEdit("Outline ink")` so a single undo restores the strokes
+     * byte-identical. Colour becomes the path fill; layer / z / group carry
+     * over; non-stroke selection members are left untouched.
+     */
+    fun outlineSelectionStrokes() {
+        val ids = _selection.value
+        if (ids.isEmpty()) return
+        val removed = ArrayList<NoteItem>()
+        val added = ArrayList<NoteItem>()
+        for (item in items) {
+            if (item.id !in ids || item.kind != STROKE_KIND) continue
+            val samples = StrokeCodec.decode(item.payload)
+            val payload = PathConversions
+                .fromStrokeOutline(samples, item.tool, item.baseWidthPx)
+                ?: continue
+            removed += item
+            added += NoteItem(
+                noteId = resolvedNoteId,
+                zIndex = item.zIndex,
+                kind = PathCodec.KIND,
+                tool = null,
+                colorArgb = item.colorArgb,
+                // The width is baked into the outline geometry; a zero-width
+                // same-colour stroke keeps the boundary crisp on canvas
+                // without fattening the silhouette.
+                baseWidthPx = 0f,
+                payload = PathCodec.encode(payload.copy(fillArgb = item.colorArgb)),
+                layerId = item.layerId,
+                groupId = item.groupId,
+            )
+        }
+        if (added.isEmpty()) return
+        apply(EditorAction.CompositeEdit(
+            description = "Outline ink",
+            added = added,
+            removed = removed,
+            modified = emptyList(),
+        ))
+        // Select the outlines so the user can immediately combine or style.
         _selection.value = added.mapTo(HashSet(added.size)) { it.id }
         _selectionWorldBounds.value = recomputeSelectionBounds()
         _selectionMatrix.value = StrokeTransform.IDENTITY

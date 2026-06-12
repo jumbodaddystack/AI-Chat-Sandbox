@@ -239,6 +239,46 @@ object PathConversions {
     }
 
     /**
+     * Phase 15.2 — outline-stroke conversion ("outline stroke" in Figma /
+     * Illustrator terms). Builds the pressure-faithful closed outline via
+     * [StrokeOutliner], then runs the same RDP + Schneider cubic fit as
+     * [fromStroke] so the result is a compact, node-editable path rather
+     * than one anchor per outline vertex. Tolerances scale with the stroke
+     * width: outline features (end caps, pressure swells) live at the
+     * radius scale, so the fixed centerline tolerances would flatten them
+     * on thin strokes. Returns null when the stroke is too short.
+     */
+    fun fromStrokeOutline(
+        samples: FloatArray,
+        tool: String?,
+        baseWidthPx: Float,
+    ): PathCodec.PathPayload? {
+        val outline = StrokeOutliner.outline(samples, tool, baseWidthPx)
+        if (outline.size < 3 * 2) return null
+        val points = ArrayList<VectorPoint>(outline.size / 2 + 1)
+        var i = 0
+        while (i < outline.size) {
+            points += VectorPoint(outline[i], outline[i + 1])
+            i += 2
+        }
+        // Close the seam explicitly so the fitted cubic chain ends exactly
+        // at the start point — cubicsToPayload(closed = true) folds the
+        // final in-handle onto the first anchor.
+        points += points.first()
+        val tolerance = (baseWidthPx * 0.15f).coerceIn(0.2f, STROKE_SIMPLIFY_TOLERANCE)
+        val simplified = PolylineSimplify.simplify(points, tolerance)
+        if (simplified.size < 4) return null
+        val cubics = CurveFitter.fit(simplified, tolerance * 1.6f)
+        if (cubics.isEmpty()) return null
+        return cubicsToPayload(
+            startX = simplified.first().x,
+            startY = simplified.first().y,
+            cubics = cubics,
+            closed = true,
+        )
+    }
+
+    /**
      * Convert a fitted `CubicTo` chain into anchors: one anchor per join,
      * smooth where the incoming and outgoing tangents agree within
      * [SMOOTH_ANGLE_RAD], corner otherwise.

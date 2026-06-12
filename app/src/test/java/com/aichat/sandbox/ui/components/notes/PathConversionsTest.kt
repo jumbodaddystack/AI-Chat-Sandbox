@@ -248,4 +248,60 @@ class PathConversionsTest {
         assertNotNull(payload)
         assertTrue(payload!!.anchors.any { it.type == PathCodec.TYPE_CORNER })
     }
+
+    // ── outline stroke (phase 15.2) ──────────────────────────────────────
+
+    /** Packed samples along y=0 with a pressure ramp. */
+    private fun rampSamples(count: Int, baseX: Float = 0f): FloatArray {
+        val s = StrokeCodec.FLOATS_PER_SAMPLE
+        val out = FloatArray(count * s)
+        for (i in 0 until count) {
+            out[i * s] = baseX + i * 10f
+            out[i * s + 1] = 0f
+            out[i * s + 2] = 0.2f + 0.8f * i / (count - 1).coerceAtLeast(1)
+            out[i * s + 3] = 0f
+        }
+        return out
+    }
+
+    @Test
+    fun strokeOutlineIsClosedAndCompact() {
+        val payload = PathConversions.fromStrokeOutline(
+            rampSamples(30), StrokeRenderer.TOOL_PEN, baseWidthPx = 8f,
+        )
+        assertNotNull(payload)
+        assertTrue(payload!!.closed)
+        // The raw outline has 2·30 + 14 vertices; the fit must shrink it.
+        assertTrue("anchors=${payload.anchors.size}", payload.anchors.size < 40)
+    }
+
+    @Test
+    fun strokeOutlineTracksPressureWidth() {
+        val payload = PathConversions.fromStrokeOutline(
+            rampSamples(30), StrokeRenderer.TOOL_PEN, baseWidthPx = 8f,
+        )!!
+        val flat = PathCodec.flatten(payload, stepsPerSegment = 16)
+        // The stroke runs along y=0 with pressure ramping up in +x; the
+        // outline's |y| extent must grow with x. Sample two x-windows away
+        // from the caps.
+        var startHalf = 0f
+        var endHalf = 0f
+        var j = 0
+        while (j < flat.size) {
+            val x = flat[j]
+            val absY = abs(flat[j + 1])
+            if (x in 40f..80f) startHalf = maxOf(startHalf, absY)
+            if (x in 210f..250f) endHalf = maxOf(endHalf, absY)
+            j += 2
+        }
+        assertTrue("start=$startHalf end=$endHalf", endHalf > startHalf)
+    }
+
+    @Test
+    fun strokeOutlineOfEmptyStrokeIsNull() {
+        assertEquals(
+            null,
+            PathConversions.fromStrokeOutline(FloatArray(0), StrokeRenderer.TOOL_PEN, 4f),
+        )
+    }
 }

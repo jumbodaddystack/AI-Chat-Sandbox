@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Grid4x4
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.ExpandLess
@@ -134,6 +135,7 @@ fun NoteEditorScreen(
     val audioPlaybackState by viewModel.audioPlayer.state.collectAsState()
     val audioActiveClip by viewModel.audioPlayer.activeClip.collectAsState()
     val fingerDrawing by viewModel.fingerDrawing.collectAsState()
+    val iconPixelGrid by viewModel.iconPixelGrid.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
@@ -483,6 +485,10 @@ fun NoteEditorScreen(
                             onToggleFingerDrawing = {
                                 viewModel.setFingerDrawing(!fingerDrawing)
                             },
+                            iconPixelGrid = iconPixelGrid,
+                            onToggleIconPixelGrid = {
+                                viewModel.setIconPixelGrid(!iconPixelGrid)
+                            },
                             onResizeArtboard = {
                                 menuExpanded = false
                                 canvasSizeDialogVisible = true
@@ -626,6 +632,13 @@ fun NoteEditorScreen(
                     } else {
                         null
                     },
+                    // Phase 15.3 — pixel snap + keylines. One graph-background
+                    // cell per icon pixel for every icon canvas size.
+                    pixelGridSpacingWorld = if (note.isIcon && iconPixelGrid) {
+                        BackgroundLayer.SPACING_WORLD
+                    } else {
+                        0f
+                    },
                     // 11.5 — stylus = laser, barrel button = next frame.
                     presentationMode = presenting,
                     onPresentationAdvance = { viewModel.stepPresentation(1) },
@@ -646,6 +659,14 @@ fun NoteEditorScreen(
                     },
                     modifier = Modifier
                         .align(Alignment.TopEnd)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+                // Phase 15.3 — live small-size preview while editing icons.
+                if (!presenting && note.isIcon) IconLivePreview(
+                    items = viewModel.items,
+                    frameBounds = frames.firstOrNull()?.bounds(),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
                 // Sub-phase 8.1 — frame rectangles + name labels rendered
@@ -692,6 +713,9 @@ fun NoteEditorScreen(
                     onEditNodes = viewModel::enterNodeEdit,
                     canConvertToPath = viewModel.selectionHasConvertibles(),
                     onConvertToPath = viewModel::convertSelectionToPaths,
+                    // Phase 15.2 — stroke → filled outline path.
+                    canOutlineStroke = viewModel.selectionHasOutlinableStrokes(),
+                    onOutlineStroke = viewModel::outlineSelectionStrokes,
                     // Phase 13 — booleans, gradients, style tools.
                     canCombine = viewModel.selectionCanCombine(),
                     onCombine = viewModel::combineSelection,
@@ -1222,6 +1246,8 @@ private fun EditorOverflowMenu(
     isIcon: Boolean,
     fingerDrawing: Boolean,
     onToggleFingerDrawing: () -> Unit,
+    iconPixelGrid: Boolean,
+    onToggleIconPixelGrid: () -> Unit,
     onResizeArtboard: () -> Unit,
     onDismiss: () -> Unit,
     onBackgroundSelect: (String) -> Unit,
@@ -1263,6 +1289,22 @@ private fun EditorOverflowMenu(
                     Icon(Icons.Filled.AspectRatio, contentDescription = null)
                 },
                 onClick = onResizeArtboard,
+            )
+            // Phase 15.3 — snap-to-pixel + keyline overlay on the artboard.
+            DropdownMenuItem(
+                text = { Text("Pixel grid & keylines") },
+                leadingIcon = {
+                    Icon(Icons.Filled.Grid4x4, contentDescription = null)
+                },
+                trailingIcon = {
+                    if (iconPixelGrid) {
+                        Icon(
+                            imageVector = Icons.Filled.Check,
+                            contentDescription = "Enabled",
+                        )
+                    }
+                },
+                onClick = onToggleIconPixelGrid,
             )
             HorizontalDivider()
         }
