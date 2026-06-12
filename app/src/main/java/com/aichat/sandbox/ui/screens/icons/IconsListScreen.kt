@@ -1,5 +1,8 @@
 package com.aichat.sandbox.ui.screens.icons
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -23,11 +26,13 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Draw
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +52,7 @@ import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.ui.components.studio.ArtboardCradle
 import com.aichat.sandbox.ui.components.studio.StudioPrimaryAction
 import com.aichat.sandbox.ui.components.studio.StudioSectionMarker
+import com.aichat.sandbox.ui.components.studio.StudioToolChip
 import com.aichat.sandbox.ui.theme.studio.StudioText
 import com.aichat.sandbox.ui.theme.studio.StudioTheme
 import java.io.File
@@ -77,6 +83,32 @@ fun IconsListScreen(
         var pendingDelete by remember { mutableStateOf<Note?>(null) }
         val colors = StudioTheme.colors
         val spacing = StudioTheme.spacing
+        val context = LocalContext.current
+
+        // Phase 16.2 — import a VectorDrawable .xml / .svg as a new icon.
+        val importPicker = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument(),
+        ) { uri -> if (uri != null) viewModel.importIcon(uri) }
+        LaunchedEffect(Unit) {
+            viewModel.importEvents.collect { event ->
+                when (event) {
+                    is IconsListViewModel.ImportEvent.Opened -> {
+                        if (event.warningCount > 0) {
+                            Toast.makeText(
+                                context,
+                                "Imported with ${event.warningCount} warning(s) — " +
+                                    "some elements may have been skipped",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                        onIconClick(event.noteId)
+                    }
+                    is IconsListViewModel.ImportEvent.Failed -> {
+                        Toast.makeText(context, event.message, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
 
         BoxWithConstraints(
             modifier = Modifier
@@ -122,14 +154,27 @@ fun IconsListScreen(
             // The NavHost box is already inset above the bottom nav bar, so this
             // just needs a margin (no window-inset padding, which would push it
             // up by the nav-bar inset a second time and previously hid it).
-            StudioPrimaryAction(
-                label = "New icon",
-                icon = Icons.Filled.Draw,
-                onClick = onNewIcon,
+            // 16.2 — the quiet hairline chip beside it imports an existing
+            // VectorDrawable / SVG as a new editable icon.
+            Row(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(spacing.l),
-            )
+                horizontalArrangement = Arrangement.spacedBy(spacing.m),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                StudioToolChip(
+                    label = "Import",
+                    icon = Icons.Filled.FileOpen,
+                    selected = false,
+                    onClick = { importPicker.launch(IMPORT_MIME_TYPES) },
+                )
+                StudioPrimaryAction(
+                    label = "New icon",
+                    icon = Icons.Filled.Draw,
+                    onClick = onNewIcon,
+                )
+            }
         }
 
         val target = pendingDelete
@@ -294,3 +339,11 @@ private fun EmptyState(modifier: Modifier = Modifier) {
         }
     }
 }
+
+/** Mirrors the Vector Tune-Up import panel's accepted types (minus bundles). */
+private val IMPORT_MIME_TYPES = arrayOf(
+    "text/xml",
+    "application/xml",
+    "image/svg+xml",
+    "text/plain",
+)
