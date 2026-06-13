@@ -22,6 +22,8 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.Grid4x4
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.ExpandLess
@@ -134,12 +136,16 @@ fun NoteEditorScreen(
     val audioPlaybackState by viewModel.audioPlayer.state.collectAsState()
     val audioActiveClip by viewModel.audioPlayer.activeClip.collectAsState()
     val fingerDrawing by viewModel.fingerDrawing.collectAsState()
+    val iconPixelGrid by viewModel.iconPixelGrid.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
     var panelsMenuExpanded by remember { mutableStateOf(false) }
     var pdfDialogVisible by remember { mutableStateOf(false) }
     var vectorXmlDialogVisible by remember { mutableStateOf(false) }
+    var svgDialogVisible by remember { mutableStateOf(false) }
+    var svgDialogForFrame by remember { mutableStateOf(false) }
+    var iconSetDialogVisible by remember { mutableStateOf(false) }
     // Live preview + skipped-item count for the vector-XML export dialog,
     // recomputed off the main thread each time the dialog opens.
     var vectorPreview by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
@@ -481,6 +487,14 @@ fun NoteEditorScreen(
                             onToggleFingerDrawing = {
                                 viewModel.setFingerDrawing(!fingerDrawing)
                             },
+                            iconPixelGrid = iconPixelGrid,
+                            onToggleIconPixelGrid = {
+                                viewModel.setIconPixelGrid(!iconPixelGrid)
+                            },
+                            onExportIconSet = {
+                                menuExpanded = false
+                                iconSetDialogVisible = true
+                            },
                             onResizeArtboard = {
                                 menuExpanded = false
                                 canvasSizeDialogVisible = true
@@ -522,17 +536,8 @@ fun NoteEditorScreen(
                             },
                             onShareSvg = {
                                 menuExpanded = false
-                                scope.launch {
-                                    val uri = viewModel.shareSvg()
-                                    val send = Intent(Intent.ACTION_SEND).apply {
-                                        type = "image/svg+xml"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(
-                                        Intent.createChooser(send, "Share note as SVG")
-                                    )
-                                }
+                                svgDialogForFrame = false
+                                svgDialogVisible = true
                             },
                             onExportVectorXml = {
                                 menuExpanded = false
@@ -558,17 +563,8 @@ fun NoteEditorScreen(
                             },
                             onExportFrameSvg = {
                                 menuExpanded = false
-                                scope.launch {
-                                    val uri = viewModel.shareSvgForCurrentFrame() ?: return@launch
-                                    val send = Intent(Intent.ACTION_SEND).apply {
-                                        type = "image/svg+xml"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(
-                                        Intent.createChooser(send, "Share frame as SVG")
-                                    )
-                                }
+                                svgDialogForFrame = true
+                                svgDialogVisible = true
                             },
                             canPresent = frames.isNotEmpty(),
                             onPresent = {
@@ -642,6 +638,13 @@ fun NoteEditorScreen(
                     } else {
                         null
                     },
+                    // Phase 15.3 — pixel snap + keylines. One graph-background
+                    // cell per icon pixel for every icon canvas size.
+                    pixelGridSpacingWorld = if (note.isIcon && iconPixelGrid) {
+                        BackgroundLayer.SPACING_WORLD
+                    } else {
+                        0f
+                    },
                     // 11.5 — stylus = laser, barrel button = next frame.
                     presentationMode = presenting,
                     onPresentationAdvance = { viewModel.stepPresentation(1) },
@@ -662,6 +665,14 @@ fun NoteEditorScreen(
                     },
                     modifier = Modifier
                         .align(Alignment.TopEnd)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+                // Phase 15.3 — live small-size preview while editing icons.
+                if (!presenting && note.isIcon) IconLivePreview(
+                    items = viewModel.items,
+                    frameBounds = frames.firstOrNull()?.bounds(),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
                 // Sub-phase 8.1 — frame rectangles + name labels rendered
@@ -708,6 +719,9 @@ fun NoteEditorScreen(
                     onEditNodes = viewModel::enterNodeEdit,
                     canConvertToPath = viewModel.selectionHasConvertibles(),
                     onConvertToPath = viewModel::convertSelectionToPaths,
+                    // Phase 15.2 — stroke → filled outline path.
+                    canOutlineStroke = viewModel.selectionHasOutlinableStrokes(),
+                    onOutlineStroke = viewModel::outlineSelectionStrokes,
                     // Phase 13 — booleans, gradients, style tools.
                     canCombine = viewModel.selectionCanCombine(),
                     onCombine = viewModel::combineSelection,
@@ -984,6 +998,62 @@ fun NoteEditorScreen(
                 },
             )
         }
+        if (iconSetDialogVisible) {
+            ExportSvgDialog(
+                title = "Export icon set",
+                onCancel = { iconSetDialogVisible = false },
+                onExport = { preservePressure ->
+                    iconSetDialogVisible = false
+                    scope.launch {
+                        val result = viewModel.shareIconSet(preservePressure)
+                        if (result.skippedCount > 0) {
+                            Toast.makeText(
+                                context,
+                                "${result.skippedCount} text/image item(s) skipped in the " +
+                                    "XML sizes — not supported by vector drawables",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "application/zip"
+                            putExtra(Intent.EXTRA_STREAM, result.uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(send, "Share icon set")
+                        )
+                    }
+                },
+            )
+        }
+        if (svgDialogVisible) {
+            ExportSvgDialog(
+                title = if (svgDialogForFrame) "Share frame as SVG" else "Share note as SVG",
+                onCancel = { svgDialogVisible = false },
+                onExport = { preservePressure ->
+                    svgDialogVisible = false
+                    val forFrame = svgDialogForFrame
+                    scope.launch {
+                        val uri = if (forFrame) {
+                            viewModel.shareSvgForCurrentFrame(preservePressure) ?: return@launch
+                        } else {
+                            viewModel.shareSvg(preservePressure)
+                        }
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "image/svg+xml"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(
+                                send,
+                                if (forFrame) "Share frame as SVG" else "Share note as SVG",
+                            )
+                        )
+                    }
+                },
+            )
+        }
         if (vectorXmlDialogVisible) {
             LaunchedEffect(Unit) {
                 vectorSkippedCount = viewModel.vectorExportSkippedCount()
@@ -996,10 +1066,10 @@ fun NoteEditorScreen(
                     vectorXmlDialogVisible = false
                     vectorPreview = null
                 },
-                onExport = { sizeDp ->
+                onExport = { sizeDp, preservePressure ->
                     vectorXmlDialogVisible = false
                     scope.launch {
-                        val result = viewModel.shareVectorXml(sizeDp)
+                        val result = viewModel.shareVectorXml(sizeDp, preservePressure)
                         if (result.skippedCount > 0) {
                             Toast.makeText(
                                 context,
@@ -1210,6 +1280,9 @@ private fun EditorOverflowMenu(
     isIcon: Boolean,
     fingerDrawing: Boolean,
     onToggleFingerDrawing: () -> Unit,
+    iconPixelGrid: Boolean,
+    onToggleIconPixelGrid: () -> Unit,
+    onExportIconSet: () -> Unit,
     onResizeArtboard: () -> Unit,
     onDismiss: () -> Unit,
     onBackgroundSelect: (String) -> Unit,
@@ -1251,6 +1324,30 @@ private fun EditorOverflowMenu(
                     Icon(Icons.Filled.AspectRatio, contentDescription = null)
                 },
                 onClick = onResizeArtboard,
+            )
+            // Phase 15.3 — snap-to-pixel + keyline overlay on the artboard.
+            DropdownMenuItem(
+                text = { Text("Pixel grid & keylines") },
+                leadingIcon = {
+                    Icon(Icons.Filled.Grid4x4, contentDescription = null)
+                },
+                trailingIcon = {
+                    if (iconPixelGrid) {
+                        Icon(
+                            imageVector = Icons.Filled.Check,
+                            contentDescription = "Enabled",
+                        )
+                    }
+                },
+                onClick = onToggleIconPixelGrid,
+            )
+            // Phase 15.4 — XML at 24/48/108 dp + SVG + PNG in one zip.
+            DropdownMenuItem(
+                text = { Text("Export icon set…") },
+                leadingIcon = {
+                    Icon(Icons.Filled.FolderZip, contentDescription = null)
+                },
+                onClick = onExportIconSet,
             )
             HorizontalDivider()
         }

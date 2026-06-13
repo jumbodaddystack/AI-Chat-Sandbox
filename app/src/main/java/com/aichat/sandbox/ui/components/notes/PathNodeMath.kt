@@ -90,7 +90,7 @@ object PathNodeMath {
             type = PathCodec.TYPE_SMOOTH,
         )
         anchors.add(segment + 1, inserted)
-        return payload.copy(anchors = anchors)
+        return payload.withSingleSubpath(anchors)
     }
 
     /** Remove anchor [index]; null when the path would drop below 2 anchors. */
@@ -98,7 +98,7 @@ object PathNodeMath {
         if (payload.anchors.size <= 2) return null
         val anchors = payload.anchors.toMutableList()
         anchors.removeAt(index)
-        return payload.copy(anchors = anchors)
+        return payload.withSingleSubpath(anchors)
     }
 
     /**
@@ -127,14 +127,14 @@ object PathNodeMath {
         } else {
             a.copy(type = PathCodec.TYPE_CORNER)
         }
-        return payload.copy(anchors = anchors)
+        return payload.withSingleSubpath(anchors)
     }
 
     /** Move anchor [index] to (`x`, `y`); relative handles ride along. */
     fun moveAnchor(payload: PathCodec.PathPayload, index: Int, x: Float, y: Float): PathCodec.PathPayload {
         val anchors = payload.anchors.toMutableList()
         anchors[index] = anchors[index].copy(x = x, y = y)
-        return payload.copy(anchors = anchors)
+        return payload.withSingleSubpath(anchors)
     }
 
     /**
@@ -172,7 +172,7 @@ object PathNodeMath {
             }
             else -> if (out) a.copy(outDx = dx, outDy = dy) else a.copy(inDx = dx, inDy = dy)
         }
-        return payload.copy(anchors = anchors)
+        return payload.withSingleSubpath(anchors)
     }
 
     /** Unit tangent for a corner→smooth toggle: averaged handles, else chord. */

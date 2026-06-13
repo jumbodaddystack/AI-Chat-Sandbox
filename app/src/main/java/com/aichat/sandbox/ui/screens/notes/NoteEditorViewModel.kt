@@ -132,6 +132,7 @@ class NoteEditorViewModel @Inject constructor(
     private val noteExporter: NoteExporter,
     private val noteSvgExporter: NoteSvgExporter,
     private val noteVectorDrawableExporter: com.aichat.sandbox.data.notes.NoteVectorDrawableExporter,
+    private val noteIconSetExporter: com.aichat.sandbox.data.notes.NoteIconSetExporter,
     private val recentColorsStore: RecentColorsStore,
     private val palettePrefsStore: ToolPalettePrefsStore,
     private val brushPresets: BrushPresetRepository,
@@ -1428,6 +1429,23 @@ class NoteEditorViewModel @Inject constructor(
         }
     }
 
+    // ── Icon pixel grid (phase 15.3) ─────────────────────────────────────
+
+    /** Snap-to-pixel + keyline overlay on icon artboards. On by default. */
+    val iconPixelGrid: StateFlow<Boolean> = palettePrefsStore.prefs
+        .map { it.iconPixelGrid }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = true,
+        )
+
+    fun setIconPixelGrid(enabled: Boolean) {
+        viewModelScope.launch {
+            palettePrefsStore.setIconPixelGrid(enabled)
+        }
+    }
+
     fun setTitle(title: String) {
         _note.update { it.copy(title = title) }
         scheduleAutosave()
@@ -1750,21 +1768,33 @@ class NoteEditorViewModel @Inject constructor(
     private val _nodeEditTarget = MutableStateFlow<String?>(null)
     val nodeEditTarget: StateFlow<String?> = _nodeEditTarget.asStateFlow()
 
-    /** True when the selection is exactly one path item (gates "Edit nodes"). */
+    /**
+     * True when the selection is exactly one **single-subpath** path item
+     * (gates "Edit nodes"). 16.1 — multi-subpath payloads (boolean results
+     * with holes, imported vectors) are excluded: the node editor's
+     * selection model is flat anchor indices over one contour.
+     */
     fun selectionIsSinglePath(): Boolean {
         val ids = _selection.value
         if (ids.size != 1) return false
         val id = ids.first()
-        return items.any { it.id == id && it.kind == PathCodec.KIND }
+        val item = items.firstOrNull { it.id == id && it.kind == PathCodec.KIND } ?: return false
+        return isSingleSubpath(item)
     }
 
     fun enterNodeEdit() {
         val ids = _selection.value
         if (ids.size != 1) return
         val item = items.firstOrNull { it.id == ids.first() } ?: return
-        if (item.kind != PathCodec.KIND) return
+        if (item.kind != PathCodec.KIND || !isSingleSubpath(item)) return
         clearSelection()
         _nodeEditTarget.value = item.id
+    }
+
+    private fun isSingleSubpath(item: NoteItem): Boolean = try {
+        PathCodec.decode(item.payload).subpaths.size == 1
+    } catch (_: IllegalArgumentException) {
+        false
     }
 
     fun exitNodeEdit() {
@@ -1862,6 +1892,63 @@ class NoteEditorViewModel @Inject constructor(
             modified = emptyList(),
         ))
         // Select the conversions so the user can immediately edit nodes.
+        _selection.value = added.mapTo(HashSet(added.size)) { it.id }
+        _selectionWorldBounds.value = recomputeSelectionBounds()
+        _selectionMatrix.value = StrokeTransform.IDENTITY
+    }
+
+    // ── Outline stroke (phase 15.2) ───────────────────────────────────────
+
+    /** True when the selection contains at least one freehand stroke. */
+    fun selectionHasOutlinableStrokes(): Boolean {
+        val ids = _selection.value
+        return items.any { it.id in ids && it.kind == STROKE_KIND }
+    }
+
+    /**
+     * Replace every selected stroke with its pressure-faithful filled
+     * outline path ([PathConversions.fromStrokeOutline]) — the icon-studio
+     * "outline stroke" primitive: the result combines cleanly with boolean
+     * ops and exports as plain filled geometry. One
+     * `CompositeEdit("Outline ink")` so a single undo restores the strokes
+     * byte-identical. Colour becomes the path fill; layer / z / group carry
+     * over; non-stroke selection members are left untouched.
+     */
+    fun outlineSelectionStrokes() {
+        val ids = _selection.value
+        if (ids.isEmpty()) return
+        val removed = ArrayList<NoteItem>()
+        val added = ArrayList<NoteItem>()
+        for (item in items) {
+            if (item.id !in ids || item.kind != STROKE_KIND) continue
+            val samples = StrokeCodec.decode(item.payload)
+            val payload = PathConversions
+                .fromStrokeOutline(samples, item.tool, item.baseWidthPx)
+                ?: continue
+            removed += item
+            added += NoteItem(
+                noteId = resolvedNoteId,
+                zIndex = item.zIndex,
+                kind = PathCodec.KIND,
+                tool = null,
+                colorArgb = item.colorArgb,
+                // The width is baked into the outline geometry; a zero-width
+                // same-colour stroke keeps the boundary crisp on canvas
+                // without fattening the silhouette.
+                baseWidthPx = 0f,
+                payload = PathCodec.encode(payload.copy(fillArgb = item.colorArgb)),
+                layerId = item.layerId,
+                groupId = item.groupId,
+            )
+        }
+        if (added.isEmpty()) return
+        apply(EditorAction.CompositeEdit(
+            description = "Outline ink",
+            added = added,
+            removed = removed,
+            modified = emptyList(),
+        ))
+        // Select the outlines so the user can immediately combine or style.
         _selection.value = added.mapTo(HashSet(added.size)) { it.id }
         _selectionWorldBounds.value = recomputeSelectionBounds()
         _selectionMatrix.value = StrokeTransform.IDENTITY
@@ -2107,8 +2194,10 @@ class NoteEditorViewModel @Inject constructor(
      * ordered by zIndex ascending; the bottom-most item is the subject, so
      * Subtract removes everything stacked above it ("minus front"). One
      * `CompositeEdit("Union 2 paths")` removes the inputs and adds the
-     * result ring(s) — multi-ring results land grouped so they keep moving
-     * as one. Empty results (disjoint intersect) are a silent no-op.
+     * result as **one** path item — 16.1: all result rings (holes included)
+     * land as subpaths of a single payload, so they punch through instead
+     * of stacking as filled blobs. Empty results (disjoint intersect) are a
+     * silent no-op.
      */
     fun combineSelection(op: PathBoolean.Op) {
         val ids = _selection.value
@@ -2122,8 +2211,7 @@ class NoteEditorViewModel @Inject constructor(
                 else -> listOf(PathCodec.decode(item.payload))
             }
         }
-        val results = PathBooleanBridge.combine(geometries, op)
-        if (results.isEmpty()) return
+        val result = PathBooleanBridge.combine(geometries, op) ?: return
         // An area op should produce a visible area: the subject's fill when
         // it had one, else its stroke colour. Stroke styling rides along.
         val subject = eligible.first()
@@ -2144,8 +2232,7 @@ class NoteEditorViewModel @Inject constructor(
             subjectStrokeStyle = d.strokeStyle
             subjectCapJoin = PathCodec.DEFAULT_CAP_JOIN
         }
-        val groupId = if (results.size > 1) UUID.randomUUID().toString() else null
-        val added = results.map { payload ->
+        val added = listOf(
             NoteItem(
                 noteId = resolvedNoteId,
                 zIndex = subject.zIndex,
@@ -2153,16 +2240,15 @@ class NoteEditorViewModel @Inject constructor(
                 tool = null,
                 colorArgb = subject.colorArgb,
                 baseWidthPx = subject.baseWidthPx,
-                payload = PathCodec.encode(payload.copy(
+                payload = PathCodec.encode(result.copy(
                     fillArgb = subjectFill,
                     strokeStyle = subjectStrokeStyle,
                     capJoin = subjectCapJoin,
                     gradient = subjectGradient,
                 )),
                 layerId = subject.layerId,
-                groupId = groupId,
-            )
-        }
+            ),
+        )
         val opName = when (op) {
             PathBoolean.Op.UNION -> "Union"
             PathBoolean.Op.SUBTRACT -> "Subtract"
@@ -3404,7 +3490,7 @@ class NoteEditorViewModel @Inject constructor(
     }
 
     /** Sub-phase 8.1 — SVG export bounded to the active frame. */
-    suspend fun shareSvgForCurrentFrame(): Uri? {
+    suspend fun shareSvgForCurrentFrame(preservePressure: Boolean = false): Uri? {
         val bounds = currentFrameBounds() ?: return null
         commitTextEdit()
         save()
@@ -3412,6 +3498,7 @@ class NoteEditorViewModel @Inject constructor(
             note = _note.value,
             items = items.toList(),
             frameBounds = bounds,
+            preservePressure = preservePressure,
         )
     }
 
@@ -3420,10 +3507,14 @@ class NoteEditorViewModel @Inject constructor(
      * [sharePng] / [sharePdf] so the resulting SVG reflects the user's most
      * recent geometry.
      */
-    suspend fun shareSvg(): Uri {
+    suspend fun shareSvg(preservePressure: Boolean = false): Uri {
         commitTextEdit()
         save()
-        return noteSvgExporter.exportSvg(note = _note.value, items = items.toList())
+        return noteSvgExporter.exportSvg(
+            note = _note.value,
+            items = items.toList(),
+            preservePressure = preservePressure,
+        )
     }
 
     /**
@@ -3434,6 +3525,7 @@ class NoteEditorViewModel @Inject constructor(
      */
     suspend fun shareVectorXml(
         sizeDp: Int,
+        preservePressure: Boolean = false,
     ): com.aichat.sandbox.data.notes.NoteVectorDrawableExporter.ExportResult {
         commitTextEdit()
         save()
@@ -3442,6 +3534,25 @@ class NoteEditorViewModel @Inject constructor(
             items = items.toList(),
             sizeDp = sizeDp,
             frameBounds = currentFrameBounds(),
+            preservePressure = preservePressure,
+        )
+    }
+
+    /**
+     * Phase 15.4 — export the icon as a complete set (VectorDrawable XML at
+     * 24/48/108 dp + SVG + 512 px PNG) zipped into one share-able file.
+     * Same save-first contract as [shareSvg].
+     */
+    suspend fun shareIconSet(
+        preservePressure: Boolean = false,
+    ): com.aichat.sandbox.data.notes.NoteIconSetExporter.Result {
+        commitTextEdit()
+        save()
+        return noteIconSetExporter.exportIconSet(
+            note = _note.value,
+            items = items.toList(),
+            frameBounds = currentFrameBounds(),
+            preservePressure = preservePressure,
         )
     }
 

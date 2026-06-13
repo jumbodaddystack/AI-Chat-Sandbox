@@ -1,7 +1,6 @@
 package com.aichat.sandbox.data.notes
 
 import android.content.Context
-import android.graphics.Color
 import android.net.Uri
 import androidx.core.content.FileProvider
 import com.aichat.sandbox.data.model.Note
@@ -10,6 +9,7 @@ import com.aichat.sandbox.ui.components.notes.PathCodec
 import com.aichat.sandbox.ui.components.notes.Shape
 import com.aichat.sandbox.ui.components.notes.ShapeCodec
 import com.aichat.sandbox.ui.components.notes.StrokeCodec
+import com.aichat.sandbox.ui.components.notes.StrokeOutliner
 import com.aichat.sandbox.ui.components.notes.StrokeRenderer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -65,8 +65,10 @@ class NoteVectorDrawableExporter @Inject constructor(
         sizeDp: Int,
         /** Artboard / frame bounds to map into the viewport; null = content bounds. */
         frameBounds: FloatArray? = null,
+        /** Phase 15.1 — export variable-width strokes as filled outlines. */
+        preservePressure: Boolean = false,
     ): ExportResult = withContext(Dispatchers.IO) {
-        val rendered = render(items, sizeDp, frameBounds)
+        val rendered = render(items, sizeDp, frameBounds, preservePressure)
         val dir = exportsDir().apply { if (!exists()) mkdirs() }
         val outName = "${NoteExporter.sanitizeBaseName(note.title)}-${System.currentTimeMillis()}.xml"
         val finalFile = File(dir, outName)
@@ -102,12 +104,15 @@ class NoteVectorDrawableExporter @Inject constructor(
             items: List<NoteItem>,
             sizeDp: Int,
             frameBounds: FloatArray? = null,
-        ): String = render(items, sizeDp, frameBounds).xml
+            preservePressure: Boolean = false,
+        ): String = render(items, sizeDp, frameBounds, preservePressure).xml
 
         fun render(
             items: List<NoteItem>,
             sizeDp: Int,
             frameBounds: FloatArray? = null,
+            /** Phase 15.1 — export variable-width strokes as filled outlines. */
+            preservePressure: Boolean = false,
         ): Rendered {
             val size = sizeDp.toFloat()
             val src = frameBounds
@@ -131,7 +136,7 @@ class NoteVectorDrawableExporter @Inject constructor(
             var skipped = 0
             for (item in visibleItems.sortedBy { it.zIndex }) {
                 when (item.kind) {
-                    NoteItem.KIND_STROKE -> appendStroke(sb, item, transform)
+                    NoteItem.KIND_STROKE -> appendStroke(sb, item, transform, preservePressure)
                     Shape.KIND -> appendShape(sb, item, transform)
                     PathCodec.KIND -> appendBezierPath(sb, item, transform)
                     else -> skipped++ // text + image have no VectorDrawable equivalent
@@ -176,10 +181,21 @@ class NoteVectorDrawableExporter @Inject constructor(
 
         // ---- strokes ----
 
-        private fun appendStroke(sb: StringBuilder, item: NoteItem, t: Transform) {
+        private fun appendStroke(
+            sb: StringBuilder,
+            item: NoteItem,
+            t: Transform,
+            preservePressure: Boolean,
+        ) {
             val samples = StrokeCodec.decode(item.payload)
             val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
             if (count < 1) return
+            if (preservePressure &&
+                StrokeOutliner.hasVariableWidth(samples, item.tool, item.baseWidthPx)
+            ) {
+                appendStrokeOutline(sb, item, samples, t)
+                return
+            }
             val s = StrokeCodec.FLOATS_PER_SAMPLE
             fun px(i: Int) = t.x(samples[i])
             fun py(i: Int) = t.y(samples[i + 1])
@@ -205,7 +221,7 @@ class NoteVectorDrawableExporter @Inject constructor(
             }
 
             val highlighter = item.tool == StrokeRenderer.TOOL_HIGHLIGHTER
-            val alpha = if (highlighter) 0.35f else Color.alpha(item.colorArgb) / 255f
+            val alpha = if (highlighter) 0.35f else ((item.colorArgb ushr 24) and 0xFF) / 255f
             appendPath(
                 sb,
                 pathData = d.toString(),
@@ -214,6 +230,38 @@ class NoteVectorDrawableExporter @Inject constructor(
                 strokeWidth = max(0.1f, t.len(strokeMeanWidth(item, samples))),
                 strokeAlpha = alpha,
                 cap = if (highlighter) "square" else "round",
+            )
+        }
+
+        /**
+         * Phase 15.1 — variable-width stroke as a single filled outline. The
+         * outline is built in world coordinates (so its local thickness tracks
+         * [com.aichat.sandbox.ui.components.notes.ToolDynamics] exactly) and
+         * then mapped point-by-point through the uniform [Transform].
+         */
+        private fun appendStrokeOutline(
+            sb: StringBuilder,
+            item: NoteItem,
+            samples: FloatArray,
+            t: Transform,
+        ) {
+            val outline = StrokeOutliner.outline(samples, item.tool, item.baseWidthPx)
+            if (outline.size < 6) return
+            var i = 0
+            while (i < outline.size) {
+                val x = outline[i]
+                outline[i] = t.x(x)
+                outline[i + 1] = t.y(outline[i + 1])
+                i += 2
+            }
+            val alpha = ((item.colorArgb ushr 24) and 0xFF) / 255f
+            appendPath(
+                sb,
+                pathData = StrokeOutliner.pathData(outline) { f(it) },
+                fillColor = colorToHex(item.colorArgb),
+                strokeColor = null,
+                strokeWidth = 0f,
+                fillAlpha = alpha,
             )
         }
 
@@ -230,23 +278,33 @@ class NoteVectorDrawableExporter @Inject constructor(
 
         private fun appendBezierPath(sb: StringBuilder, item: NoteItem, t: Transform) {
             val payload = PathCodec.decode(item.payload)
-            if (payload.anchors.size < 2) return
-            val first = payload.anchors[0]
-            val d = StringBuilder(payload.anchors.size * 32)
-            d.append('M').append(f(t.x(first.x))).append(',').append(f(t.y(first.y)))
-            for (i in 0 until payload.segmentCount) {
-                val s = PathCodec.segment(payload, i)
-                d.append('C')
-                    .append(f(t.x(s[2]))).append(',').append(f(t.y(s[3]))).append(' ')
-                    .append(f(t.x(s[4]))).append(',').append(f(t.y(s[5]))).append(' ')
-                    .append(f(t.x(s[6]))).append(',').append(f(t.y(s[7])))
+            if (payload.subpaths.none { it.anchors.size >= 2 }) return
+            // 16.1 — every subpath in one android:pathData so holes punch
+            // through the shared fill.
+            val d = StringBuilder(payload.subpaths.sumOf { it.anchors.size } * 32)
+            for (sub in payload.subpaths) {
+                val first = sub.anchors.firstOrNull() ?: continue
+                d.append('M').append(f(t.x(first.x))).append(',').append(f(t.y(first.y)))
+                for (i in 0 until sub.segmentCount) {
+                    val s = PathCodec.segment(sub, i)
+                    d.append('C')
+                        .append(f(t.x(s[2]))).append(',').append(f(t.y(s[3]))).append(' ')
+                        .append(f(t.x(s[4]))).append(',').append(f(t.y(s[5]))).append(' ')
+                        .append(f(t.x(s[6]))).append(',').append(f(t.y(s[7])))
+                }
+                if (sub.closed) d.append('Z')
             }
-            if (payload.closed) d.append('Z')
+            val filled = payload.anyClosed && payload.fillArgb != 0
             appendPath(
                 sb,
                 pathData = d.toString(),
-                fillColor = if (payload.closed && payload.fillArgb != 0) {
+                fillColor = if (filled) {
                     colorToHex(payload.fillArgb)
+                } else {
+                    null
+                },
+                fillType = if (filled && payload.fillRule == PathCodec.FILL_RULE_EVEN_ODD) {
+                    "evenOdd"
                 } else {
                     null
                 },
@@ -382,10 +440,18 @@ class NoteVectorDrawableExporter @Inject constructor(
             cap: String? = null,
             indent: String = "  ",
             join: String = "round",
+            fillAlpha: Float = 1f,
+            fillType: String? = null,
         ) {
             sb.append(indent).append("<path\n")
             sb.append(indent).append("    android:pathData=\"").append(pathData).append("\"\n")
             sb.append(indent).append("    android:fillColor=\"").append(fillColor ?: "#00000000").append("\"")
+            if (fillColor != null && fillAlpha < 1f) {
+                sb.append("\n").append(indent).append("    android:fillAlpha=\"").append(f(fillAlpha)).append("\"")
+            }
+            if (fillColor != null && fillType != null) {
+                sb.append("\n").append(indent).append("    android:fillType=\"").append(fillType).append("\"")
+            }
             if (strokeColor != null) {
                 sb.append("\n").append(indent).append("    android:strokeColor=\"").append(strokeColor).append("\"")
                 sb.append("\n").append(indent).append("    android:strokeWidth=\"").append(f(strokeWidth)).append("\"")

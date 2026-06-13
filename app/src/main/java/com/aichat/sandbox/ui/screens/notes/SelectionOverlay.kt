@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.MergeType
 import androidx.compose.material.icons.filled.Polyline
 import androidx.compose.material.icons.filled.QuestionAnswer
 import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.Gesture
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.TextFields
@@ -134,6 +135,9 @@ fun SelectionOverlay(
     onEditNodes: (() -> Unit)? = null,
     canConvertToPath: Boolean = false,
     onConvertToPath: (() -> Unit)? = null,
+    // Phase 15.2 — stroke → filled outline path.
+    canOutlineStroke: Boolean = false,
+    onOutlineStroke: (() -> Unit)? = null,
     // Phase 13.1 — boolean ops; 13.2 — gradient fills; 13.3 — style tools.
     canCombine: Boolean = false,
     onCombine: ((PathBoolean.Op) -> Unit)? = null,
@@ -372,6 +376,8 @@ fun SelectionOverlay(
             onEditNodes = onEditNodes,
             canConvertToPath = canConvertToPath,
             onConvertToPath = onConvertToPath,
+            canOutlineStroke = canOutlineStroke,
+            onOutlineStroke = onOutlineStroke,
             canCombine = canCombine,
             onCombine = onCombine,
             onSetGradient = onSetGradient,
@@ -533,6 +539,8 @@ private fun FloatingSelectionMenu(
     onEditNodes: (() -> Unit)? = null,
     canConvertToPath: Boolean = false,
     onConvertToPath: (() -> Unit)? = null,
+    canOutlineStroke: Boolean = false,
+    onOutlineStroke: (() -> Unit)? = null,
     canCombine: Boolean = false,
     onCombine: ((PathBoolean.Op) -> Unit)? = null,
     onSetGradient: ((FillStyle.Gradient) -> Unit)? = null,
@@ -605,6 +613,15 @@ private fun FloatingSelectionMenu(
                     icon = Icons.Filled.Timeline,
                     label = "To path",
                     onClick = onConvertToPath,
+                )
+            }
+            // Phase 15.2 — stroke → filled outline (pressure baked into
+            // geometry, ready for boolean ops + lossless export).
+            if (canOutlineStroke && onOutlineStroke != null) {
+                MenuButton(
+                    icon = Icons.Filled.Gesture,
+                    label = "Outline ink",
+                    onClick = onOutlineStroke,
                 )
             }
             // Phase 13.1 — boolean ops on ≥ 2 selected shapes / paths.

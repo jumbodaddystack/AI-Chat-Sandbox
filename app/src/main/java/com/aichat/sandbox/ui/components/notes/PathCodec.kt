@@ -4,17 +4,22 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Sub-phase 12.1 — bezier-path binary wire format.
+ * Sub-phase 12.1 — bezier-path binary wire format. Phase 16.1 adds
+ * multi-subpath payloads + a fill rule so boolean results keep their holes
+ * and imported vectors with holes render correctly.
  *
- * A path is an ordered list of anchors; segment *i* runs anchor *i* →
- * anchor *i+1* as a cubic whose control points are the anchors plus their
- * **relative** handle deltas (`c1 = aᵢ + outᵢ`, `c2 = aᵢ₊₁ + inᵢ₊₁`). A
- * closed path adds the wrap-around segment. Zero handles degrade a segment
- * to a straight line, so polygon-like paths carry no curvature cost.
- * Stroke colour / width travel on the enclosing
- * [com.aichat.sandbox.data.model.NoteItem], mirroring shapes.
+ * A path is one or more **subpaths**; each subpath is an ordered list of
+ * anchors where segment *i* runs anchor *i* → anchor *i+1* as a cubic whose
+ * control points are the anchors plus their **relative** handle deltas
+ * (`c1 = aᵢ + outᵢ`, `c2 = aᵢ₊₁ + inᵢ₊₁`). A closed subpath adds the
+ * wrap-around segment. Zero handles degrade a segment to a straight line,
+ * so polygon-like paths carry no curvature cost. Stroke colour / width
+ * travel on the enclosing [com.aichat.sandbox.data.model.NoteItem],
+ * mirroring shapes.
  *
- * Layout (little-endian):
+ * v1 layout (little-endian) — emitted for every single-subpath, non-zero
+ * fill-rule payload so existing notes / undo logs / stamps stay
+ * byte-identical:
  * ```
  * [version:u8=1]
  * [flags:u8]                 bit0 = closed
@@ -31,9 +36,23 @@ import java.nio.ByteOrder
  * [gradient]?                13.2: optional [FillStyle] gradient block
  * ```
  *
+ * v2 layout (16.1) — emitted only when the payload has multiple subpaths
+ * or an even-odd fill rule:
+ * ```
+ * [version:u8=2]
+ * [flags:u8]                 bit0 = even-odd fill rule
+ * [subpathCount:u16]
+ * per subpath:
+ *   [subFlags:u8]            bit0 = closed
+ *   [count:u16]              anchor count
+ *   count × 25-byte anchors  (identical record to v1)
+ * [fillArgb:i32]? [strokeStyle:u8]? [capJoin:u8]? [gradient]?   (as v1)
+ * ```
+ *
  * Trailing fields follow the ShapeCodec strokeStyle convention: append
- * after the last optional field and decode via `buf.hasRemaining()`, so
- * every shorter payload decodes with defaults (no fill, solid, round/round).
+ * after the last anchor of the last subpath and decode via
+ * `buf.hasRemaining()`, so every shorter payload decodes with defaults
+ * (no fill, solid, round/round).
  */
 object PathCodec {
 
@@ -42,9 +61,17 @@ object PathCodec {
 
     const val VERSION: Byte = 1
 
+    /** 16.1 — multi-subpath + fill-rule stream. */
+    const val VERSION_2: Byte = 2
+
     const val TYPE_CORNER: Byte = 0
     const val TYPE_SMOOTH: Byte = 1
     const val TYPE_SYMMETRIC: Byte = 2
+
+    // 16.1 — fill rules. Non-zero matches android.graphics.Path's WINDING
+    // default, which is what every pre-16.1 payload rendered with.
+    const val FILL_RULE_NON_ZERO: Byte = 0
+    const val FILL_RULE_EVEN_ODD: Byte = 1
 
     // 12.5 — capJoin nibbles. Defaults are round/round: paths come from pen
     // gestures and stroke conversion, where round terminals match the ink.
@@ -62,6 +89,7 @@ object PathCodec {
     fun capJoinOf(cap: Int, join: Int): Int = (cap and 0x0F) or ((join and 0x0F) shl 4)
 
     private const val FLAG_CLOSED: Int = 0x01
+    private const val FLAG_EVEN_ODD: Int = 0x01
     private const val BYTES_PER_ANCHOR: Int = 6 * 4 + 1
 
     /** Flattening resolution — uniform-t samples per cubic segment. */
@@ -77,13 +105,10 @@ object PathCodec {
         val type: Byte = TYPE_CORNER,
     )
 
-    data class PathPayload(
+    /** 16.1 — one contour of a path. */
+    data class Subpath(
         val anchors: List<Anchor>,
         val closed: Boolean,
-        val fillArgb: Int = 0,
-        val strokeStyle: Byte = ShapeCodec.STROKE_STYLE_SOLID,
-        val capJoin: Int = DEFAULT_CAP_JOIN,
-        val gradient: FillStyle.Gradient? = null,
     ) {
         /** Cubic-segment count, including the wrap-around segment when closed. */
         val segmentCount: Int
@@ -94,7 +119,73 @@ object PathCodec {
             }
     }
 
-    fun encode(payload: PathPayload): ByteArray {
+    data class PathPayload(
+        val subpaths: List<Subpath>,
+        val fillRule: Byte = FILL_RULE_NON_ZERO,
+        val fillArgb: Int = 0,
+        val strokeStyle: Byte = ShapeCodec.STROKE_STYLE_SOLID,
+        val capJoin: Int = DEFAULT_CAP_JOIN,
+        val gradient: FillStyle.Gradient? = null,
+    ) {
+        /** Single-subpath convenience constructor — the pre-16.1 shape. */
+        constructor(
+            anchors: List<Anchor>,
+            closed: Boolean,
+            fillArgb: Int = 0,
+            strokeStyle: Byte = ShapeCodec.STROKE_STYLE_SOLID,
+            capJoin: Int = DEFAULT_CAP_JOIN,
+            gradient: FillStyle.Gradient? = null,
+        ) : this(
+            subpaths = listOf(Subpath(anchors, closed)),
+            fillRule = FILL_RULE_NON_ZERO,
+            fillArgb = fillArgb,
+            strokeStyle = strokeStyle,
+            capJoin = capJoin,
+            gradient = gradient,
+        )
+
+        /**
+         * First subpath's anchors — the only subpath for every pre-16.1
+         * payload. Multi-subpath-aware consumers iterate [subpaths] instead.
+         */
+        val anchors: List<Anchor>
+            get() = subpaths.firstOrNull()?.anchors ?: emptyList()
+
+        /** First subpath's closed flag (see [anchors]). */
+        val closed: Boolean
+            get() = subpaths.firstOrNull()?.closed ?: false
+
+        /** First subpath's segment count (see [anchors]). */
+        val segmentCount: Int
+            get() = subpaths.firstOrNull()?.segmentCount ?: 0
+
+        /** Any subpath closes — gates fill rendering / export. */
+        val anyClosed: Boolean
+            get() = subpaths.any { it.closed }
+
+        /**
+         * Node-edit helper: rebuild the geometry of a **single-subpath**
+         * payload. The node editor is gated to single-subpath payloads
+         * (16.1), so this never has trailing subpaths to preserve.
+         */
+        fun withSingleSubpath(
+            anchors: List<Anchor>,
+            closed: Boolean = this.closed,
+        ): PathPayload = copy(subpaths = listOf(Subpath(anchors, closed)))
+    }
+
+    fun encode(payload: PathPayload): ByteArray =
+        if (payload.subpaths.size == 1 && payload.fillRule == FILL_RULE_NON_ZERO) {
+            // Byte-identical to the pre-16.1 stream: every payload that
+            // existed before v2 takes this branch, so persisted notes, undo
+            // logs and stamps round-trip unchanged and `contentEquals`
+            // no-op detection keeps working.
+            encodeV1(payload)
+        } else {
+            encodeV2(payload)
+        }
+
+    private fun encodeV1(payload: PathPayload): ByteArray {
         val buf = ByteBuffer
             .allocate(
                 1 + 1 + 2 + payload.anchors.size * BYTES_PER_ANCHOR + 4 + 1 + 1 +
@@ -104,24 +195,89 @@ object PathCodec {
         buf.put(VERSION)
         buf.put((if (payload.closed) FLAG_CLOSED else 0).toByte())
         buf.putShort(payload.anchors.size.toShort())
-        for (a in payload.anchors) {
+        putAnchors(buf, payload.anchors)
+        putTrailing(buf, payload)
+        return buf.array()
+    }
+
+    private fun encodeV2(payload: PathPayload): ByteArray {
+        val anchorTotal = payload.subpaths.sumOf { it.anchors.size }
+        val buf = ByteBuffer
+            .allocate(
+                1 + 1 + 2 + payload.subpaths.size * (1 + 2) +
+                    anchorTotal * BYTES_PER_ANCHOR + 4 + 1 + 1 +
+                    FillStyle.byteSize(payload.gradient),
+            )
+            .order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(VERSION_2)
+        buf.put(
+            (if (payload.fillRule == FILL_RULE_EVEN_ODD) FLAG_EVEN_ODD else 0).toByte()
+        )
+        buf.putShort(payload.subpaths.size.toShort())
+        for (sub in payload.subpaths) {
+            buf.put((if (sub.closed) FLAG_CLOSED else 0).toByte())
+            buf.putShort(sub.anchors.size.toShort())
+            putAnchors(buf, sub.anchors)
+        }
+        putTrailing(buf, payload)
+        return buf.array()
+    }
+
+    private fun putAnchors(buf: ByteBuffer, anchors: List<Anchor>) {
+        for (a in anchors) {
             buf.putFloat(a.x); buf.putFloat(a.y)
             buf.putFloat(a.inDx); buf.putFloat(a.inDy)
             buf.putFloat(a.outDx); buf.putFloat(a.outDy)
             buf.put(a.type)
         }
+    }
+
+    private fun putTrailing(buf: ByteBuffer, payload: PathPayload) {
         buf.putInt(payload.fillArgb)
         buf.put(payload.strokeStyle)
         buf.put(payload.capJoin.toByte())
         FillStyle.encode(buf, payload.gradient)
-        return buf.array()
     }
 
     fun decode(payload: ByteArray): PathPayload {
         val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
         val version = buf.get()
-        require(version == VERSION) { "PathCodec: unknown version $version" }
+        require(version == VERSION || version == VERSION_2) {
+            "PathCodec: unknown version $version"
+        }
         val flags = buf.get().toInt()
+        val subpaths: List<Subpath>
+        val fillRule: Byte
+        if (version == VERSION) {
+            subpaths = listOf(Subpath(readAnchors(buf), (flags and FLAG_CLOSED) != 0))
+            fillRule = FILL_RULE_NON_ZERO
+        } else {
+            val subCount = buf.short.toInt() and 0xFFFF
+            subpaths = ArrayList<Subpath>(subCount).apply {
+                repeat(subCount) {
+                    val subFlags = buf.get().toInt()
+                    add(Subpath(readAnchors(buf), (subFlags and FLAG_CLOSED) != 0))
+                }
+            }
+            fillRule = if ((flags and FLAG_EVEN_ODD) != 0) FILL_RULE_EVEN_ODD else FILL_RULE_NON_ZERO
+        }
+        val fillArgb = if (buf.remaining() >= 4) buf.int else 0
+        val strokeStyle = if (buf.hasRemaining()) buf.get() else ShapeCodec.STROKE_STYLE_SOLID
+        val capJoin = if (buf.hasRemaining()) buf.get().toInt() and 0xFF else DEFAULT_CAP_JOIN
+        // 13.2 — optional trailing gradient block.
+        val gradient = FillStyle.decode(buf)
+        return PathPayload(
+            subpaths = subpaths,
+            fillRule = fillRule,
+            fillArgb = fillArgb,
+            strokeStyle = strokeStyle,
+            capJoin = capJoin,
+            gradient = gradient,
+        )
+    }
+
+    /** Read a `[count:u16][anchors…]` run (shared by v1 body and v2 subpaths). */
+    private fun readAnchors(buf: ByteBuffer): List<Anchor> {
         val count = buf.short.toInt() and 0xFFFF
         require(buf.remaining() >= count * BYTES_PER_ANCHOR) {
             "PathCodec: truncated payload ($count anchors, ${buf.remaining()} bytes left)"
@@ -135,26 +291,14 @@ object PathCodec {
                 type = buf.get(),
             )
         }
-        val fillArgb = if (buf.remaining() >= 4) buf.int else 0
-        val strokeStyle = if (buf.hasRemaining()) buf.get() else ShapeCodec.STROKE_STYLE_SOLID
-        val capJoin = if (buf.hasRemaining()) buf.get().toInt() and 0xFF else DEFAULT_CAP_JOIN
-        // 13.2 — optional trailing gradient block.
-        val gradient = FillStyle.decode(buf)
-        return PathPayload(
-            anchors = anchors,
-            closed = (flags and FLAG_CLOSED) != 0,
-            fillArgb = fillArgb,
-            strokeStyle = strokeStyle,
-            capJoin = capJoin,
-            gradient = gradient,
-        )
+        return anchors
     }
 
     /**
-     * Apply a [StrokeTransform]-layout affine. Anchor points map through the
-     * full matrix; handle deltas through the **linear part only** (no
-     * translation), so moving a path never distorts its curvature and
-     * rotation / scale act on handles exactly.
+     * Apply a [StrokeTransform]-layout affine to **every** subpath. Anchor
+     * points map through the full matrix; handle deltas through the
+     * **linear part only** (no translation), so moving a path never
+     * distorts its curvature and rotation / scale act on handles exactly.
      */
     fun transform(payload: PathPayload, m: FloatArray): PathPayload {
         fun tx(x: Float, y: Float) = m[0] * x + m[1] * y + m[2]
@@ -162,12 +306,16 @@ object PathCodec {
         fun dx(x: Float, y: Float) = m[0] * x + m[1] * y
         fun dy(x: Float, y: Float) = m[3] * x + m[4] * y
         return payload.copy(
-            anchors = payload.anchors.map { a ->
-                Anchor(
-                    x = tx(a.x, a.y), y = ty(a.x, a.y),
-                    inDx = dx(a.inDx, a.inDy), inDy = dy(a.inDx, a.inDy),
-                    outDx = dx(a.outDx, a.outDy), outDy = dy(a.outDx, a.outDy),
-                    type = a.type,
+            subpaths = payload.subpaths.map { sub ->
+                sub.copy(
+                    anchors = sub.anchors.map { a ->
+                        Anchor(
+                            x = tx(a.x, a.y), y = ty(a.x, a.y),
+                            inDx = dx(a.inDx, a.inDy), inDy = dy(a.inDx, a.inDy),
+                            outDx = dx(a.outDx, a.outDy), outDy = dy(a.outDx, a.outDy),
+                            type = a.type,
+                        )
+                    },
                 )
             },
         )
@@ -175,11 +323,11 @@ object PathCodec {
 
     /**
      * Control points of segment [index] as `[x0,y0, c1x,c1y, c2x,c2y, x1,y1]`.
-     * The closing segment (closed paths only) is `index == anchors.size - 1`.
+     * The closing segment (closed subpaths only) is `index == anchors.size - 1`.
      */
-    fun segment(payload: PathPayload, index: Int): FloatArray {
-        val a = payload.anchors[index]
-        val b = payload.anchors[(index + 1) % payload.anchors.size]
+    fun segment(sub: Subpath, index: Int): FloatArray {
+        val a = sub.anchors[index]
+        val b = sub.anchors[(index + 1) % sub.anchors.size]
         return floatArrayOf(
             a.x, a.y,
             a.x + a.outDx, a.y + a.outDy,
@@ -189,13 +337,37 @@ object PathCodec {
     }
 
     /**
-     * Exact world-space bounds `[minX, minY, maxX, maxY]`, or null for
-     * empty paths. Solves the cubic-extrema quadratic per segment per axis
-     * rather than enveloping the control points, so selection rectangles
-     * hug the curve.
+     * Segment of the **first** subpath — node-edit / single-subpath callers
+     * only (the node editor is gated to single-subpath payloads).
+     */
+    fun segment(payload: PathPayload, index: Int): FloatArray =
+        segment(payload.subpaths[0], index)
+
+    /**
+     * Exact world-space bounds `[minX, minY, maxX, maxY]` across **all**
+     * subpaths, or null for empty paths. Solves the cubic-extrema quadratic
+     * per segment per axis rather than enveloping the control points, so
+     * selection rectangles hug the curve.
      */
     fun boundsOf(payload: PathPayload): FloatArray? {
-        if (payload.anchors.isEmpty()) return null
+        var out: FloatArray? = null
+        for (sub in payload.subpaths) {
+            val b = boundsOf(sub) ?: continue
+            if (out == null) {
+                out = b
+            } else {
+                if (b[0] < out[0]) out[0] = b[0]
+                if (b[1] < out[1]) out[1] = b[1]
+                if (b[2] > out[2]) out[2] = b[2]
+                if (b[3] > out[3]) out[3] = b[3]
+            }
+        }
+        return out
+    }
+
+    /** Exact bounds of one subpath, or null when it has no anchors. */
+    fun boundsOf(sub: Subpath): FloatArray? {
+        if (sub.anchors.isEmpty()) return null
         var minX = Float.POSITIVE_INFINITY
         var minY = Float.POSITIVE_INFINITY
         var maxX = Float.NEGATIVE_INFINITY
@@ -206,13 +378,13 @@ object PathCodec {
             if (y < minY) minY = y
             if (y > maxY) maxY = y
         }
-        if (payload.anchors.size == 1) {
-            val a = payload.anchors[0]
+        if (sub.anchors.size == 1) {
+            val a = sub.anchors[0]
             include(a.x, a.y)
             return floatArrayOf(minX, minY, maxX, maxY)
         }
-        for (i in 0 until payload.segmentCount) {
-            val s = segment(payload, i)
+        for (i in 0 until sub.segmentCount) {
+            val s = segment(sub, i)
             include(s[0], s[1])
             include(s[6], s[7])
             axisExtrema(s[0], s[2], s[4], s[6]) { t ->
@@ -253,24 +425,24 @@ object PathCodec {
     }
 
     /**
-     * Flatten to a world-space polyline `[x0,y0, x1,y1, …]` at
+     * Flatten one subpath to a world-space polyline `[x0,y0, x1,y1, …]` at
      * [stepsPerSegment] uniform-t samples per cubic. Includes the start
-     * anchor once and, for closed paths, ends back at it — so the result is
-     * directly usable for polygon containment and segment-distance walks.
+     * anchor once and, for closed subpaths, ends back at it — so the result
+     * is directly usable for polygon containment and segment-distance walks.
      */
-    fun flatten(payload: PathPayload, stepsPerSegment: Int = FLATTEN_STEPS): FloatArray {
-        val segs = payload.segmentCount
+    fun flatten(sub: Subpath, stepsPerSegment: Int = FLATTEN_STEPS): FloatArray {
+        val segs = sub.segmentCount
         if (segs == 0) {
-            val a = payload.anchors.firstOrNull() ?: return FloatArray(0)
+            val a = sub.anchors.firstOrNull() ?: return FloatArray(0)
             return floatArrayOf(a.x, a.y)
         }
         val out = FloatArray((segs * stepsPerSegment + 1) * 2)
-        val first = payload.anchors[0]
+        val first = sub.anchors[0]
         out[0] = first.x
         out[1] = first.y
         var w = 2
         for (i in 0 until segs) {
-            val s = segment(payload, i)
+            val s = segment(sub, i)
             for (step in 1..stepsPerSegment) {
                 val t = step.toFloat() / stepsPerSegment
                 out[w] = cubicAt(s[0], s[2], s[4], s[6], t)
@@ -280,4 +452,15 @@ object PathCodec {
         }
         return out
     }
+
+    /**
+     * Flatten the **first** subpath — node-edit / single-subpath callers
+     * only. Multi-subpath consumers (hit testing) use [flattenAll].
+     */
+    fun flatten(payload: PathPayload, stepsPerSegment: Int = FLATTEN_STEPS): FloatArray =
+        payload.subpaths.firstOrNull()?.let { flatten(it, stepsPerSegment) } ?: FloatArray(0)
+
+    /** 16.1 — one flattened polyline per subpath. */
+    fun flattenAll(payload: PathPayload, stepsPerSegment: Int = FLATTEN_STEPS): List<FloatArray> =
+        payload.subpaths.map { flatten(it, stepsPerSegment) }
 }

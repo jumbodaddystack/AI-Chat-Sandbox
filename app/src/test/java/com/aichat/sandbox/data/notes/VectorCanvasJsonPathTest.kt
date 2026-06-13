@@ -63,7 +63,8 @@ class VectorCanvasJsonPathTest {
 
     @Test
     fun openPathReportsClosedFalseAndNoFill() {
-        val payload = triangle(fill = 0xFF2463EB.toInt()).copy(closed = false)
+        val payload = triangle(fill = 0xFF2463EB.toInt())
+            .let { it.withSingleSubpath(it.anchors, closed = false) }
         val result = VectorCanvasJson.serialize(
             listOf(pathItem("uuid-3", payload)),
             bounds = null,

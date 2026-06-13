@@ -1,7 +1,6 @@
 package com.aichat.sandbox.data.notes
 
 import android.content.Context
-import android.graphics.Color
 import android.net.Uri
 import androidx.core.content.FileProvider
 import com.aichat.sandbox.data.model.Note
@@ -16,6 +15,7 @@ import com.aichat.sandbox.ui.components.notes.StickyCodec
 import com.aichat.sandbox.ui.components.notes.ShapeCodec
 import com.aichat.sandbox.ui.components.notes.ShapeRenderer
 import com.aichat.sandbox.ui.components.notes.StrokeCodec
+import com.aichat.sandbox.ui.components.notes.StrokeOutliner
 import com.aichat.sandbox.ui.components.notes.StrokeRenderer
 import com.aichat.sandbox.ui.components.notes.TextItemCodec
 import com.aichat.sandbox.ui.components.notes.TextItemRenderer
@@ -41,7 +41,9 @@ import kotlin.math.roundToInt
  *
  * Stroke widths are reduced to a single mean per stroke because SVG `path`
  * does not support per-segment widths. This is a documented lossy step:
- * pressure-modulated strokes flatten to their average width.
+ * pressure-modulated strokes flatten to their average width — unless the
+ * caller opts into `preservePressure` (Phase 15.1), which exports
+ * variable-width strokes as filled [StrokeOutliner] outlines instead.
  */
 @Singleton
 class NoteSvgExporter @Inject constructor(
@@ -54,8 +56,10 @@ class NoteSvgExporter @Inject constructor(
         items: List<NoteItem>,
         /** Sub-phase 8.1 — if non-null, bound the viewBox + content to this frame. */
         frameBounds: FloatArray? = null,
+        /** Phase 15.1 — export variable-width strokes as filled outlines. */
+        preservePressure: Boolean = false,
     ): Uri = withContext(Dispatchers.IO) {
-        val svg = renderSvg(note, items, context.filesDir, frameBounds)
+        val svg = renderSvg(note, items, context.filesDir, frameBounds, preservePressure)
         val dir = exportsDir().apply { if (!exists()) mkdirs() }
         val outName = "${NoteExporter.sanitizeBaseName(note.title)}-${System.currentTimeMillis()}.svg"
         val finalFile = File(dir, outName)
@@ -94,6 +98,8 @@ class NoteSvgExporter @Inject constructor(
             filesDir: java.io.File? = null,
             /** Sub-phase 8.1 — bound viewBox and item filter to this frame. */
             frameBounds: FloatArray? = null,
+            /** Phase 15.1 — export variable-width strokes as filled outlines. */
+            preservePressure: Boolean = false,
         ): String {
             val baseBounds = frameBounds
                 ?: NoteRasterizer.computeBounds(items)
@@ -145,7 +151,7 @@ class NoteSvgExporter @Inject constructor(
             for (item in visibleItems.sortedBy { it.zIndex }) {
                 val gradId = gradients[item.id]?.first
                 when (item.kind) {
-                    "stroke" -> appendStroke(sb, item)
+                    "stroke" -> appendStroke(sb, item, preservePressure)
                     Shape.KIND -> appendShape(sb, item, gradId)
                     TextItemCodec.KIND -> appendText(sb, item)
                     NoteItem.KIND_IMAGE -> appendImage(sb, item, filesDir)
@@ -158,13 +164,19 @@ class NoteSvgExporter @Inject constructor(
             return sb.toString()
         }
 
-        private fun appendStroke(sb: StringBuilder, item: NoteItem) {
+        private fun appendStroke(sb: StringBuilder, item: NoteItem, preservePressure: Boolean) {
             val samples = StrokeCodec.decode(item.payload)
             val count = samples.size / StrokeCodec.FLOATS_PER_SAMPLE
             if (count < 1) return
+            if (preservePressure &&
+                StrokeOutliner.hasVariableWidth(samples, item.tool, item.baseWidthPx)
+            ) {
+                appendStrokeOutline(sb, item, samples)
+                return
+            }
             val s = StrokeCodec.FLOATS_PER_SAMPLE
             val color = colorToHex(item.colorArgb)
-            val alpha = Color.alpha(item.colorArgb) / 255f
+            val alpha = ((item.colorArgb ushr 24) and 0xFF) / 255f
             val width = strokeMeanWidth(item)
             sb.append("    <path d=\"")
             if (count == 1) {
@@ -200,6 +212,22 @@ class NoteSvgExporter @Inject constructor(
         }
 
         /**
+         * Phase 15.1 — variable-width stroke as a single filled outline. The
+         * geometry follows the renderer's [com.aichat.sandbox.ui.components.notes.ToolDynamics]
+         * width curve exactly, so the export matches what's on screen.
+         */
+        private fun appendStrokeOutline(sb: StringBuilder, item: NoteItem, samples: FloatArray) {
+            val outline = StrokeOutliner.outline(samples, item.tool, item.baseWidthPx)
+            if (outline.size < 6) return
+            val alpha = ((item.colorArgb ushr 24) and 0xFF) / 255f
+            sb.append("    <path d=\"").append(StrokeOutliner.pathData(outline, ::fmt))
+                .append("\" fill=\"").append(colorToHex(item.colorArgb))
+                .append("\" stroke=\"none\"")
+            if (alpha < 1f) sb.append(" fill-opacity=\"").append(fmt(alpha)).append('"')
+            sb.append("/>\n")
+        }
+
+        /**
          * 13.2 — scan [items] for gradient fills: item id → (`gradN` def id,
          * gradient). LinkedHashMap so the `<defs>` order is deterministic.
          */
@@ -212,7 +240,7 @@ class NoteSvgExporter @Inject constructor(
                     when (item.kind) {
                         Shape.KIND -> ShapeCodec.decode(item.payload).gradient
                         PathCodec.KIND -> PathCodec.decode(item.payload)
-                            .takeIf { it.closed }?.gradient
+                            .takeIf { it.anyClosed }?.gradient
                         StickyCodec.KIND -> StickyCodec.decode(item.payload).gradient
                         else -> null
                     }
@@ -551,18 +579,23 @@ class NoteSvgExporter @Inject constructor(
          */
         private fun appendPathItem(sb: StringBuilder, item: NoteItem, gradId: String? = null) {
             val payload = PathCodec.decode(item.payload)
-            if (payload.anchors.size < 2) return
+            if (payload.subpaths.none { it.anchors.size >= 2 }) return
             val color = colorToHex(item.colorArgb)
+            val filled = payload.anyClosed && (gradId != null || payload.fillArgb != 0)
             val fill = when {
-                payload.closed && gradId != null -> "url(#$gradId)"
-                payload.closed && payload.fillArgb != 0 -> colorToHex(payload.fillArgb)
+                payload.anyClosed && gradId != null -> "url(#$gradId)"
+                payload.anyClosed && payload.fillArgb != 0 -> colorToHex(payload.fillArgb)
                 else -> "none"
             }
             val width = item.baseWidthPx
             val dash = dashArrayFor(payload.strokeStyle, width)
             sb.append("    <path d=\"").append(pathData(payload))
                 .append("\" fill=\"").append(fill).append('"')
-                .append(" stroke=\"").append(color).append('"')
+            // 16.1 — multi-subpath even-odd fills (imported icons with holes).
+            if (filled && payload.fillRule == PathCodec.FILL_RULE_EVEN_ODD) {
+                sb.append(" fill-rule=\"evenodd\"")
+            }
+            sb.append(" stroke=\"").append(color).append('"')
                 .append(" stroke-width=\"").append(fmt(width)).append('"')
                 .append(" stroke-linecap=\"").append(capName(payload.capJoin)).append('"')
                 .append(" stroke-linejoin=\"").append(joinName(payload.capJoin)).append('"')
@@ -570,19 +603,25 @@ class NoteSvgExporter @Inject constructor(
             sb.append("/>\n")
         }
 
-        /** SVG path data for a [PathCodec.PathPayload] — shared with tests. */
+        /**
+         * SVG path data for a [PathCodec.PathPayload] — shared with tests.
+         * 16.1 — one `M …C…(Z)` run per subpath in a single `d` string, so
+         * hole rings stay inside the same fill.
+         */
         internal fun pathData(payload: PathCodec.PathPayload): String {
-            val sb = StringBuilder(payload.anchors.size * 32)
-            val first = payload.anchors[0]
-            sb.append('M').append(fmt(first.x)).append(' ').append(fmt(first.y))
-            for (i in 0 until payload.segmentCount) {
-                val s = PathCodec.segment(payload, i)
-                sb.append('C')
-                    .append(fmt(s[2])).append(' ').append(fmt(s[3])).append(' ')
-                    .append(fmt(s[4])).append(' ').append(fmt(s[5])).append(' ')
-                    .append(fmt(s[6])).append(' ').append(fmt(s[7]))
+            val sb = StringBuilder(payload.subpaths.sumOf { it.anchors.size } * 32)
+            for (sub in payload.subpaths) {
+                val first = sub.anchors.firstOrNull() ?: continue
+                sb.append('M').append(fmt(first.x)).append(' ').append(fmt(first.y))
+                for (i in 0 until sub.segmentCount) {
+                    val s = PathCodec.segment(sub, i)
+                    sb.append('C')
+                        .append(fmt(s[2])).append(' ').append(fmt(s[3])).append(' ')
+                        .append(fmt(s[4])).append(' ').append(fmt(s[5])).append(' ')
+                        .append(fmt(s[6])).append(' ').append(fmt(s[7]))
+                }
+                if (sub.closed) sb.append('Z')
             }
-            if (payload.closed) sb.append('Z')
             return sb.toString()
         }
 

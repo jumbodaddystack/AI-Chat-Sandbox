@@ -35,6 +35,8 @@ data class PalettePrefs(
     val inkBeautify: Boolean? = null,
     // Sub-phase 14.2 — connector route style. Null = never saved.
     val connectorRouteStyle: Int? = null,
+    // Phase 15.3 — icon pixel grid (snap + keylines on icon artboards).
+    val iconPixelGrid: Boolean = true,
 )
 
 /**
@@ -71,6 +73,7 @@ class ToolPalettePrefsStore @Inject constructor(
             stickyFillColor = p[KEY_STICKY_FILL_COLOR],
             inkBeautify = p[KEY_INK_BEAUTIFY],
             connectorRouteStyle = p[KEY_CONNECTOR_ROUTE_STYLE],
+            iconPixelGrid = p[KEY_ICON_PIXEL_GRID] ?: true,
         )
     }
 
@@ -109,6 +112,10 @@ class ToolPalettePrefsStore @Inject constructor(
         dataStore.edit { it[KEY_FINGER_DRAWING] = enabled }
     }
 
+    suspend fun setIconPixelGrid(enabled: Boolean) {
+        dataStore.edit { it[KEY_ICON_PIXEL_GRID] = enabled }
+    }
+
     companion object {
         /** Ink tool ids with a persisted colour/width slot — matches `Tool.isInk`. */
         val INK_TOOL_IDS: Set<String> = setOf("pen", "highlighter", "pencil")
@@ -122,6 +129,7 @@ class ToolPalettePrefsStore @Inject constructor(
         private val KEY_STICKY_FILL_COLOR = intPreferencesKey("sticky_fill_color")
         private val KEY_INK_BEAUTIFY = booleanPreferencesKey("ink_beautify")
         private val KEY_CONNECTOR_ROUTE_STYLE = intPreferencesKey("connector_route_style")
+        private val KEY_ICON_PIXEL_GRID = booleanPreferencesKey("icon_pixel_grid")
 
         private fun colorKey(toolId: String) = intPreferencesKey("ink_color_$toolId")
         private fun widthKey(toolId: String) = floatPreferencesKey("ink_width_$toolId")

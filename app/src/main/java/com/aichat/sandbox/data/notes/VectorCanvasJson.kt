@@ -306,19 +306,38 @@ object VectorCanvasJson {
                 } catch (_: Throwable) {
                     return null
                 }
-                if (payload.closed && payload.fillArgb != 0) {
+                if (payload.anyClosed && payload.fillArgb != 0) {
                     obj.addProperty("fill", colorToHex(payload.fillArgb))
                 }
-                obj.addProperty("closed", payload.closed)
-                val arr = JsonArray(payload.anchors.size)
-                for (a in payload.anchors) {
-                    val anchor = JsonArray(6)
-                    anchor.add(round1(a.x)); anchor.add(round1(a.y))
-                    anchor.add(round1(a.inDx)); anchor.add(round1(a.inDy))
-                    anchor.add(round1(a.outDx)); anchor.add(round1(a.outDy))
-                    arr.add(anchor)
+                fun anchorsArray(anchors: List<PathCodec.Anchor>): JsonArray {
+                    val arr = JsonArray(anchors.size)
+                    for (a in anchors) {
+                        val anchor = JsonArray(6)
+                        anchor.add(round1(a.x)); anchor.add(round1(a.y))
+                        anchor.add(round1(a.inDx)); anchor.add(round1(a.inDy))
+                        anchor.add(round1(a.outDx)); anchor.add(round1(a.outDy))
+                        arr.add(anchor)
+                    }
+                    return arr
                 }
-                obj.add("anchors", arr)
+                if (payload.subpaths.size <= 1) {
+                    // Pre-16.1 shape, byte-stable for single-subpath paths.
+                    obj.addProperty("closed", payload.closed)
+                    obj.add("anchors", anchorsArray(payload.anchors))
+                } else {
+                    // 16.1 — multi-subpath payloads (boolean holes, imports).
+                    if (payload.fillRule == PathCodec.FILL_RULE_EVEN_ODD) {
+                        obj.addProperty("fillRule", "evenodd")
+                    }
+                    val subs = JsonArray(payload.subpaths.size)
+                    for (sub in payload.subpaths) {
+                        val subObj = JsonObject()
+                        subObj.addProperty("closed", sub.closed)
+                        subObj.add("anchors", anchorsArray(sub.anchors))
+                        subs.add(subObj)
+                    }
+                    obj.add("subpaths", subs)
+                }
             }
             else -> return null
         }

@@ -17,17 +17,29 @@ import com.aichat.sandbox.data.model.NoteItem
  */
 object PathRenderer {
 
-    /** Rebuild [path] (reset + cubics) from [payload]. */
+    /**
+     * Rebuild [path] (reset + cubics) from [payload]. 16.1 — every subpath
+     * lands in the one [Path] (moveTo per contour) with the payload's fill
+     * rule, so hole rings punch through the fill: clipper output holes via
+     * opposite winding under the default WINDING type, imported even-odd
+     * geometry via [Path.FillType.EVEN_ODD].
+     */
     fun buildPath(payload: PathCodec.PathPayload, path: Path) {
         path.reset()
-        if (payload.anchors.isEmpty()) return
-        val first = payload.anchors[0]
-        path.moveTo(first.x, first.y)
-        for (i in 0 until payload.segmentCount) {
-            val s = PathCodec.segment(payload, i)
-            path.cubicTo(s[2], s[3], s[4], s[5], s[6], s[7])
+        path.fillType = if (payload.fillRule == PathCodec.FILL_RULE_EVEN_ODD) {
+            Path.FillType.EVEN_ODD
+        } else {
+            Path.FillType.WINDING
         }
-        if (payload.closed) path.close()
+        for (sub in payload.subpaths) {
+            val first = sub.anchors.firstOrNull() ?: continue
+            path.moveTo(first.x, first.y)
+            for (i in 0 until sub.segmentCount) {
+                val s = PathCodec.segment(sub, i)
+                path.cubicTo(s[2], s[3], s[4], s[5], s[6], s[7])
+            }
+            if (sub.closed) path.close()
+        }
     }
 
     /** Draw [item] (whose payload decodes via [PathCodec]). */
@@ -44,7 +56,7 @@ object PathRenderer {
         paint: Paint,
         scratchPath: Path = Path(),
     ) {
-        if (payload.anchors.size < 2) return
+        if (payload.subpaths.none { it.anchors.size >= 2 }) return
         ShapeRenderer.configurePaint(paint, colorArgb, strokeWidth, payload.strokeStyle)
         paint.strokeCap = when (PathCodec.cap(payload.capJoin)) {
             PathCodec.CAP_BUTT -> Paint.Cap.BUTT
@@ -57,7 +69,7 @@ object PathRenderer {
             else -> Paint.Join.ROUND
         }
         buildPath(payload, scratchPath)
-        if (payload.closed && (payload.fillArgb != 0 || payload.gradient != null)) {
+        if (payload.anyClosed && (payload.fillArgb != 0 || payload.gradient != null)) {
             val strokeColor = paint.color
             val strokeAlpha = paint.alpha
             val strokeEffect = paint.pathEffect

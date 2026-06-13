@@ -82,6 +82,21 @@ class DrawingSurface(context: Context) : View(context) {
         }
 
     /**
+     * Phase 15.3 — icon pixel grid. World units per icon pixel; when > 0
+     * (and an artboard is set) shape endpoints and pen anchors quantize to
+     * the grid and the keyline overlay renders. 0 = off (notes default).
+     * The grid itself is the artboard's graph background — one 32-world
+     * cell per icon pixel for every icon canvas size — so this only adds
+     * the snap behaviour and the optical guides.
+     */
+    var pixelGridSpacingWorld: Float = 0f
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+
+    /**
      * Sketch-attachment mode (sub-phase 3.4). When enabled:
      *  - every pointer (finger or stylus) is routed through the ink path so
      *    the chat composer's sheet works without an S-Pen,
@@ -505,6 +520,12 @@ class DrawingSurface(context: Context) : View(context) {
             }
         }
 
+        // Phase 15.3 — icon keylines above the committed scene, below the
+        // interaction affordances.
+        if (pixelGridSpacingWorld > 0f && clip != null) {
+            drawIconKeylines(canvas, clip)
+        }
+
         drawSelectedItems(canvas)
 
         if (strokeTool.isLasso && lassoCount > 0) {
@@ -585,6 +606,46 @@ class DrawingSurface(context: Context) : View(context) {
         val right = viewport.worldToScreenX(bounds[2])
         val bottom = viewport.worldToScreenY(bounds[3])
         canvas.clipRect(left, top, right, bottom)
+    }
+
+    private val keylinePaint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.STROKE
+        strokeWidth = KEYLINE_WIDTH_PX
+        color = KEYLINE_COLOR
+    }
+
+    /**
+     * Phase 15.3 — Material-style icon keylines over the artboard: keyline
+     * circle (20/24 of the grid), live-area square (18/24) and a centre
+     * cross. Screen space so the line weight stays zoom-stable; the pixel
+     * grid itself comes from the artboard's graph background.
+     */
+    private fun drawIconKeylines(canvas: Canvas, bounds: FloatArray) {
+        val left = viewport.worldToScreenX(bounds[0])
+        val top = viewport.worldToScreenY(bounds[1])
+        val right = viewport.worldToScreenX(bounds[2])
+        val bottom = viewport.worldToScreenY(bounds[3])
+        val w = right - left
+        if (w <= 0f || bottom - top <= 0f) return
+        val cx = (left + right) * 0.5f
+        val cy = (top + bottom) * 0.5f
+        canvas.drawCircle(cx, cy, w * (10f / 24f), keylinePaint)
+        val half = w * (9f / 24f)
+        canvas.drawRect(cx - half, cy - half, cx + half, cy + half, keylinePaint)
+        canvas.drawLine(cx, top, cx, bottom, keylinePaint)
+        canvas.drawLine(left, cy, right, cy, keylinePaint)
+    }
+
+    /**
+     * Phase 15.3 — quantize a world point to the icon pixel grid, or null
+     * when the grid is inactive. Unconditional (no tolerance window) and
+     * clamped to the artboard, mirroring [EditSnap]'s reducer contract.
+     */
+    private fun pixelQuantize(wx: Float, wy: Float): Snap.SnapResult? {
+        val clip = artboardClipBounds ?: return null
+        if (pixelGridSpacingWorld <= 0f) return null
+        return EditSnap.quantizeInBounds(wx, wy, clip, pixelGridSpacingWorld)
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
@@ -1824,7 +1885,12 @@ class DrawingSurface(context: Context) : View(context) {
                 penClosingTap = penAnchors.size >= MIN_PEN_ANCHORS_TO_CLOSE &&
                     hypot(penAnchors[0].x - wx, penAnchors[0].y - wy) <
                     PEN_CLOSE_RADIUS_PX / viewport.scale.coerceAtLeast(MIN_DIV_SCALE)
-                penCandidate = if (penClosingTap) null else PathCodec.Anchor(wx, wy)
+                // Phase 15.3 — icon pixel grid: pen anchors land on the grid
+                // (handles stay free so curves remain expressive).
+                penCandidate = if (penClosingTap) null else {
+                    val q = pixelQuantize(wx, wy)
+                    PathCodec.Anchor(q?.x ?: wx, q?.y ?: wy)
+                }
                 invalidate()
                 true
             }
@@ -1991,8 +2057,10 @@ class DrawingSurface(context: Context) : View(context) {
                 strokeColor = inkColor
                 strokeWidthPx = baseWidthPx
                 if (selectedIds.isNotEmpty()) selectionShouldClearListener?.invoke()
-                val wx = viewport.screenToWorldX(event.x)
-                val wy = viewport.screenToWorldY(event.y)
+                var wx = viewport.screenToWorldX(event.x)
+                var wy = viewport.screenToWorldY(event.y)
+                // Phase 15.3 — icon pixel grid: shape starts land on the grid.
+                pixelQuantize(wx, wy)?.let { wx = it.x; wy = it.y }
                 shapeStartX = wx
                 shapeStartY = wy
                 shapeEndX = wx
@@ -2057,7 +2125,7 @@ class DrawingSurface(context: Context) : View(context) {
      * for the magenta dot decay and returns the (snapped or raw) `(x, y)`.
      */
     private fun snapShapeEndpoint(rawX: Float, rawY: Float): FloatArray {
-        if (snapMask == 0) return floatArrayOf(rawX, rawY)
+        if (snapMask == 0 && pixelGridSpacingWorld <= 0f) return floatArrayOf(rawX, rawY)
         var x = rawX
         var y = rawY
         var snapped = false
@@ -2088,6 +2156,10 @@ class DrawingSurface(context: Context) : View(context) {
             snapAnchorTimestamp = System.currentTimeMillis()
             postInvalidateOnAnimation()
         }
+        // Phase 15.3 — icon pixel grid: unconditional quantize as the final
+        // step so committed shape geometry lands exactly on the icon grid.
+        // No snap marker — quantization is the steady state, not an event.
+        pixelQuantize(x, y)?.let { q -> x = q.x; y = q.y }
         return floatArrayOf(x, y)
     }
 
@@ -2310,6 +2382,10 @@ class DrawingSurface(context: Context) : View(context) {
         private const val SNAP_FADE_MS: Long = 280L
         private const val SNAP_MARKER_RADIUS_PX: Float = 5f
 
+        // ── Icon pixel grid (phase 15.3) ───────────────────────────────
+        private const val KEYLINE_WIDTH_PX: Float = 1f
+        private const val KEYLINE_COLOR: Int = 0x4D1E88E5  // 30% canvas blue
+
         // ── Presentation laser (sub-phase 11.5) ───────────────────────
         private const val LASER_FADE_MS: Long = 900L
         private const val LASER_CORE_COLOR: Int = 0xFFFF1744.toInt()
@@ -2381,6 +2457,8 @@ fun DrawingSurfaceView(
     // Icon artboard world-rect; when non-null, ink is clipped to it (bounded
     // canvas). Null for notes (infinite canvas).
     artboardClipBounds: FloatArray? = null,
+    // Phase 15.3 — icon pixel grid: world units per icon pixel (0 = off).
+    pixelGridSpacingWorld: Float = 0f,
 ) {
     val currentOnCommit by rememberUpdatedState(onStrokeCommitted)
     val currentOnErase by rememberUpdatedState(onItemsErased)
@@ -2434,6 +2512,7 @@ fun DrawingSurfaceView(
             view.frameTapListener = { wx, wy -> currentOnFrameTap(wx, wy) }
             view.backgroundStyle = backgroundStyle
             view.artboardClipBounds = artboardClipBounds
+            view.pixelGridSpacingWorld = pixelGridSpacingWorld
             view.setToolConfig(
                 tool = paletteState.selected,
                 colorArgb = paletteState.activeInkColor(),
