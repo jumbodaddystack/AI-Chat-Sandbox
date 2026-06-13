@@ -751,6 +751,7 @@ fun NoteEditorScreen(
                         onImmediateEdit = { payload, description ->
                             viewModel.applyPathNodeEdit(nodeEditItem.id, payload, description)
                         },
+                        onDeleteItem = { viewModel.deleteNodeEditItem(nodeEditItem.id) },
                         onDone = viewModel::exitNodeEdit,
                     )
                 }

@@ -1769,36 +1769,45 @@ class NoteEditorViewModel @Inject constructor(
     val nodeEditTarget: StateFlow<String?> = _nodeEditTarget.asStateFlow()
 
     /**
-     * True when the selection is exactly one **single-subpath** path item
-     * (gates "Edit nodes"). 16.1 — multi-subpath payloads (boolean results
-     * with holes, imported vectors) are excluded: the node editor's
-     * selection model is flat anchor indices over one contour.
+     * True when the selection is exactly one path item (gates "Edit nodes").
+     * 17.2 — multi-subpath payloads (boolean results with holes, imported
+     * vectors) are now editable too; the editor's selection model carries a
+     * `(subpath, anchor)` pair, so no single-subpath restriction remains.
      */
     fun selectionIsSinglePath(): Boolean {
         val ids = _selection.value
         if (ids.size != 1) return false
         val id = ids.first()
-        val item = items.firstOrNull { it.id == id && it.kind == PathCodec.KIND } ?: return false
-        return isSingleSubpath(item)
+        return items.any { it.id == id && it.kind == PathCodec.KIND }
     }
 
     fun enterNodeEdit() {
         val ids = _selection.value
         if (ids.size != 1) return
         val item = items.firstOrNull { it.id == ids.first() } ?: return
-        if (item.kind != PathCodec.KIND || !isSingleSubpath(item)) return
+        if (item.kind != PathCodec.KIND) return
         clearSelection()
         _nodeEditTarget.value = item.id
     }
 
-    private fun isSingleSubpath(item: NoteItem): Boolean = try {
-        PathCodec.decode(item.payload).subpaths.size == 1
-    } catch (_: IllegalArgumentException) {
-        false
-    }
-
     fun exitNodeEdit() {
         _nodeEditTarget.value = null
+    }
+
+    /**
+     * 17.2 — the node editor deleted the path's last drawable anchors,
+     * emptying every subpath. Remove the whole item (one `CompositeEdit`, so
+     * undo restores it) and leave node-edit mode.
+     */
+    fun deleteNodeEditItem(itemId: String) {
+        val item = items.firstOrNull { it.id == itemId } ?: return
+        apply(EditorAction.CompositeEdit(
+            description = "Delete path",
+            added = emptyList(),
+            removed = listOf(item),
+            modified = emptyList(),
+        ))
+        exitNodeEdit()
     }
 
     /**
