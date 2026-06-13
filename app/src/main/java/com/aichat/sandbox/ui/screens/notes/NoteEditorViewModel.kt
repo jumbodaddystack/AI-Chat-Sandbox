@@ -33,6 +33,7 @@ import com.aichat.sandbox.data.notes.NoteSvgExporter
 import com.aichat.sandbox.data.notes.PdfLayout
 import com.aichat.sandbox.data.notes.PendingDraftStore
 import com.aichat.sandbox.data.notes.RecentColorsStore
+import com.aichat.sandbox.data.notes.StampSearch
 import com.aichat.sandbox.data.notes.ToolPalettePrefsStore
 import com.aichat.sandbox.data.repository.BrushPresetRepository
 import com.aichat.sandbox.data.repository.ChatRepository
@@ -920,11 +921,66 @@ class NoteEditorViewModel @Inject constructor(
             initialValue = emptyList(),
         )
 
+    // ── Stamp library tags + search (Phase 17.5 follow-on, mirrors 17.1) ──
+
+    /** `stampId → normalized tags`, derived from the junction table. */
+    val stampTags: StateFlow<Map<String, List<String>>> = stampRepository.observeAllTags()
+        .map { rows -> StampSearch.groupTags(rows.map { it.stampId to it.tag }) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000L),
+            initialValue = emptyMap(),
+        )
+
+    /** Distinct stamp tags with counts — the drawer's filter-chip row. */
+    val stampTagCounts: StateFlow<List<com.aichat.sandbox.data.local.TagCount>> =
+        stampRepository.observeTagCounts()
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5_000L),
+                initialValue = emptyList(),
+            )
+
+    private val _stampQuery = MutableStateFlow("")
+    val stampQuery: StateFlow<String> = _stampQuery.asStateFlow()
+
+    private val _stampTagFilter = MutableStateFlow<String?>(null)
+    val stampTagFilter: StateFlow<String?> = _stampTagFilter.asStateFlow()
+
+    /** Stamps after the active search query + tag-chip filter (drawer content). */
+    val filteredStamps: StateFlow<List<Stamp>> = combine(
+        stamps, stampTags, _stampQuery, _stampTagFilter,
+    ) { all, tags, query, tagFilter ->
+        StampSearch.filter(all, tags, query, tagFilter)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000L),
+        initialValue = emptyList(),
+    )
+
+    fun setStampQuery(query: String) { _stampQuery.value = query }
+
+    /** Toggle a tag chip: tapping the active one clears the filter. */
+    fun setStampTagFilter(tag: String?) {
+        _stampTagFilter.value = if (tag != null && tag == _stampTagFilter.value) null else tag
+    }
+
+    /** Replace a stamp's tag set (free-form input parsed via [com.aichat.sandbox.data.notes.IconTags]). */
+    fun setStampTags(stampId: String, rawInput: String) {
+        viewModelScope.launch {
+            stampRepository.setTags(stampId, com.aichat.sandbox.data.notes.IconTags.parse(rawInput))
+        }
+    }
+
     private val _stampDrawerOpen = MutableStateFlow(false)
     val stampDrawerOpen: StateFlow<Boolean> = _stampDrawerOpen.asStateFlow()
 
     fun openStampDrawer() { _stampDrawerOpen.value = true }
-    fun closeStampDrawer() { _stampDrawerOpen.value = false }
+    fun closeStampDrawer() {
+        _stampDrawerOpen.value = false
+        _stampQuery.value = ""
+        _stampTagFilter.value = null
+    }
 
     /**
      * Sub-phase 8.3 — save the current selection as a reusable stamp.

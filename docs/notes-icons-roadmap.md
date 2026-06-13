@@ -177,10 +177,20 @@ follow-ons.
 
 ### Smaller follow-ons
 
-- **Wire `WidthMode.OUTLINE_FILL`** in
-  `data/vector/notesbridge/NoteVectorBridge.kt` (documented deferral; the
-  geometry — `StrokeOutliner` / `VariableWidthOutliner` — already exists).
+- ✅ **shipped** — **Wire `WidthMode.OUTLINE_FILL`**: `StrokeVectorizer` now
+  traces a stroke's pressure-modulated edges (`StrokeOutliner`) into a closed,
+  RDP-simplified filled `EditablePath` when `OUTLINE_FILL` is requested;
+  uniform-width strokes fall back to the stroked centerline. JVM-tested.
+- ✅ **shipped** — **Bundled "tidy" pass**: `NoteTidy` (pure) composes
+  simplify + snap-to-grid + `merge_paths` over a selection into one
+  `CompositeEdit`; `NoteEditorViewModel.tidySelection` + a SelectionOverlay
+  "Tidy" action. JVM-tested.
+- ✅ **shipped** — **Stamp library tagging/search**: mirrors 17.1's tag model
+  — `stamp_tags` junction table (DB v21→22, cascade, indexed), `StampTagDao`,
+  `StampRepository.setTags`/`observeAllTags`/`observeTagCounts` (reusing
+  `IconTags` normalization), pure `StampSearch` filter (name + tag, ANDed with
+  a tag chip), and a search field + chip row + tag editing in `StampDrawer`.
+  JVM-tested (`StampSearchTest`).
 - **Nested groups** (Phase 10.4 limitation: flat groups only).
 - **Import clip-path support** (parser warns today; either rasterize-clip or
   boolean-intersect the clip path against children using `PathBoolean`).
-- **Stamp library tagging/search** (stamps exist; mirror 17.1's tag model).
