@@ -3508,6 +3508,7 @@ class NoteEditorViewModel @Inject constructor(
             items = items.toList(),
             frameBounds = bounds,
             preservePressure = preservePressure,
+            layers = _layers.value,
         )
     }
 
@@ -3523,6 +3524,7 @@ class NoteEditorViewModel @Inject constructor(
             note = _note.value,
             items = items.toList(),
             preservePressure = preservePressure,
+            layers = _layers.value,
         )
     }
 
@@ -3544,6 +3546,7 @@ class NoteEditorViewModel @Inject constructor(
             sizeDp = sizeDp,
             frameBounds = currentFrameBounds(),
             preservePressure = preservePressure,
+            layers = _layers.value,
         )
     }
 
