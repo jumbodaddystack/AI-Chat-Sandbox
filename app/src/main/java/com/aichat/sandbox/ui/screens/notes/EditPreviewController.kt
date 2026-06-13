@@ -50,6 +50,13 @@ object EditPreviewController {
         idMap: Map<String, String>,
         layerMap: Map<String, String>,
         layers: List<NoteLayer>,
+        /**
+         * Phase 17.5 #1 — note id stamped onto items the model *authors*
+         * (`add_path` / `add_shape`). Defaults to the first current item's
+         * note (matches the editor) or "" for a blank artboard; the editor
+         * passes the live note id explicitly so generated items persist.
+         */
+        newItemNoteId: String? = null,
     ): Simulation {
         val byShortId: Map<String, NoteItem> = buildMap {
             for ((short, uuid) in idMap) {
@@ -64,6 +71,10 @@ object EditPreviewController {
         val toRemove = LinkedHashSet<String>()
         val toAdd = ArrayList<NoteItem>()
         val skipped = ArrayList<String>()
+
+        // 17.5 #1 — context for items the model authors from scratch.
+        val authorNoteId = newItemNoteId ?: currentItems.firstOrNull()?.noteId ?: ""
+        var nextAuthoredZ = (currentItems.maxOfOrNull { it.zIndex } ?: -1) + 1
 
         fun fetch(shortId: String): NoteItem? {
             val item = working[shortId] ?: byShortId[shortId] ?: return null
@@ -220,6 +231,19 @@ object EditPreviewController {
                     toRemove += source.id
                     toAdd += replacement
                 }
+                is EditOp.AddPath -> {
+                    val item = buildAddedPath(op, authorNoteId, nextAuthoredZ)
+                    if (item == null) {
+                        skipped += "add_path (empty geometry)"
+                        continue
+                    }
+                    nextAuthoredZ++
+                    toAdd += item
+                }
+                is EditOp.AddShape -> {
+                    toAdd += buildAddedShape(op, authorNoteId, nextAuthoredZ)
+                    nextAuthoredZ++
+                }
                 is EditOp.Group -> {
                     skipped += "group (Phase 8)"
                     continue
@@ -369,6 +393,66 @@ object EditPreviewController {
             payload = PathCodec.encode(merged),
         )
     }
+
+    /**
+     * 17.5 #1 — build a new `kind=path` item from an [EditOp.AddPath]. Returns
+     * null when no subpath carries any anchors (the parser already guards, but
+     * defense in depth). Colour / width default to a black 2px outline so a
+     * model that omits them still produces a visible icon part.
+     */
+    internal fun buildAddedPath(op: EditOp.AddPath, noteId: String, zIndex: Int): NoteItem? {
+        val subpaths = op.subpaths
+            .map { sub ->
+                PathCodec.Subpath(
+                    anchors = sub.anchors.map { a ->
+                        PathCodec.Anchor(a.x, a.y, a.inDx, a.inDy, a.outDx, a.outDy)
+                    },
+                    closed = sub.closed,
+                )
+            }
+            .filter { it.anchors.isNotEmpty() }
+        if (subpaths.isEmpty()) return null
+        val payload = PathCodec.PathPayload(
+            subpaths = subpaths,
+            fillRule = if (op.evenOdd) PathCodec.FILL_RULE_EVEN_ODD else PathCodec.FILL_RULE_NON_ZERO,
+            fillArgb = op.fillArgb ?: 0,
+        )
+        return NoteItem(
+            id = java.util.UUID.randomUUID().toString(),
+            noteId = noteId,
+            zIndex = zIndex,
+            kind = PathCodec.KIND,
+            tool = null,
+            colorArgb = op.colorArgb ?: DEFAULT_AUTHORED_COLOR,
+            baseWidthPx = op.width ?: DEFAULT_AUTHORED_WIDTH,
+            payload = PathCodec.encode(payload),
+        )
+    }
+
+    /** 17.5 #1 — build a new `kind=shape` item from an [EditOp.AddShape]. */
+    internal fun buildAddedShape(op: EditOp.AddShape, noteId: String, zIndex: Int): NoteItem {
+        val shape: Shape = when (val spec = op.shape) {
+            is EditOp.ShapeSpec.Line -> Shape.Line(spec.x0, spec.y0, spec.x1, spec.y1)
+            is EditOp.ShapeSpec.Rect -> Shape.Rect(spec.x0, spec.y0, spec.x1, spec.y1, spec.r)
+            is EditOp.ShapeSpec.Ellipse -> Shape.Ellipse(spec.cx, spec.cy, spec.rx, spec.ry, spec.rotation)
+            is EditOp.ShapeSpec.Arrow -> Shape.Arrow(spec.x0, spec.y0, spec.x1, spec.y1, spec.head)
+            is EditOp.ShapeSpec.Polygon -> Shape.Polygon(spec.points.copyOf(), spec.closed)
+        }
+        return NoteItem(
+            id = java.util.UUID.randomUUID().toString(),
+            noteId = noteId,
+            zIndex = zIndex,
+            kind = Shape.KIND,
+            tool = null,
+            colorArgb = op.colorArgb ?: DEFAULT_AUTHORED_COLOR,
+            baseWidthPx = op.width ?: DEFAULT_AUTHORED_WIDTH,
+            payload = ShapeCodec.encode(shape, fillArgb = op.fillArgb ?: 0),
+        )
+    }
+
+    /** Defaults for model-authored geometry (17.5 #1). */
+    private const val DEFAULT_AUTHORED_COLOR: Int = 0xFF000000.toInt()
+    private const val DEFAULT_AUTHORED_WIDTH: Float = 2f
 
     private fun buildShapeReplacement(source: NoteItem, spec: EditOp.ShapeSpec): NoteItem {
         val shape: Shape = when (spec) {

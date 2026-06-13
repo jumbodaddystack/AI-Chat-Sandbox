@@ -261,6 +261,53 @@ class NoteAiServiceTest {
         assertTrue(chunks.any { it is AiChunk.Error })
     }
 
+    @Test
+    fun generateModeEmitsEditPreviewWithAddOpsAndStyleRefsInSystem() = runTest {
+        val streamer = RecordingChatStreamer(
+            flow = flowOf(
+                StreamEvent.Delta("```edit-ops\n{ \"schema\": 1, \"summary\": \"gear\", "),
+                StreamEvent.Delta("\"ops\": [ { \"op\": \"add_path\", \"closed\": true, "),
+                StreamEvent.Delta("\"anchors\": [ [0,0], [10,0], [10,10] ] } ] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = ExplodingImageRenderer, // generation must not rasterize
+        )
+
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = emptyList(), // blank artboard
+                selection = null,
+                userPrompt = "a settings gear",
+                modelId = "gpt-4o",
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.EDIT,
+                isIcon = true,
+                generate = true,
+                styleReferences = listOf("{\"schema\":1,\"items\":[]}"),
+            )
+        ).toList()
+
+        val preview = chunks.filterIsInstance<AiChunk.EditPreview>().single()
+        assertEquals("gear", preview.doc.summary)
+        assertTrue(preview.doc.ops.single() is EditOp.AddPath)
+        // No existing-item id space for a from-scratch generation.
+        assertTrue(preview.idMap.isEmpty())
+        // The style reference rides in the system message, not the user turn.
+        val sys = streamer.lastChat!!.systemMessage
+        assertTrue("system message should embed the reference", sys.contains("Reference 1:"))
+        assertTrue(sys.contains("{\"schema\":1,\"items\":[]}"))
+        // The user turn names the artboard, plain text (no image).
+        val sent = streamer.lastMessages.single()
+        assertEquals("text", sent.contentType)
+        assertTrue(sent.content.contains("a settings gear"))
+    }
+
     // ---- helpers ----
 
     private fun visionRequest(strokes: List<NoteItem>): AskRequest = AskRequest(

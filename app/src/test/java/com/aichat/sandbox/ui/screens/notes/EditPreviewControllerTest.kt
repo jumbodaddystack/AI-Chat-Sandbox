@@ -211,6 +211,89 @@ class EditPreviewControllerTest {
         assertNotNull(sim.skipped.firstOrNull { it.contains("merge_paths") })
     }
 
+    @Test
+    fun addPathAuthorsNewPathItemOnEmptyArtboard() {
+        val doc = EditOpsDoc(1, "gear", listOf(
+            EditOp.AddPath(
+                subpaths = listOf(
+                    EditOp.SubpathSpec(
+                        anchors = listOf(
+                            EditOp.AnchorSpec(0f, 0f),
+                            EditOp.AnchorSpec(10f, 0f),
+                            EditOp.AnchorSpec(10f, 10f),
+                        ),
+                        closed = true,
+                    ),
+                ),
+                colorArgb = 0xFF112233.toInt(),
+                fillArgb = 0xFF445566.toInt(),
+                width = 4f,
+            ),
+        ))
+        val sim = EditPreviewController.simulate(
+            currentItems = emptyList(),
+            doc = doc,
+            idMap = emptyMap(),
+            layerMap = emptyMap(),
+            layers = emptyList(),
+            newItemNoteId = "icon-1",
+        )
+        assertEquals(1, sim.added.size)
+        val item = sim.added[0]
+        assertEquals(com.aichat.sandbox.ui.components.notes.PathCodec.KIND, item.kind)
+        assertEquals("icon-1", item.noteId)
+        assertEquals(0xFF112233.toInt(), item.colorArgb)
+        assertEquals(4f, item.baseWidthPx, 0f)
+        val payload = com.aichat.sandbox.ui.components.notes.PathCodec.decode(item.payload)
+        assertEquals(1, payload.subpaths.size)
+        assertEquals(3, payload.subpaths[0].anchors.size)
+        assertEquals(0xFF445566.toInt(), payload.fillArgb)
+    }
+
+    @Test
+    fun addShapeAuthorsNewShapeWithDefaults() {
+        val doc = EditOpsDoc(1, "", listOf(
+            EditOp.AddShape(
+                shape = EditOp.ShapeSpec.Ellipse(10f, 10f, 5f, 5f),
+                colorArgb = null,
+                fillArgb = null,
+                width = null,
+            ),
+        ))
+        val sim = EditPreviewController.simulate(
+            currentItems = emptyList(),
+            doc = doc,
+            idMap = emptyMap(),
+            layerMap = emptyMap(),
+            layers = emptyList(),
+            newItemNoteId = "icon-1",
+        )
+        assertEquals(1, sim.added.size)
+        assertEquals(Shape.KIND, sim.added[0].kind)
+        // Default authored colour is opaque black.
+        assertEquals(0xFF000000.toInt(), sim.added[0].colorArgb)
+    }
+
+    @Test
+    fun addedItemsGetIncreasingZIndexAboveExisting() {
+        val existing = strokeItem().copy(zIndex = 7)
+        val doc = EditOpsDoc(1, "", listOf(
+            EditOp.AddShape(EditOp.ShapeSpec.Line(0f, 0f, 1f, 1f), null, null, null),
+            EditOp.AddShape(EditOp.ShapeSpec.Line(2f, 2f, 3f, 3f), null, null, null),
+        ))
+        val sim = EditPreviewController.simulate(
+            currentItems = listOf(existing),
+            doc = doc,
+            idMap = emptyMap(),
+            layerMap = emptyMap(),
+            layers = emptyList(),
+            newItemNoteId = "n1",
+        )
+        assertEquals(2, sim.added.size)
+        assertEquals(8, sim.added[0].zIndex)
+        assertEquals(9, sim.added[1].zIndex)
+    }
+
     private fun pathItem(x: Float, colorArgb: Int = 0xFF000000.toInt()): NoteItem {
         val payload = com.aichat.sandbox.ui.components.notes.PathCodec.PathPayload(
             anchors = listOf(

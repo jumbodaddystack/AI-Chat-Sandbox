@@ -48,7 +48,11 @@ class NoteAiService @Inject constructor(
     fun ask(request: AskRequest): Flow<AiChunk> = flow {
         val caps = ModelCapabilities.of(request.modelId)
         if (request.mode == AskMode.EDIT) {
-            collectEdit(request, caps.supportsVision)
+            if (request.generate) {
+                collectGenerate(request)
+            } else {
+                collectEdit(request, caps.supportsVision)
+            }
             return@flow
         }
         val upstream = if (caps.supportsVision) {
@@ -119,6 +123,82 @@ class NoteAiService @Inject constructor(
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
+    }
+
+    /**
+     * Phase 17.5 #1 — generation dispatcher. The model authors a brand-new
+     * icon from scratch (no raster, no existing-item id space) in the style of
+     * [AskRequest.styleReferences], which ride in the system message. The reply
+     * is parsed with an empty `knownIds` set so any stray modify op (which
+     * would reference a non-existent id) is dropped — only `add_*` ops survive.
+     * Emits a single [AiChunk.EditPreview] with empty id / layer maps.
+     */
+    private suspend fun FlowCollector<AiChunk>.collectGenerate(request: AskRequest) {
+        val systemMessage = EditOpsParser.buildIconGenerateSystemMessage(request.styleReferences)
+        val userMessage = Message(
+            chatId = SYNTHETIC_CHAT_ID,
+            role = MessageRole.USER.value,
+            content = buildGeneratePromptBody(request.userPrompt),
+            contentType = "text",
+            metadata = null,
+        )
+        val chat = Chat(
+            id = SYNTHETIC_CHAT_ID,
+            title = "Icon Generate",
+            model = request.modelId,
+            systemMessage = systemMessage,
+        )
+        val upstream = chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = chat,
+            messages = listOf(userMessage),
+        )
+        val buffer = StringBuilder()
+        var lastUsage: com.aichat.sandbox.data.model.Usage? = null
+        var errored = false
+        upstream.collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> buffer.append(event.content)
+                is StreamEvent.Complete -> { lastUsage = event.usage }
+                is StreamEvent.Error -> {
+                    errored = true
+                    emit(AiChunk.Error(event.message))
+                }
+                is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
+            }
+        }
+        if (errored) return
+        EditOpsParser.parse(raw = buffer.toString(), knownIds = emptySet(), knownLayers = emptySet())
+            .fold(
+                onSuccess = { doc ->
+                    emit(AiChunk.EditPreview(
+                        doc = doc,
+                        idMap = emptyMap(),
+                        layerMap = emptyMap(),
+                        usage = lastUsage,
+                    ))
+                },
+                onFailure = { t ->
+                    Log.w(TAG, "icon-generate parse failed: ${t.message}")
+                    emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
+                },
+            )
+    }
+
+    /**
+     * Build the generation prompt body. Exposed `internal` so the Phase 17.5
+     * test can pin the wire format. Includes the artboard edge so the model's
+     * coordinates land inside the icon canvas.
+     */
+    internal fun buildGeneratePromptBody(userPrompt: String): String = buildString {
+        append(userPrompt)
+        append("\n\n")
+        append("Design this as a new icon on a square artboard, ")
+        append(ICON_ARTBOARD_WORLD.toInt())
+        append("×")
+        append(ICON_ARTBOARD_WORLD.toInt())
+        append(" units, top-left at (0,0). Author the geometry with add_path / add_shape ops.")
     }
 
     private suspend fun buildVisionStream(request: AskRequest): Flow<StreamEvent> {
@@ -343,6 +423,13 @@ class NoteAiService @Inject constructor(
          * rejecting requests; see Phase 2.5 risks.
          */
         const val MAX_EDGE_PX: Int = 1536
+
+        /**
+         * Icon artboard edge in world units, mirroring the editor's
+         * `ICON_ARTBOARD_WORLD` (768 = 24 × the 32-unit grid). Used only to
+         * tell the model where to lay generated geometry (17.5 #1).
+         */
+        const val ICON_ARTBOARD_WORLD: Float = 768f
 
         internal const val SYSTEM_INSTRUCTION: String =
             "You are helping the user with a handwritten note. Be concise. " +

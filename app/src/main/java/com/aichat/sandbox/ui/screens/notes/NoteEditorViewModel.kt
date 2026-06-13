@@ -2711,11 +2711,20 @@ class NoteEditorViewModel @Inject constructor(
         if (snapshot.inputText.isBlank() || snapshot.isStreaming) return
         when (snapshot.footerMode) {
             AiFooterMode.ASK -> submitAiPrompt()
-            AiFooterMode.EDIT -> submitAiEdit(
-                description = "AI edit",
-                userPrompt = snapshot.inputText.trim(),
-                selection = snapshot.pendingSelection,
-            )
+            AiFooterMode.EDIT -> {
+                // 17.5 #1 — an empty icon artboard + an EDIT instruction means
+                // "generate a new icon" (there's nothing to edit yet); a
+                // populated canvas edits the existing geometry as before.
+                val generate = snapshot.isIcon &&
+                    snapshot.pendingSelection.isNullOrEmpty() &&
+                    items.isEmpty()
+                submitAiEdit(
+                    description = if (generate) "AI Generate icon" else "AI edit",
+                    userPrompt = snapshot.inputText.trim(),
+                    selection = snapshot.pendingSelection,
+                    generate = generate,
+                )
+            }
         }
     }
 
@@ -3149,10 +3158,17 @@ class NoteEditorViewModel @Inject constructor(
      * reply isn't shown as prose; the user sees a preview overlay and an
      * Accept / Reject affordance from [pendingEdit].
      */
-    fun submitAiEdit(description: String, userPrompt: String, selection: List<NoteItem>? = null) {
+    fun submitAiEdit(
+        description: String,
+        userPrompt: String,
+        selection: List<NoteItem>? = null,
+        generate: Boolean = false,
+    ) {
         val snapshot = _aiSheetState.value
         if (snapshot.isStreaming) return
-        val resolvedSelection = selection
+        // Generation authors a new icon from scratch — it deliberately ignores
+        // any frozen selection so the model isn't asked to "edit" nothing.
+        val resolvedSelection = if (generate) null else selection
             ?: snapshot.pendingSelection
             ?: items.filter { it.id in _selection.value }.takeIf { it.isNotEmpty() }
         val turnId = UUID.randomUUID().toString()
@@ -3177,8 +3193,24 @@ class NoteEditorViewModel @Inject constructor(
                 selection = resolvedSelection,
                 mode = AskMode.EDIT,
                 editDescription = description,
+                generate = generate,
             )
         }
+    }
+
+    /**
+     * Phase 17.5 #1 — generate a new icon on the current artboard in the style
+     * of a few existing gallery icons. Lands as a staged preview (add_path /
+     * add_shape ops) the user accepts or rejects, exactly like an AI edit.
+     */
+    fun generateIcon(prompt: String) {
+        if (prompt.isBlank()) return
+        submitAiEdit(
+            description = "AI Generate icon",
+            userPrompt = prompt,
+            selection = null,
+            generate = true,
+        )
     }
 
     /**
@@ -3324,10 +3356,12 @@ class NoteEditorViewModel @Inject constructor(
         selection: List<NoteItem>?,
         mode: AskMode = AskMode.ASK,
         editDescription: String = "AI edit",
+        generate: Boolean = false,
     ) {
         val modelId = _aiSheetState.value.activeModelId
             .ifEmpty { preferencesManager.defaultModel.first() }
         val creds = preferencesManager.credentialsFor(modelId)
+        val styleReferences = if (generate) loadStyleReferenceIcons() else emptyList()
         val request = AskRequest(
             note = _note.value,
             allItems = items.toList(),
@@ -3339,6 +3373,8 @@ class NoteEditorViewModel @Inject constructor(
             mode = mode,
             layers = _layers.value,
             isIcon = _note.value.isIcon,
+            generate = generate,
+            styleReferences = styleReferences,
         )
         try {
             aiService.ask(request).collect { chunk ->
@@ -3379,6 +3415,34 @@ class NoteEditorViewModel @Inject constructor(
     }
 
     /**
+     * Phase 17.5 #1 — load up to three other gallery icons, serialized as
+     * [com.aichat.sandbox.data.notes.VectorCanvasJson], to seed the generation
+     * system prompt with a concrete style reference. Skips the current note and
+     * any empty icons. Best-effort: returns empty on any failure so generation
+     * still proceeds (just without a style anchor).
+     */
+    private suspend fun loadStyleReferenceIcons(): List<String> = try {
+        val icons = repository.observeIcons().first()
+            .filter { it.id != resolvedNoteId }
+        val refs = ArrayList<String>(3)
+        for (icon in icons) {
+            if (refs.size >= 3) break
+            val iconItems = repository.getItems(icon.id)
+            if (iconItems.isEmpty()) continue
+            val serialized = com.aichat.sandbox.data.notes.VectorCanvasJson.serialize(
+                items = iconItems,
+                bounds = null,
+                layers = repository.getLayers(icon.id),
+            )
+            refs += serialized.json
+        }
+        refs
+    } catch (t: Throwable) {
+        Log.w("NoteEditorViewModel", "style reference load failed", t)
+        emptyList()
+    }
+
+    /**
      * Sub-phase 7.4 — convert an EDIT-mode terminal chunk into a staged
      * [PendingEdit] the UI can render as a translucent preview overlay.
      * Re-simulates the ops against the live item list (defense in depth —
@@ -3392,6 +3456,7 @@ class NoteEditorViewModel @Inject constructor(
             idMap = chunk.idMap,
             layerMap = chunk.layerMap,
             layers = _layers.value,
+            newItemNoteId = _note.value.id,
         )
         _pendingEdit.value = PendingEdit(
             description = description,

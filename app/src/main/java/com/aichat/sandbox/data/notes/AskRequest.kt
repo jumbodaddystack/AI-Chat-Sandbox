@@ -34,6 +34,18 @@ data class AskRequest(
     val layers: List<NoteLayer> = emptyList(),
     /** Icon-mode notes get an icon-design-tuned EDIT system message. */
     val isIcon: Boolean = false,
+    /**
+     * Phase 17.5 #1 — when true (EDIT mode only), the model *generates* new
+     * icon geometry from scratch in the style of [styleReferences] instead of
+     * editing the in-scope items. Lands as `add_path` / `add_shape` ops.
+     */
+    val generate: Boolean = false,
+    /**
+     * Phase 17.5 #1 — up to three gallery icons serialized as
+     * [VectorCanvasJson], embedded in the generation system prompt as style
+     * reference. Ignored unless [generate] is true.
+     */
+    val styleReferences: List<String> = emptyList(),
 )
 
 /** Top-level dispatch for [NoteAiService] — see [AskRequest.mode]. */
