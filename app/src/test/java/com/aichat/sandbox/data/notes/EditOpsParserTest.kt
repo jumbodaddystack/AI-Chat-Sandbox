@@ -122,6 +122,49 @@ class EditOpsParserTest {
     }
 
     @Test
+    fun parsesShapeWithNestedGeometry() {
+        // The canvas JSON the model is primed on nests coordinates under a
+        // "geometry" object (VectorCanvasJson.writeShape). Models mimic that
+        // nesting; the parser must accept it as well as the flat form.
+        val raw = """{ "summary": "", "ops": [
+            { "op": "replace_with_shape", "id": "s_1",
+              "shape": { "type": "rect",
+                "geometry": { "x0": 0, "y0": 0, "x1": 10, "y1": 20, "r": 2 } } }
+        ]}"""
+        val op = EditOpsParser.parse(raw, knownIds = setOf("s_1"))
+            .getOrThrow().ops.single() as EditOp.ReplaceWithShape
+        val rect = op.shape as EditOp.ShapeSpec.Rect
+        assertEquals(10f, rect.x1, 0f)
+        assertEquals(20f, rect.y1, 0f)
+        assertEquals(2f, rect.r, 0f)
+    }
+
+    @Test
+    fun parsesShapeWithTypeNestedInGeometry() {
+        // Some models also push "type" inside the geometry block; accept it.
+        val raw = """{ "summary": "", "ops": [
+            { "op": "add_shape",
+              "shape": { "geometry": { "type": "ellipse", "cx": 5, "cy": 5, "rx": 3 } } }
+        ]}"""
+        val op = EditOpsParser.parse(raw).getOrThrow().ops.single() as EditOp.AddShape
+        assertTrue(op.shape is EditOp.ShapeSpec.Ellipse)
+    }
+
+    @Test
+    fun missingCoordinateRejectsCleanlyWithoutNpe() {
+        // A required coordinate that's absent must produce a readable reason —
+        // never the raw "getAsFloat() on a null object reference" gson NPE.
+        val raw = """{ "summary": "", "ops": [
+            { "op": "add_shape", "shape": { "type": "line", "x0": 0, "y0": 0, "x1": 10 } }
+        ]}"""
+        val doc = EditOpsParser.parse(raw).getOrThrow()
+        assertTrue(doc.ops.isEmpty())
+        val reason = doc.rejected.single().reason
+        assertTrue(reason.contains("line"))
+        assertFalse(reason.contains("getAsFloat"))
+    }
+
+    @Test
     fun generateSystemMessageEmbedsStyleReferences() {
         val base = EditOpsParser.buildIconGenerateSystemMessage(emptyList())
         assertEquals(EditOpsParser.ICON_GENERATE_SYSTEM_MESSAGE, base)
