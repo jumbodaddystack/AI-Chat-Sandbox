@@ -308,7 +308,9 @@
 ### Files to create
 - `ui/components/notes/ToolPalette.kt`
 - `ui/components/notes/ToolPaletteState.kt` (sealed class for `Tool`, plus current selection / color / width).
-- `app/src/test/java/com/aichat/sandbox/ui/components/notes/EraserHitTest.kt`
+- `app/src/test/java/com/aichat/sandbox/ui/components/notes/HitTestEraserTest.kt`
+  (originally `EraserHitTest.kt`; renamed in ink phase I2 so the production
+  `EraserHitTest` eraser-dispatch helper could take that name).
 
 ### Files to modify
 - `ui/components/notes/DrawingSurface.kt` — branch render & commit logic per tool; implement erasers.
@@ -329,7 +331,7 @@
 5. Hit-test helpers (in `StrokeRenderer.kt` or a new `HitTest.kt`):
    - `boundingBoxOf(item: NoteItem): RectF` — decode payload once, cache on the item's lifetime in memory.
    - `pointWithinStroke(item, world, radius): Boolean` — segment distance with early-out.
-6. `EraserHitTest`: known strokes (synthetic), assert which the eraser at point P with radius R removes.
+6. `HitTestEraserTest`: known strokes (synthetic), assert which the eraser at point P with radius R removes.
 
 ### Definition of done
 - All five tools draw / erase correctly.

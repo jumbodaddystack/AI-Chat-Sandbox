@@ -6,7 +6,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class EraserHitTest {
+/**
+ * Unit coverage for [HitTest]'s eraser-facing helpers (`boundsOf`,
+ * `bboxContainsPoint`, `pointWithinStroke`). Renamed from `EraserHitTest` in
+ * phase I2 so the production [EraserHitTest] dispatch helper can own that name.
+ */
+class HitTestEraserTest {
 
     /** Builds a packed sample buffer from `(x, y)` pairs — pressure/tilt default to 1.0/0.0. */
     private fun stroke(vararg xy: Float): FloatArray {
