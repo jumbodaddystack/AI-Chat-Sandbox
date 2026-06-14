@@ -259,49 +259,69 @@ object EditOpsParser {
     }
 
     private fun parseShape(obj: JsonObject): EditOp.ShapeSpec {
-        val type = obj.get("type")?.asString?.lowercase()
+        // The canvas JSON the model is primed on (VectorCanvasJson.writeShape)
+        // nests shape coordinates under a "geometry" object with "type" as its
+        // sibling: `{ "type": "rect", "geometry": { "x0":…, … } }`. Models
+        // routinely mimic that nesting in replace_with_shape/add_shape. Accept
+        // both the flat and nested forms: look every field up in "geometry"
+        // first (when present), then at the shape object's top level.
+        val geom = obj.get("geometry") as? JsonObject
+        fun field(name: String): JsonElement? =
+            (geom?.get(name) ?: obj.get(name))?.takeIf { !it.isJsonNull }
+        // Required float — never lets a missing/non-numeric field leak a raw
+        // gson NPE ("getAsFloat() on a null object reference") to the UI.
+        fun req(name: String, ctx: String): Float {
+            val el = field(name) ?: throw IllegalArgumentException("$ctx: missing '$name'")
+            return el.takeIf { it.isJsonPrimitive }?.asFloat
+                ?: throw IllegalArgumentException("$ctx: '$name' is not a number")
+        }
+        fun opt(name: String): Float? = field(name)?.takeIf { it.isJsonPrimitive }?.asFloat
+
+        // "type" may also appear nested (some models put it inside geometry);
+        // accept "kind" as an alias for the canvas item vocabulary.
+        val type = (obj.get("type") ?: obj.get("kind") ?: geom?.get("type") ?: geom?.get("kind"))
+            ?.takeIf { it.isJsonPrimitive }?.asString?.trim()?.lowercase()
             ?: throw IllegalArgumentException("shape: missing type")
         return when (type) {
             "line" -> EditOp.ShapeSpec.Line(
-                obj.get("x0").asFloat, obj.get("y0").asFloat,
-                obj.get("x1").asFloat, obj.get("y1").asFloat,
+                req("x0", "line"), req("y0", "line"),
+                req("x1", "line"), req("y1", "line"),
             )
             "rect", "rectangle" -> EditOp.ShapeSpec.Rect(
-                obj.get("x0").asFloat, obj.get("y0").asFloat,
-                obj.get("x1").asFloat, obj.get("y1").asFloat,
-                obj.get("r")?.takeIf { it.isJsonPrimitive }?.asFloat ?: 0f,
+                req("x0", "rect"), req("y0", "rect"),
+                req("x1", "rect"), req("y1", "rect"),
+                opt("r") ?: 0f,
             )
             "ellipse", "circle" -> {
-                val cx = obj.get("cx").asFloat
-                val cy = obj.get("cy").asFloat
-                val rx = obj.get("rx")?.takeIf { it.isJsonPrimitive }?.asFloat
-                    ?: obj.get("r")?.takeIf { it.isJsonPrimitive }?.asFloat
+                val cx = req("cx", "ellipse")
+                val cy = req("cy", "ellipse")
+                val rx = opt("rx") ?: opt("r")
                     ?: throw IllegalArgumentException("ellipse: missing rx/r")
-                val ry = obj.get("ry")?.takeIf { it.isJsonPrimitive }?.asFloat
-                    ?: obj.get("r")?.takeIf { it.isJsonPrimitive }?.asFloat
-                    ?: rx
+                val ry = opt("ry") ?: opt("r") ?: rx
                 EditOp.ShapeSpec.Ellipse(
                     cx = cx, cy = cy, rx = rx, ry = ry,
-                    rotation = obj.get("rotation")?.takeIf { it.isJsonPrimitive }?.asFloat ?: 0f,
+                    rotation = opt("rotation") ?: 0f,
                 )
             }
             "arrow" -> EditOp.ShapeSpec.Arrow(
-                obj.get("x0").asFloat, obj.get("y0").asFloat,
-                obj.get("x1").asFloat, obj.get("y1").asFloat,
-                obj.get("head")?.takeIf { it.isJsonPrimitive }?.asFloat ?: 0f,
+                req("x0", "arrow"), req("y0", "arrow"),
+                req("x1", "arrow"), req("y1", "arrow"),
+                opt("head") ?: 0f,
             )
             "polygon", "polyline" -> {
-                val pts = obj.get("points") as? JsonArray
+                val pts = field("points") as? JsonArray
                     ?: throw IllegalArgumentException("polygon: missing points")
                 val flat = ArrayList<Float>(pts.size() * 2)
                 for (el in pts) {
                     val pair = el as? JsonArray
                         ?: throw IllegalArgumentException("polygon: each point must be a 2-array")
                     if (pair.size() < 2) throw IllegalArgumentException("polygon: short point")
-                    flat += pair[0].asFloat
-                    flat += pair[1].asFloat
+                    flat += pair[0]?.takeIf { it.isJsonPrimitive }?.asFloat
+                        ?: throw IllegalArgumentException("polygon: non-numeric point")
+                    flat += pair[1]?.takeIf { it.isJsonPrimitive }?.asFloat
+                        ?: throw IllegalArgumentException("polygon: non-numeric point")
                 }
-                val closed = obj.get("closed")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: (type == "polygon")
+                val closed = field("closed")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: (type == "polygon")
                 EditOp.ShapeSpec.Polygon(flat.toFloatArray(), closed)
             }
             else -> throw IllegalArgumentException("shape: unknown type '$type'")
@@ -347,8 +367,10 @@ object EditOpsParser {
         for (el in anchorsArr) {
             val a = el as? JsonArray ?: continue
             if (a.size() < 2) continue
+            val x = a.floatAtOrNull(0) ?: continue
+            val y = a.floatAtOrNull(1) ?: continue
             anchors += EditOp.AnchorSpec(
-                x = a[0].asFloat, y = a[1].asFloat,
+                x = x, y = y,
                 inDx = a.floatAt(2), inDy = a.floatAt(3),
                 outDx = a.floatAt(4), outDy = a.floatAt(5),
             )
@@ -360,6 +382,9 @@ object EditOpsParser {
 
     private fun JsonArray.floatAt(i: Int): Float =
         if (i < size()) this[i]?.takeIf { it.isJsonPrimitive }?.asFloat ?: 0f else 0f
+
+    private fun JsonArray.floatAtOrNull(i: Int): Float? =
+        if (i < size()) this[i]?.takeIf { it.isJsonPrimitive }?.asFloat else null
 
     /**
      * The Phase 7.2 system message the EDIT request injects. Kept here so
