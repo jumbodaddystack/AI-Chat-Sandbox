@@ -1,5 +1,6 @@
 package com.aichat.sandbox.ui.components.notes
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.TrendingFlat
@@ -89,36 +91,49 @@ fun ToolPalette(
 
             HorizontalDivider(thickness = 0.5.dp)
 
-            if (selected.isInk) {
-                InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
-            } else if (selected.isEraser) {
-                EraserConfigRow(state = state)
-            } else if (selected.isLasso) {
-                LassoHintRow()
-            } else if (selected.isText) {
-                TextHintRow()
-            } else if (selected.isShape) {
-                // Phase 6.2 — shape tools reuse the active ink color + width.
-                InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
-                // Phase 10.2/10.3 — fill + outline style for new shapes.
-                ShapeStyleRow(state = state, onPickShapeFillColor = onPickShapeFillColor)
-                SnapChipRow(snapMask = snapMask, onToggle = onToggleSnap)
-            } else if (selected.isFrame) {
-                FrameHintRow()
-            } else if (selected.isSticky) {
-                StickyConfigRow(state = state)
-            } else if (selected.isConnector) {
-                // Sub-phase 11.2 — connectors reuse the active ink colour + width.
-                InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
-                // 14.2 — straight / elbow / curved routing.
-                ConnectorRouteRow(state = state)
-            } else if (selected.isPathPen) {
-                // Sub-phase 12.2 — the pen shares the ink colour/width row and
-                // the shape fill / line-style row (paths encode both).
-                // 12.5 adds cap / join chips.
-                InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
-                ShapeStyleRow(state = state, onPickShapeFillColor = onPickShapeFillColor)
-                PathCapJoinRow(state = state)
+            // V4 fix — the config area swaps wholesale per tool (1 row for ink,
+            // 3 for shapes / path-pen), which used to make the whole palette
+            // jump in height as the user switched tools, shifting the canvas
+            // and the collapse handle under their finger. Wrapping the swap in
+            // `animateContentSize()` turns those jumps into a short height
+            // tween so nothing lurches.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .animateContentSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (selected.isInk) {
+                    InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
+                } else if (selected.isEraser) {
+                    EraserConfigRow(state = state)
+                } else if (selected.isLasso) {
+                    LassoHintRow()
+                } else if (selected.isText) {
+                    TextHintRow()
+                } else if (selected.isShape) {
+                    // Phase 6.2 — shape tools reuse the active ink color + width.
+                    InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
+                    // Phase 10.2/10.3 — fill + outline style for new shapes.
+                    ShapeStyleRow(state = state, onPickShapeFillColor = onPickShapeFillColor)
+                    SnapChipRow(snapMask = snapMask, onToggle = onToggleSnap)
+                } else if (selected.isFrame) {
+                    FrameHintRow()
+                } else if (selected.isSticky) {
+                    StickyConfigRow(state = state)
+                } else if (selected.isConnector) {
+                    // Sub-phase 11.2 — connectors reuse the active ink colour + width.
+                    InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
+                    // 14.2 — straight / elbow / curved routing.
+                    ConnectorRouteRow(state = state)
+                } else if (selected.isPathPen) {
+                    // Sub-phase 12.2 — the pen shares the ink colour/width row and
+                    // the shape fill / line-style row (paths encode both).
+                    // 12.5 adds cap / join chips.
+                    InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
+                    ShapeStyleRow(state = state, onPickShapeFillColor = onPickShapeFillColor)
+                    PathCapJoinRow(state = state)
+                }
             }
         }
     }
@@ -214,12 +229,33 @@ private fun GroupedToolButton(
         ToolButtonShell(
             selected = groupActive,
             icon = groupIcon(),
-            contentDescription = groupDescription,
+            contentDescription = "$groupDescription (more variants)",
             onClick = {
                 if (groupActive) menuExpanded = true
                 else state.select(lastUsed)
             },
             onLongClick = { menuExpanded = true },
+        )
+        // V1 fix — a small caret in the corner signals that this button holds
+        // a group of variants reachable by tapping-while-active or long-press.
+        // Without it the hidden variants (shape roster, area eraser, …) had no
+        // discoverability cue at all.
+        Icon(
+            imageVector = Icons.Filled.ArrowDropDown,
+            contentDescription = null,
+            tint = if (groupActive) {
+                (if (androidx.compose.foundation.isSystemInDarkTheme()) {
+                    com.aichat.sandbox.ui.theme.studio.StudioDarkColors
+                } else {
+                    com.aichat.sandbox.ui.theme.studio.StudioLightColors
+                }).accentSignature
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 2.dp, bottom = 2.dp)
+                .size(14.dp),
         )
         DropdownMenu(
             expanded = menuExpanded,
