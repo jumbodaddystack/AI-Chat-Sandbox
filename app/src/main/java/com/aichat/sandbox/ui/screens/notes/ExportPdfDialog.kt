@@ -110,7 +110,7 @@ fun ExportPdfDialog(
 }
 
 @Composable
-private fun LayoutModeRow(
+internal fun LayoutModeRow(
     label: String,
     description: String,
     selected: Boolean,
@@ -136,7 +136,7 @@ private fun LayoutModeRow(
 }
 
 @Composable
-private fun PageSizeDropdown(
+internal fun PageSizeDropdown(
     selected: PdfLayout.PageSize,
     onSelect: (PdfLayout.PageSize) -> Unit,
 ) {

@@ -185,6 +185,9 @@ private fun SheetContent(
             customModels = customModels,
             onModelSelected = onModelSelected,
             onClose = onClose,
+            footerMode = state.footerMode,
+            isStreaming = state.isStreaming,
+            onFooterModeChanged = onFooterModeChanged,
         )
         HorizontalDivider()
         ConversationList(
@@ -210,7 +213,6 @@ private fun SheetContent(
             footerMode = state.footerMode,
             isStreaming = state.isStreaming,
             onInputChanged = onInputChanged,
-            onFooterModeChanged = onFooterModeChanged,
             onSubmit = onSubmit,
             onCancel = onCancel,
         )
@@ -225,6 +227,9 @@ private fun SheetHeader(
     customModels: List<String>,
     onModelSelected: (String) -> Unit,
     onClose: () -> Unit,
+    footerMode: AiFooterMode,
+    isStreaming: Boolean,
+    onFooterModeChanged: (AiFooterMode) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -242,6 +247,17 @@ private fun SheetHeader(
                 Icon(Icons.Filled.Close, contentDescription = "Close AI panel")
             }
         }
+        // A3 fix — the Ask / Edit toggle (it changes the assistant's whole
+        // behaviour: prose reply vs. staged vector edits) used to sit unlabelled
+        // at the very bottom of the footer, far from where attention lives.
+        // Moved up under the title with a one-line description of the active
+        // mode so the consequence of the toggle is spelled out, not guessed.
+        AskEditModeSelector(
+            footerMode = footerMode,
+            isStreaming = isStreaming,
+            onFooterModeChanged = onFooterModeChanged,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
         // Inline model picker (sub-phase 2.8). Switching mid-conversation
         // only affects subsequent turns — replies already on screen keep
         // showing whatever model produced them.
@@ -253,6 +269,48 @@ private fun SheetHeader(
             customModels = customModels,
         )
     }
+}
+
+/**
+ * A3 fix — the Ask | Edit mode toggle plus a one-line description of the
+ * active mode. ASK returns a prose reply in the conversation; EDIT stages a
+ * vector-edit preview the user accepts or rejects on the canvas. Two
+ * `FilterChip`s keep the affordance compact and avoid depending on the
+ * `SegmentedButton` API version.
+ */
+@Composable
+private fun AskEditModeSelector(
+    footerMode: AiFooterMode,
+    isStreaming: Boolean,
+    onFooterModeChanged: (AiFooterMode) -> Unit,
+) {
+    Spacer(modifier = Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        FilterChip(
+            selected = footerMode == AiFooterMode.ASK,
+            onClick = { onFooterModeChanged(AiFooterMode.ASK) },
+            label = { Text("Ask") },
+            enabled = !isStreaming,
+            colors = FilterChipDefaults.filterChipColors(),
+        )
+        FilterChip(
+            selected = footerMode == AiFooterMode.EDIT,
+            onClick = { onFooterModeChanged(AiFooterMode.EDIT) },
+            label = { Text("Edit") },
+            enabled = !isStreaming,
+            colors = FilterChipDefaults.filterChipColors(),
+        )
+    }
+    Spacer(modifier = Modifier.height(4.dp))
+    Text(
+        text = if (footerMode == AiFooterMode.EDIT) {
+            "Edit — stages changes to draw on the canvas; you accept or reject them."
+        } else {
+            "Ask — answers in the conversation without changing your drawing."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
@@ -578,7 +636,6 @@ private fun SheetFooter(
     footerMode: AiFooterMode,
     isStreaming: Boolean,
     onInputChanged: (String) -> Unit,
-    onFooterModeChanged: (AiFooterMode) -> Unit,
     onSubmit: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -587,26 +644,9 @@ private fun SheetFooter(
           .fillMaxWidth()
           .padding(horizontal = 12.dp, vertical = 8.dp),
   ) {
-    // Ask | Edit toggle. ASK returns a prose reply; EDIT stages a preview the
-    // user accepts or rejects. Two FilterChips keep the affordance compact and
-    // avoid depending on the SegmentedButton API version.
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(
-            selected = footerMode == AiFooterMode.ASK,
-            onClick = { onFooterModeChanged(AiFooterMode.ASK) },
-            label = { Text("Ask") },
-            enabled = !isStreaming,
-            colors = FilterChipDefaults.filterChipColors(),
-        )
-        FilterChip(
-            selected = footerMode == AiFooterMode.EDIT,
-            onClick = { onFooterModeChanged(AiFooterMode.EDIT) },
-            label = { Text("Edit") },
-            enabled = !isStreaming,
-            colors = FilterChipDefaults.filterChipColors(),
-        )
-    }
-    Spacer(modifier = Modifier.height(6.dp))
+    // A3 fix — the Ask | Edit toggle moved up to the header (next to the
+    // title) so the footer is just the input + send. The placeholder still
+    // reflects the active mode as a second cue.
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Bottom,

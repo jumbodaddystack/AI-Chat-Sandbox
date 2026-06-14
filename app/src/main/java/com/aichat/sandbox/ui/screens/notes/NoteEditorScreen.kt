@@ -18,23 +18,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Grid4x4
-import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material.icons.filled.Polyline
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -159,13 +155,12 @@ fun NoteEditorScreen(
     )
     var menuExpanded by remember { mutableStateOf(false) }
     var panelsMenuExpanded by remember { mutableStateOf(false) }
-    var pdfDialogVisible by remember { mutableStateOf(false) }
-    var vectorXmlDialogVisible by remember { mutableStateOf(false) }
-    var svgDialogVisible by remember { mutableStateOf(false) }
-    var svgDialogForFrame by remember { mutableStateOf(false) }
+    // V7 — single entry point for all share/export formats (replaces the old
+    // per-format dialogs).
+    var shareExportSheetVisible by remember { mutableStateOf(false) }
     var iconSetDialogVisible by remember { mutableStateOf(false) }
-    // Live preview + skipped-item count for the vector-XML export dialog,
-    // recomputed off the main thread each time the dialog opens.
+    // Live preview + skipped-item count for the vector-XML export option,
+    // recomputed off the main thread each time the share sheet opens.
     var vectorPreview by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     var vectorSkippedCount by remember { mutableStateOf(0) }
     var brushSheetOpen by remember { mutableStateOf(false) }
@@ -499,7 +494,6 @@ fun NoteEditorScreen(
                         EditorOverflowMenu(
                             expanded = menuExpanded,
                             current = note.backgroundStyle,
-                            hasActiveFrame = currentFrameId != null,
                             isIcon = note.isIcon,
                             fingerDrawing = fingerDrawing,
                             onToggleFingerDrawing = {
@@ -534,55 +528,9 @@ fun NoteEditorScreen(
                                 menuExpanded = false
                                 brushSheetOpen = !brushSheetOpen
                             },
-                            onSharePng = {
+                            onOpenShareExport = {
                                 menuExpanded = false
-                                scope.launch {
-                                    val uri = viewModel.sharePng()
-                                    val send = Intent(Intent.ACTION_SEND).apply {
-                                        type = "image/png"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(
-                                        Intent.createChooser(send, "Share note as PNG")
-                                    )
-                                }
-                            },
-                            onSharePdf = {
-                                menuExpanded = false
-                                pdfDialogVisible = true
-                            },
-                            onShareSvg = {
-                                menuExpanded = false
-                                svgDialogForFrame = false
-                                svgDialogVisible = true
-                            },
-                            onExportVectorXml = {
-                                menuExpanded = false
-                                vectorXmlDialogVisible = true
-                            },
-                            onSendToChat = {
-                                menuExpanded = false
-                                viewModel.openSendNoteToChatPicker()
-                            },
-                            onExportFramePng = {
-                                menuExpanded = false
-                                scope.launch {
-                                    val uri = viewModel.sharePngForCurrentFrame() ?: return@launch
-                                    val send = Intent(Intent.ACTION_SEND).apply {
-                                        type = "image/png"
-                                        putExtra(Intent.EXTRA_STREAM, uri)
-                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    }
-                                    context.startActivity(
-                                        Intent.createChooser(send, "Share frame as PNG")
-                                    )
-                                }
-                            },
-                            onExportFrameSvg = {
-                                menuExpanded = false
-                                svgDialogForFrame = true
-                                svgDialogVisible = true
+                                shareExportSheetVisible = true
                             },
                             canPresent = frames.isNotEmpty(),
                             onPresent = {
@@ -1017,26 +965,6 @@ fun NoteEditorScreen(
                 )
             }
         }
-        if (pdfDialogVisible) {
-            ExportPdfDialog(
-                boundsForPreview = remember(pdfDialogVisible) { viewModel.computeBoundsForExport() },
-                onCancel = { pdfDialogVisible = false },
-                onExport = { mode, pageSize ->
-                    pdfDialogVisible = false
-                    scope.launch {
-                        val uri = viewModel.sharePdf(mode, pageSize)
-                        val send = Intent(Intent.ACTION_SEND).apply {
-                            type = "application/pdf"
-                            putExtra(Intent.EXTRA_STREAM, uri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        context.startActivity(
-                            Intent.createChooser(send, "Share note as PDF")
-                        )
-                    }
-                },
-            )
-        }
         if (iconSetDialogVisible) {
             ExportSvgDialog(
                 title = "Export icon set",
@@ -1065,48 +993,58 @@ fun NoteEditorScreen(
                 },
             )
         }
-        if (svgDialogVisible) {
-            ExportSvgDialog(
-                title = if (svgDialogForFrame) "Share frame as SVG" else "Share note as SVG",
-                onCancel = { svgDialogVisible = false },
-                onExport = { preservePressure ->
-                    svgDialogVisible = false
-                    val forFrame = svgDialogForFrame
+        // V7 fix — the unified Share / Export sheet. Every format and its
+        // inline options live here; the per-format AlertDialogs are gone.
+        if (shareExportSheetVisible) {
+            // Lazily warm the vector-XML preview + skipped count the first time
+            // the sheet opens, off the main thread (matches the old dialog).
+            LaunchedEffect(Unit) {
+                vectorSkippedCount = viewModel.vectorExportSkippedCount()
+                vectorPreview = viewModel.renderVectorPreview()?.asImageBitmap()
+            }
+            ShareExportSheet(
+                boundsForPdfPreview = remember { viewModel.computeBoundsForExport() },
+                hasActiveFrame = currentFrameId != null,
+                vectorPreview = vectorPreview,
+                vectorSkippedCount = vectorSkippedCount,
+                onSharePng = {
+                    shareExportSheetVisible = false
                     scope.launch {
-                        val uri = if (forFrame) {
-                            viewModel.shareSvgForCurrentFrame(preservePressure) ?: return@launch
-                        } else {
-                            viewModel.shareSvg(preservePressure)
+                        val uri = viewModel.sharePng()
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "image/png"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
+                        context.startActivity(Intent.createChooser(send, "Share note as PNG"))
+                    }
+                },
+                onExportPdf = { mode, pageSize ->
+                    shareExportSheetVisible = false
+                    scope.launch {
+                        val uri = viewModel.sharePdf(mode, pageSize)
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "application/pdf"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(Intent.createChooser(send, "Share note as PDF"))
+                    }
+                },
+                onShareSvg = { preservePressure ->
+                    shareExportSheetVisible = false
+                    scope.launch {
+                        val uri = viewModel.shareSvg(preservePressure)
                         val send = Intent(Intent.ACTION_SEND).apply {
                             type = "image/svg+xml"
                             putExtra(Intent.EXTRA_STREAM, uri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
-                        context.startActivity(
-                            Intent.createChooser(
-                                send,
-                                if (forFrame) "Share frame as SVG" else "Share note as SVG",
-                            )
-                        )
+                        context.startActivity(Intent.createChooser(send, "Share note as SVG"))
                     }
                 },
-            )
-        }
-        if (vectorXmlDialogVisible) {
-            LaunchedEffect(Unit) {
-                vectorSkippedCount = viewModel.vectorExportSkippedCount()
-                vectorPreview = viewModel.renderVectorPreview()?.asImageBitmap()
-            }
-            ExportVectorXmlDialog(
-                skippedCount = vectorSkippedCount,
-                preview = vectorPreview,
-                onCancel = {
-                    vectorXmlDialogVisible = false
-                    vectorPreview = null
-                },
-                onExport = { sizeDp, preservePressure ->
-                    vectorXmlDialogVisible = false
+                onExportVectorXml = { sizeDp, preservePressure ->
+                    shareExportSheetVisible = false
                     scope.launch {
                         val result = viewModel.shareVectorXml(sizeDp, preservePressure)
                         if (result.skippedCount > 0) {
@@ -1122,10 +1060,41 @@ fun NoteEditorScreen(
                             putExtra(Intent.EXTRA_STREAM, result.uri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
-                        context.startActivity(
-                            Intent.createChooser(send, "Share icon as XML")
-                        )
+                        context.startActivity(Intent.createChooser(send, "Share icon as XML"))
                     }
+                },
+                onSendToChat = {
+                    shareExportSheetVisible = false
+                    viewModel.openSendNoteToChatPicker()
+                },
+                onExportFramePng = {
+                    shareExportSheetVisible = false
+                    scope.launch {
+                        val uri = viewModel.sharePngForCurrentFrame() ?: return@launch
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "image/png"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(Intent.createChooser(send, "Share frame as PNG"))
+                    }
+                },
+                onExportFrameSvg = { preservePressure ->
+                    shareExportSheetVisible = false
+                    scope.launch {
+                        val uri = viewModel.shareSvgForCurrentFrame(preservePressure)
+                            ?: return@launch
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "image/svg+xml"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(Intent.createChooser(send, "Share frame as SVG"))
+                    }
+                },
+                onDismiss = {
+                    shareExportSheetVisible = false
+                    vectorPreview = null
                 },
             )
         }
@@ -1270,12 +1239,9 @@ fun NoteEditorScreen(
 }
 
 /**
- * Editor TopAppBar overflow menu (sub-phase 4.1, PDF wired in 4.2).
- *
- * Combines the sub-phase 1.6 background-style picker with the Share section.
- * Both PNG and PDF entries fire callbacks; PDF first opens [ExportPdfDialog]
- * (handled by the parent) so the user can pick layout + page size before the
- * exporter runs.
+ * Phase 15.3 — icon artboard resize dialog. Lets the user pick the design
+ * grid for an icon note; the exporter scales the artwork to the chosen icon
+ * size on the way out.
  */
 @Composable
 private fun IconCanvasSizeDialog(
@@ -1327,7 +1293,6 @@ private fun IconCanvasSizeDialog(
 private fun EditorOverflowMenu(
     expanded: Boolean,
     current: String,
-    hasActiveFrame: Boolean,
     isIcon: Boolean,
     fingerDrawing: Boolean,
     onToggleFingerDrawing: () -> Unit,
@@ -1339,13 +1304,7 @@ private fun EditorOverflowMenu(
     onBackgroundSelect: (String) -> Unit,
     onInsertImage: () -> Unit,
     onToggleBrushSheet: () -> Unit,
-    onSharePng: () -> Unit,
-    onSharePdf: () -> Unit,
-    onShareSvg: () -> Unit,
-    onExportVectorXml: () -> Unit,
-    onSendToChat: () -> Unit,
-    onExportFramePng: () -> Unit,
-    onExportFrameSvg: () -> Unit,
+    onOpenShareExport: () -> Unit,
     canPresent: Boolean = false,
     onPresent: () -> Unit = {},
     onSaveAsTemplate: () -> Unit = {},
@@ -1449,90 +1408,20 @@ private fun EditorOverflowMenu(
             onClick = onToggleFingerDrawing,
         )
         HorizontalDivider()
-        Text(
-            text = "Share",
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
+        // V7 fix — one entry into the unified Share / Export sheet, replacing
+        // the six share actions (PNG / PDF / SVG / XML / Send-to-chat / frame
+        // exports) that used to clutter this menu and each spawn their own
+        // dialog. All formats + their inline options now live in one surface.
         DropdownMenuItem(
-            text = { Text("Share as PNG") },
+            text = { Text("Share / Export…") },
             leadingIcon = {
                 Icon(
-                    imageVector = Icons.Filled.Image,
+                    imageVector = Icons.Filled.Share,
                     contentDescription = null,
                 )
             },
-            onClick = onSharePng,
+            onClick = onOpenShareExport,
         )
-        DropdownMenuItem(
-            text = { Text("Share as PDF") },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Filled.PictureAsPdf,
-                    contentDescription = null,
-                )
-            },
-            onClick = onSharePdf,
-        )
-        // Phase 6.8 — vector-fidelity export. Opens in Inkscape / Figma /
-        // browsers as a scalable document with paths and shapes preserved.
-        DropdownMenuItem(
-            text = { Text("Share as SVG") },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Filled.Polyline,
-                    contentDescription = null,
-                )
-            },
-            onClick = onShareSvg,
-        )
-        // Android VectorDrawable XML — imports straight into res/drawable/.
-        DropdownMenuItem(
-            text = { Text("Export as Android XML…") },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Filled.Android,
-                    contentDescription = null,
-                )
-            },
-            onClick = onExportVectorXml,
-        )
-        // Sub-phase 4.3: in-app picker over existing chats. PNG render +
-        // OCR snippet handover is done via [PendingDraftStore]; the user
-        // lands in the chosen chat with the attachment already in the
-        // composer strip.
-        DropdownMenuItem(
-            text = { Text("Send to chat") },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                    contentDescription = null,
-                )
-            },
-            onClick = onSendToChat,
-        )
-        if (hasActiveFrame) {
-            HorizontalDivider()
-            Text(
-                text = "Current frame",
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            DropdownMenuItem(
-                text = { Text("Export frame as PNG") },
-                leadingIcon = {
-                    Icon(Icons.Filled.CropFree, contentDescription = null)
-                },
-                onClick = onExportFramePng,
-            )
-            DropdownMenuItem(
-                text = { Text("Export frame as SVG") },
-                leadingIcon = {
-                    Icon(Icons.Filled.CropFree, contentDescription = null)
-                },
-                onClick = onExportFrameSvg,
-            )
-        }
         HorizontalDivider()
         Text(
             text = "Background",
@@ -1634,9 +1523,25 @@ private fun AiEditPreviewBanner(
                     DiffLegendItem(Color(AI_DIFF_REMOVED_ARGB), "${sim.removed.size} removed")
                     DiffLegendItem(Color(AI_DIFF_MODIFIED_ARGB), "${sim.modified.size} modified")
                 }
-                if (sim.skipped.isNotEmpty()) {
+                // A5 fix — partial-failure summary. Two sources used to be
+                // invisible: ops the parser couldn't read (`doc.rejected`) and
+                // ops that parsed but couldn't apply against the live items
+                // (`simulation.skipped`). Without this the user got 7 of 10 ops
+                // with no notice of the 3 dropped. We sum both and name the
+                // first reason so the gap is acknowledged, not silent.
+                val invalidReasons = sim.skipped + pending.doc.rejected.map { it.reason }
+                if (invalidReasons.isNotEmpty()) {
+                    val emitted = pending.doc.ops.size + pending.doc.rejected.size
+                    val applied = (emitted - invalidReasons.size).coerceAtLeast(0)
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "${sim.skipped.size} skipped",
+                        text = "Applied $applied of $emitted edits · " +
+                            "${invalidReasons.size} couldn't be applied",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Text(
+                        text = invalidReasons.first(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                     )

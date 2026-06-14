@@ -102,7 +102,7 @@ fun ExportVectorXmlDialog(
 }
 
 @Composable
-private fun IconPreview(preview: ImageBitmap?) {
+internal fun IconPreview(preview: ImageBitmap?) {
     Box(
         modifier = Modifier
             .fillMaxWidth(),
@@ -166,7 +166,7 @@ internal fun PreservePressureRow(
 }
 
 @Composable
-private fun SizeRow(
+internal fun SizeRow(
     label: String,
     selected: Boolean,
     onSelect: () -> Unit,
