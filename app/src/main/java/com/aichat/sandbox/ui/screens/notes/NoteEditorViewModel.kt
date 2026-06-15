@@ -21,6 +21,7 @@ import com.aichat.sandbox.data.model.Stamp
 import com.aichat.sandbox.data.notes.AiChunk
 import com.aichat.sandbox.data.notes.AskMode
 import com.aichat.sandbox.data.notes.AskRequest
+import com.aichat.sandbox.data.notes.BrushSpec
 import com.aichat.sandbox.data.notes.CannedEditAction
 import com.aichat.sandbox.data.notes.EditOpsDoc
 import com.aichat.sandbox.data.notes.HandwritingOcr
@@ -3639,6 +3640,19 @@ class NoteEditorViewModel @Inject constructor(
         )
         try {
             aiService.ask(request).collect { chunk ->
+                // I4 / N1 — a designed brush is persisted to the user's brush
+                // library (a suspend write), not staged as a canvas edit. Handle
+                // it outside `mutateTurn`, whose lambda is a pure state transform.
+                if (chunk is AiChunk.BrushDesign) {
+                    val saved = saveDesignedBrush(chunk.spec)
+                    mutateTurn(turnId) { turn ->
+                        if (saved) turn.copy(
+                            replyBuffer = "Saved brush “${chunk.spec.name}” to your library.",
+                            state = TurnState.Done,
+                        ) else turn.copy(state = TurnState.Error("Couldn't save the designed brush."))
+                    }
+                    return@collect
+                }
                 mutateTurn(turnId) { turn ->
                     when (chunk) {
                         is AiChunk.Delta -> turn.copy(replyBuffer = turn.replyBuffer + chunk.text)
@@ -3652,6 +3666,8 @@ class NoteEditorViewModel @Inject constructor(
                             }
                             turn.copy(replyBuffer = message, state = TurnState.Done)
                         }
+                        // Handled above via early return; unreachable here.
+                        is AiChunk.BrushDesign -> turn
                     }
                 }
             }
@@ -3673,6 +3689,31 @@ class NoteEditorViewModel @Inject constructor(
         } finally {
             streamingJobs.remove(turnId)
         }
+    }
+
+    /**
+     * Phase I4 / N1 — kick off the AI brush designer. A pure text round-trip on
+     * its own turn: the model returns a brush-spec JSON that becomes a new
+     * user-scope `BrushPreset`. No selection, no canvas mutation.
+     */
+    fun designBrush(prompt: String, turnId: String) {
+        val job = viewModelScope.launch {
+            runStream(turnId = turnId, prompt = prompt, selection = null, mode = AskMode.DESIGN_BRUSH)
+        }
+        streamingJobs[turnId] = job
+    }
+
+    /**
+     * Phase I4 / N1 — persist a designed [BrushSpec] as a user-scope preset,
+     * assigning the next ordinal within its tool. Returns true on success.
+     */
+    private suspend fun saveDesignedBrush(spec: BrushSpec): Boolean = try {
+        val ordinal = brushPresets.forTool(spec.tool).size
+        brushPresets.saveUserPreset(spec.toPreset(ordinal))
+        true
+    } catch (t: Throwable) {
+        Log.w("NoteEditorViewModel", "saveDesignedBrush failed", t)
+        false
     }
 
     /**

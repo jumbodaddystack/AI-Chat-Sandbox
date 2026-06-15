@@ -3,7 +3,6 @@ package com.aichat.sandbox.data.ink
 import androidx.ink.brush.Brush
 import androidx.ink.brush.BrushFamily
 import androidx.ink.brush.InputToolType
-import androidx.ink.brush.StockBrushes
 import androidx.ink.strokes.ImmutableStrokeInputBatch
 import androidx.ink.strokes.MutableStrokeInputBatch
 import androidx.ink.strokes.Stroke
@@ -45,14 +44,16 @@ import kotlin.math.roundToLong
  *    cadence ([SYNTHETIC_CADENCE_MS]) and round-trip back to v1 (timestamps
  *    dropped), since they were never recorded with audio.
  *
- * ## What is intentionally *not* mapped yet
- * The [BrushPreset] → [Brush] adapter here covers the stable, renderable brush
- * identity: brush family (from tool), colour (with opacity folded into alpha),
- * and width. Richer preset semantics — taper, jitter, pressure-curve remap, and
- * procedural textures — require custom `BrushTip` / `BrushBehavior` construction
- * (and, for AI-authored brushes, the 1.1-alpha programmable API). Those are
- * deferred to phase I4 by design, so the alpha API never blocks this stable
- * seam.
+ * ## Brush richness (phase I4)
+ * The tool → [BrushFamily] mapping now lives in [InkBrushFamilies], which builds
+ * **custom** `BrushTip` / `BrushBehavior` families on stable 1.0.0 APIs to match
+ * the current engine's pressure taper (pen), tilt-width (pencil), and
+ * highlighter width — closing the gaps the I2 parity gate pinned. Colour (with
+ * opacity folded into alpha) and width are still applied here on the [Brush].
+ * What remains deferred is genuinely appearance-only or alpha-only: procedural
+ * **textures** (pencil grain, marker/watercolor tiles — a `BrushPaint.TextureLayer`
+ * device-pixel item) and **jitter** (no stable randomized-source exists; it lives
+ * in the isolated 1.1-alpha experiment, never on this stable seam).
  */
 object InkInterop {
 
@@ -212,10 +213,11 @@ object InkInterop {
 
     /**
      * Map a user-facing [BrushPreset] onto an ink [Brush] using stable 1.0.0
-     * APIs: a [StockBrushes] family chosen by tool, the preset colour with
-     * [BrushPreset.opacity] folded into the alpha channel, and
-     * [BrushPreset.baseWidthPx] as the brush size. (Taper / jitter /
-     * pressure-curve / texture are deferred to phase I4 — see the class KDoc.)
+     * APIs: a [BrushFamily] chosen by tool (see [InkBrushFamilies], which since
+     * phase I4 carries the pressure-taper / tilt-width / highlighter-width
+     * behaviors), the preset colour with [BrushPreset.opacity] folded into the
+     * alpha channel, and [BrushPreset.baseWidthPx] as the brush size. (Procedural
+     * texture and jitter remain deferred — see the class KDoc.)
      */
     fun toBrush(preset: BrushPreset): Brush =
         brushForTool(
@@ -242,17 +244,12 @@ object InkInterop {
     }
 
     /**
-     * Choose a stable [StockBrushes] family for a tool id. `pencil` maps to the
-     * stable round [StockBrushes.marker] family rather than the experimental
-     * textured pencil; a richer mapping arrives with phase I4.
+     * Choose the [BrushFamily] for a tool id. Phase I4 moved this to
+     * [InkBrushFamilies], which builds custom pressure-taper (pen),
+     * tilt-width (pencil), and width-calibrated (highlighter) families on stable
+     * 1.0.0 APIs, while `marker` / unknown tools keep the stock round family.
      */
-    fun brushFamilyForTool(tool: String): BrushFamily = when (tool.lowercase()) {
-        "pen" -> StockBrushes.pressurePen()
-        "highlighter" -> StockBrushes.highlighter()
-        "marker" -> StockBrushes.marker()
-        "pencil" -> StockBrushes.marker()
-        else -> StockBrushes.marker()
-    }
+    fun brushFamilyForTool(tool: String): BrushFamily = InkBrushFamilies.familyForTool(tool)
 
     /**
      * Fold a preset's `[0, 1]` opacity into the alpha channel of an ARGB colour,

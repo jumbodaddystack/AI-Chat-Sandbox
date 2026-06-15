@@ -47,6 +47,10 @@ class NoteAiService @Inject constructor(
 
     fun ask(request: AskRequest): Flow<AiChunk> = flow {
         val caps = ModelCapabilities.of(request.modelId)
+        if (request.mode == AskMode.DESIGN_BRUSH) {
+            collectDesignBrush(request)
+            return@flow
+        }
         if (request.mode == AskMode.EDIT) {
             if (request.generate) {
                 collectGenerate(request, caps.supportsVision)
@@ -198,6 +202,69 @@ class NoteAiService @Inject constructor(
                     emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
                 },
             )
+    }
+
+    /**
+     * Phase I4 / N1 — **AI brush designer** dispatcher. A pure text round-trip:
+     * the user describes a brush ("a dry-gouache brush with a soft taper"), the
+     * model replies with a small brush-spec JSON, and [BrushSpecParser] validates
+     * it into a [BrushSpec]. Emits a single [AiChunk.BrushDesign]. No raster, no
+     * id space, no canvas mutation — only the user's brush library grows — so it
+     * never touches the `StrokeCodec` / edit-ops pipeline.
+     */
+    private suspend fun FlowCollector<AiChunk>.collectDesignBrush(request: AskRequest) {
+        val chat = Chat(
+            id = SYNTHETIC_CHAT_ID,
+            title = "Brush Designer",
+            model = request.modelId,
+            systemMessage = DESIGN_BRUSH_SYSTEM_MESSAGE,
+        )
+        val userMessage = Message(
+            chatId = SYNTHETIC_CHAT_ID,
+            role = MessageRole.USER.value,
+            content = buildDesignBrushPromptBody(request.userPrompt),
+            contentType = "text",
+            metadata = null,
+        )
+        val upstream = chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = chat,
+            messages = listOf(userMessage),
+        )
+        val buffer = StringBuilder()
+        var lastUsage: com.aichat.sandbox.data.model.Usage? = null
+        var errored = false
+        upstream.collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> buffer.append(event.content)
+                is StreamEvent.Complete -> { lastUsage = event.usage }
+                is StreamEvent.Error -> {
+                    errored = true
+                    emit(AiChunk.Error(event.message))
+                }
+                is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
+            }
+        }
+        if (errored) return
+        BrushSpecParser.parse(buffer.toString()).fold(
+            onSuccess = { spec -> emit(AiChunk.BrushDesign(spec = spec, usage = lastUsage)) },
+            onFailure = { t ->
+                Log.w(TAG, "brush-spec parse failed: ${t.message}")
+                emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
+            },
+        )
+    }
+
+    /**
+     * Build the brush-designer prompt body. Exposed `internal` so a unit test can
+     * pin the wire format (mirrors [buildGeneratePromptBody]).
+     */
+    internal fun buildDesignBrushPromptBody(userPrompt: String): String = buildString {
+        append(userPrompt)
+        append("\n\n")
+        append("Design a single reusable brush matching that description. ")
+        append("Reply with the brush-spec JSON only.")
     }
 
     /**
@@ -492,6 +559,35 @@ class NoteAiService @Inject constructor(
             "You are helping the user with a handwritten note. Be concise. " +
                 "If the user pasted an image of the note, treat the handwriting as their input; " +
                 "transcribe relevant parts when answering."
+
+        /**
+         * Phase I4 / N1 — system message for the AI brush designer. Pins the
+         * exact JSON contract [BrushSpecParser] validates: a single brush object
+         * with only renderable, user-facing fields. Anything out of range is
+         * clamped and unknown enum values fall back to defaults, but a tight
+         * prompt keeps replies on-spec.
+         */
+        internal const val DESIGN_BRUSH_SYSTEM_MESSAGE: String =
+            "You design drawing brushes. Reply with ONLY a JSON object describing one brush, " +
+                "no prose. Schema:\n" +
+                "{\n" +
+                "  \"schema\": 1,\n" +
+                "  \"brush\": {\n" +
+                "    \"name\": string,            // short, human label\n" +
+                "    \"tool\": \"pen\"|\"pencil\"|\"highlighter\"|\"marker\",\n" +
+                "    \"color\": \"#RRGGBB\",        // hex; opacity is separate\n" +
+                "    \"width\": number,           // base width in px, 0.5..64\n" +
+                "    \"opacity\": number,         // 0..1\n" +
+                "    \"taperStart\": number,      // 0..1 fraction that fades in\n" +
+                "    \"taperEnd\": number,        // 0..1 fraction that fades out\n" +
+                "    \"jitter\": number,          // 0..1 width jitter\n" +
+                "    \"pressureCurve\": \"LINEAR\"|\"EASE_IN\"|\"EASE_OUT\"|\"EASE_IN_OUT\",\n" +
+                "    \"texture\": \"smooth\"|\"charcoal\"|\"watercolor\"|\"marker\"\n" +
+                "  }\n" +
+                "}\n" +
+                "Pick the closest tool and texture for the requested feel. Use opacity for " +
+                "translucency (e.g. highlighters), taper for inky pen strokes, and jitter/texture " +
+                "for dry/grainy media."
 
         private const val SYNTHETIC_CHAT_ID: String = "note-ai-synthetic"
         private const val STROKE_KIND: String = "stroke"
