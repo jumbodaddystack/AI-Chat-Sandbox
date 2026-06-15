@@ -105,6 +105,40 @@ object InkRenderParityHarness {
         return out
     }
 
+    /**
+     * Phase **I5** — total absolute turning (radians) along ink's main mesh
+     * outline, a **wiggliness** metric: a jittery centerline inflates into an
+     * outline that zig-zags far past the ~2π a clean stroke's outline turns
+     * through, so a smoother input renders a lower turning sum. Built through the
+     * same [InkInterop] seam the authoring path commits, so it measures what ink
+     * actually renders — the genuine, headless ink half of the I5 beautify gate.
+     */
+    fun inkOutlineTurningSum(samples: FloatArray, tool: String, baseWidth: Float): Float {
+        val brush = InkInterop.toBrush(presetFor(tool, baseWidth))
+        val stroke = InkInterop.toStroke(StrokeCodec.encode(samples), brush, InputToolType.STYLUS)
+        val main = inkOutlineLoops(stroke).maxByOrNull { it.size } ?: return 0f
+        return turningSum(main)
+    }
+
+    /** Sum of unsigned turn angles between consecutive edges of a closed loop. */
+    private fun turningSum(poly: FloatArray): Float {
+        val m = poly.size / 2
+        if (m < 3) return 0f
+        var sum = 0f
+        for (k in 0 until m) {
+            val pIdx = (k - 1 + m) % m
+            val nIdx = (k + 1) % m
+            val v1x = poly[k * 2] - poly[pIdx * 2]
+            val v1y = poly[k * 2 + 1] - poly[pIdx * 2 + 1]
+            val v2x = poly[nIdx * 2] - poly[k * 2]
+            val v2y = poly[nIdx * 2 + 1] - poly[k * 2 + 1]
+            val cross = v1x * v2y - v1y * v2x
+            val dot = v1x * v2x + v1y * v2y
+            sum += kotlin.math.atan2(kotlin.math.abs(cross), dot)
+        }
+        return sum
+    }
+
     /** Read every outline loop of an ink stroke's mesh as packed `[x,y,…]`. */
     private fun inkOutlineLoops(stroke: Stroke): List<FloatArray> {
         val mesh = stroke.shape

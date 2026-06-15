@@ -377,6 +377,43 @@ class DrawingSurface(context: Context) : View(context) {
      */
     var strokeHoldRecognizeListener: ((NoteItem) -> Unit)? = null
 
+    /**
+     * Phase I5 — fired when the user taps the live-beautify ghost to accept it.
+     * Carries the already-committed [rawItem] and the [beautified] copy (same
+     * id / colour / width / layer, cleaned payload); the receiver swaps them as
+     * one undoable `CompositeEdit` so a single undo restores the raw ink.
+     */
+    var strokeBeautifyListener: ((rawItem: NoteItem, beautified: NoteItem) -> Unit)? = null
+
+    /**
+     * Phase I5 — the beautify ghost currently awaiting accept/decline, or null.
+     * Set right after an ink stroke commits (when the clean would visibly alter
+     * it); the next ACTION_DOWN resolves it: a tap on the candidate accepts, a
+     * tap elsewhere declines and falls through to normal handling.
+     */
+    private var pendingBeautify: PendingBeautify? = null
+
+    private class PendingBeautify(
+        val rawItem: NoteItem,
+        val beautified: NoteItem,
+        val minX: Float,
+        val minY: Float,
+        val maxX: Float,
+        val maxY: Float,
+    ) {
+        /** Whether world point (`wx`,`wy`) lands on the candidate (bbox + slop). */
+        fun hit(wx: Float, wy: Float, slop: Float): Boolean =
+            wx >= minX - slop && wx <= maxX + slop && wy >= minY - slop && wy <= maxY + slop
+    }
+
+    /** Translucent paint for the beautify ghost (I5); colour set per-stroke. */
+    private val beautifyGhostPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        isAntiAlias = true
+    }
+
     // Hold-to-snap tracking: the uptime + screen position of the last sample
     // that moved more than the touch slop. A lift whose event time is ≥
     // HOLD_DURATION_MS past this means "drew, then held still".
@@ -510,6 +547,13 @@ class DrawingSurface(context: Context) : View(context) {
         if (paletteTool == Tool.PATH_PEN && tool != Tool.PATH_PEN) {
             commitPendingPath(close = false)
         }
+        // I5 — a real tool change abandons any unresolved beautify ghost. Guard
+        // on an actual change: setToolConfig runs on every recomposition, and
+        // an unconditional clear would wipe the ghost the frame after it's set.
+        if (tool != paletteTool && pendingBeautify != null) {
+            pendingBeautify = null
+            invalidate()
+        }
         paletteTool = tool
         inkColor = colorArgb
         baseWidthPx = widthPx
@@ -640,6 +684,10 @@ class DrawingSurface(context: Context) : View(context) {
         }
 
         drawSnapMarker(canvas)
+
+        // I5 — the live-beautify ghost sits above the committed scene so the
+        // user sees the proposed clean overlaid on the raw stroke.
+        drawBeautifyGhost(canvas)
 
         if (strokeTool.isInk && (liveSampleCount > 0 || predictedSampleCount > 0)) {
             canvas.save()
@@ -794,6 +842,12 @@ class DrawingSurface(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // I5 — a staged beautify ghost intercepts the next touch-down: a tap on
+        // the candidate accepts it (consumed here); any other tap declines and
+        // falls through to normal handling below.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN && pendingBeautify != null) {
+            if (resolveBeautifyTap(event.x, event.y)) return true
+        }
         if (presentationMode) {
             // Sub-phase 11.5 — presenting: the stylus draws transient laser
             // ink (never committed); fingers keep pan / pinch so the
@@ -1314,11 +1368,12 @@ class DrawingSurface(context: Context) : View(context) {
         }
         // Phase 9.4 — encode in v2 (with `t`) when a recording is active;
         // otherwise stay on the v1 path so non-recording strokes are
-        // binary-identical to pre-9.4 commits. 14.1 — the opt-in beautify
-        // pass reshapes the packed samples right before encoding, so the
-        // committed payload and the instant-feedback copy below agree.
+        // binary-identical to pre-9.4 commits. Phase I5 — the beautify pass no
+        // longer mutates the committed payload in place: the *raw* stroke is
+        // committed here and [offerBeautify] surfaces a tap-to-accept ghost, so
+        // a single undo always restores exactly what the pen drew.
         val payload = if (recordingStartedAt != 0L) {
-            var packedV2 = FloatArray(liveSampleCount * StrokeCodec.FLOATS_PER_SAMPLE_V2)
+            val packedV2 = FloatArray(liveSampleCount * StrokeCodec.FLOATS_PER_SAMPLE_V2)
             var src = 0
             var dst = 0
             var i = 0
@@ -1332,16 +1387,10 @@ class DrawingSurface(context: Context) : View(context) {
                 dst += StrokeCodec.FLOATS_PER_SAMPLE_V2
                 i++
             }
-            if (beautifyInk && strokeTool.isInk) {
-                packedV2 = InkBeautifier.beautify(packedV2, StrokeCodec.FLOATS_PER_SAMPLE_V2)
-            }
             StrokeCodec.encodeV2(packedV2)
         } else {
-            var packed = FloatArray(liveSampleCount * StrokeCodec.FLOATS_PER_SAMPLE)
+            val packed = FloatArray(liveSampleCount * StrokeCodec.FLOATS_PER_SAMPLE)
             System.arraycopy(liveSamples, 0, packed, 0, packed.size)
-            if (beautifyInk && strokeTool.isInk) {
-                packed = InkBeautifier.beautify(packed, StrokeCodec.FLOATS_PER_SAMPLE)
-            }
             StrokeCodec.encode(packed)
         }
         val item = buildStrokeItem(
@@ -1360,7 +1409,13 @@ class DrawingSurface(context: Context) : View(context) {
         // 11.3 — recognition runs *after* the normal commit so the raw ink
         // is already an undoable item; the receiver's replacement edit is a
         // second entry and one undo restores the stroke.
-        if (holdRecognition) strokeHoldRecognizeListener?.invoke(item)
+        if (holdRecognition) {
+            strokeHoldRecognizeListener?.invoke(item)
+        } else {
+            // I5 — shape recognition takes precedence; otherwise offer the
+            // live-beautify ghost on the just-committed raw stroke.
+            offerBeautify(item)
+        }
         liveSampleCount = 0
         invalidate()
     }
@@ -1390,6 +1445,97 @@ class DrawingSurface(context: Context) : View(context) {
         fixedWidth = fixedWidth,
     )
 
+    // ── Live beautify (phase I5) ──────────────────────────────────────────
+    //
+    // The pen-lift commits the *raw* stroke; if beautify is on and the clean
+    // would visibly alter the just-committed ink stroke, we stage a ghost the
+    // user can tap to accept. Accepting swaps raw → beautified as one undoable
+    // edit (the VM does the swap); declining (a tap anywhere else, or the start
+    // of a new stroke) leaves the raw stroke untouched. The beautified payload
+    // is a plain canonical [StrokeCodec] payload — the AI pipeline never sees
+    // ink (Adoption principle 2), and timestamps survive because we beautify in
+    // the committed payload's own stride (v2 keeps its `t` lane).
+
+    /**
+     * Stage a beautify ghost for the freshly committed [rawItem] when the tool
+     * is an ink tool and beautify is enabled. Computes the candidate in the
+     * payload's own stride so v2 timestamps round-trip, and only offers when the
+     * clean is visibly different ([InkBeautifier.Candidate.changed]).
+     */
+    private fun offerBeautify(rawItem: NoteItem) {
+        if (!beautifyInk || !strokeTool.isInk) {
+            pendingBeautify = null
+            return
+        }
+        val v2 = StrokeCodec.isV2(rawItem.payload)
+        val stride = if (v2) StrokeCodec.FLOATS_PER_SAMPLE_V2 else StrokeCodec.FLOATS_PER_SAMPLE
+        val packed = if (v2) StrokeCodec.decodeWithT(rawItem.payload) else StrokeCodec.decode(rawItem.payload)
+        val candidate = InkBeautifier.candidate(packed, stride)
+        if (!candidate.changed) {
+            pendingBeautify = null
+            return
+        }
+        val payload = if (v2) StrokeCodec.encodeV2(candidate.samples) else StrokeCodec.encode(candidate.samples)
+        val beautified = rawItem.copy(payload = payload)
+        // World-space bbox of the candidate for the accept-tap hit-test.
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        val n = candidate.samples.size / stride
+        for (i in 0 until n) {
+            val x = candidate.samples[i * stride]; val y = candidate.samples[i * stride + 1]
+            if (x < minX) minX = x; if (y < minY) minY = y
+            if (x > maxX) maxX = x; if (y > maxY) maxY = y
+        }
+        pendingBeautify = PendingBeautify(rawItem, beautified, minX, minY, maxX, maxY)
+        invalidate()
+    }
+
+    /**
+     * Resolve a pending beautify ghost against an ACTION_DOWN at screen
+     * (`sx`,`sy`). Returns true iff the tap *accepted* the candidate (and so
+     * should be consumed); a decline returns false and clears the ghost so the
+     * caller handles the tap normally. No-op (false) when nothing is pending.
+     */
+    private fun resolveBeautifyTap(sx: Float, sy: Float): Boolean {
+        val pending = pendingBeautify ?: return false
+        pendingBeautify = null
+        invalidate()
+        val wx = viewport.screenToWorldX(sx)
+        val wy = viewport.screenToWorldY(sy)
+        // Slop scales the on-screen touch target into world units so the ghost
+        // is tappable at any zoom.
+        val slop = BEAUTIFY_TAP_SLOP_PX / viewport.scale.coerceAtLeast(MIN_DIV_SCALE)
+        return if (pending.hit(wx, wy, slop)) {
+            strokeBeautifyListener?.invoke(pending.rawItem, pending.beautified)
+            true
+        } else {
+            false
+        }
+    }
+
+    /** Render the staged beautify ghost (I5) — a translucent cleaned outline. */
+    private fun drawBeautifyGhost(canvas: Canvas) {
+        val pending = pendingBeautify ?: return
+        val xy = StrokeCodec.decode(pending.beautified.payload) // [x,y,p,t]*
+        val s = StrokeCodec.FLOATS_PER_SAMPLE
+        val n = xy.size / s
+        if (n < 2) return
+        scratchPath.rewind()
+        scratchPath.moveTo(xy[0], xy[1])
+        for (i in 1 until n) scratchPath.lineTo(xy[i * s], xy[i * s + 1])
+        beautifyGhostPaint.color = pending.beautified.colorArgb
+        beautifyGhostPaint.alpha = BEAUTIFY_GHOST_ALPHA
+        // Width is drawn in world units (inside the scaled canvas), floored so a
+        // thin stroke stays visible when zoomed out.
+        beautifyGhostPaint.strokeWidth = pending.beautified.baseWidthPx
+            .coerceAtLeast(ToolDynamics.MIN_SCREEN_WIDTH_PX / viewport.scale.coerceAtLeast(MIN_DIV_SCALE))
+        canvas.save()
+        canvas.translate(viewport.offsetX, viewport.offsetY)
+        canvas.scale(viewport.scale, viewport.scale)
+        canvas.drawPath(scratchPath, beautifyGhostPaint)
+        canvas.restore()
+    }
+
     // ── Ink-first authoring (phase I1) ────────────────────────────────────
     //
     // ink owns only the live, in-progress ink layer. On pen-lift the finished
@@ -1414,6 +1560,12 @@ class DrawingSurface(context: Context) : View(context) {
         inkStrokeActive = false
         inkAuthoringView?.removeFinishedStrokesListener(inkFinishedListener)
         inkAuthoringView = null
+        // Drop any unresolved beautify ghost so switching engines mid-preview
+        // can't leave a stale candidate pointing at a now-gone stroke.
+        if (pendingBeautify != null) {
+            pendingBeautify = null
+            invalidate()
+        }
     }
 
     /**
@@ -1517,7 +1669,16 @@ class DrawingSurface(context: Context) : View(context) {
             committedItems = committedItems + item
             sceneDirty = true
             strokeListener?.invoke(item)
-            if (meta.holdRecognition) strokeHoldRecognizeListener?.invoke(item)
+            // I5 — same beautify offer as the legacy path. ink's live input
+            // smoothing has already shaped the wet stroke on device; the
+            // committed inputs are still raw, so the beautify candidate is
+            // computed identically here (and is headless-equivalent to the
+            // legacy path — see [InkBeautifier] / [StrokeSmoothing]).
+            if (meta.holdRecognition) {
+                strokeHoldRecognizeListener?.invoke(item)
+            } else {
+                offerBeautify(item)
+            }
         }
         inkAuthoringView?.removeFinishedStrokes(strokes.keys)
         invalidate()
@@ -2660,6 +2821,13 @@ class DrawingSurface(context: Context) : View(context) {
         // already conveys position for hairline brushes.
         private const val BRUSH_CURSOR_MIN_RADIUS_PX = 3f
         private const val MIN_DIV_SCALE = 0.01f
+
+        // ── Live beautify ghost (phase I5) ─────────────────────────────
+        /** Alpha for the translucent cleaned-stroke ghost preview. */
+        private const val BEAUTIFY_GHOST_ALPHA = 140
+        /** Screen-space slop added to the ghost bbox for the accept-tap target. */
+        private const val BEAUTIFY_TAP_SLOP_PX = 24f
+
         // A lasso under three vertices can't enclose anything — drop the gesture silently.
         private const val MIN_LASSO_VERTICES = 3
         private const val LASSO_STROKE_WIDTH_PX = 2f
@@ -2729,6 +2897,9 @@ fun DrawingSurfaceView(
     onStickyTap: (worldX: Float, worldY: Float) -> Unit = { _, _ -> },
     // Sub-phase 11.3 — hold-to-snap shape recognition.
     onStrokeHoldRecognized: (NoteItem) -> Unit = { },
+    // Phase I5 — live beautify: the user tapped the ghost to accept the cleaned
+    // candidate; the receiver swaps raw → beautified as one undoable edit.
+    onStrokeBeautifyAccepted: (rawItem: NoteItem, beautified: NoteItem) -> Unit = { _, _ -> },
     // Sub-phase 11.5 — presentation mode: stylus draws transient laser ink,
     // barrel button advances the frame stepper.
     presentationMode: Boolean = false,
@@ -2766,6 +2937,7 @@ fun DrawingSurfaceView(
     val currentOnTextTap by rememberUpdatedState(onTextTap)
     val currentOnStickyTap by rememberUpdatedState(onStickyTap)
     val currentOnHoldRecognized by rememberUpdatedState(onStrokeHoldRecognized)
+    val currentOnBeautifyAccepted by rememberUpdatedState(onStrokeBeautifyAccepted)
     val currentOnPresentationAdvance by rememberUpdatedState(onPresentationAdvance)
     val currentOnFrameDrawn by rememberUpdatedState(onFrameDrawn)
     val currentOnFrameTap by rememberUpdatedState(onFrameTap)
@@ -2791,6 +2963,7 @@ fun DrawingSurfaceView(
                 textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
                 stickyTapListener = { wx, wy -> currentOnStickyTap(wx, wy) }
                 strokeHoldRecognizeListener = { item -> currentOnHoldRecognized(item) }
+                strokeBeautifyListener = { raw, beautified -> currentOnBeautifyAccepted(raw, beautified) }
                 presentationAdvanceListener = { currentOnPresentationAdvance() }
                 frameDragListener = { bounds -> currentOnFrameDrawn(bounds) }
                 frameTapListener = { wx, wy -> currentOnFrameTap(wx, wy) }
@@ -2839,6 +3012,7 @@ fun DrawingSurfaceView(
             view.textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
             view.stickyTapListener = { wx, wy -> currentOnStickyTap(wx, wy) }
             view.strokeHoldRecognizeListener = { item -> currentOnHoldRecognized(item) }
+            view.strokeBeautifyListener = { raw, beautified -> currentOnBeautifyAccepted(raw, beautified) }
             view.presentationAdvanceListener = { currentOnPresentationAdvance() }
             view.presentationMode = presentationMode
             view.frameDragListener = { bounds -> currentOnFrameDrawn(bounds) }

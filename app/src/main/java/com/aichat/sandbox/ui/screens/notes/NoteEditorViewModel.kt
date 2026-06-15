@@ -1658,6 +1658,31 @@ class NoteEditorViewModel @Inject constructor(
         ))
     }
 
+    /**
+     * Phase I5 — the user accepted the live-beautify ghost. The surface already
+     * committed [rawItem] as raw ink (via [addItem]); swap it for [beautified]
+     * (same id / colour / width / layer / z, cleaned [NoteItem.payload]) as one
+     * `CompositeEdit("Beautify")`, so a single undo restores the raw stroke.
+     *
+     * The swap goes through `modified` (matched by id), and [beautified] is a
+     * plain `STROKE_KIND` item carrying a canonical [StrokeCodec] payload — the
+     * AI edit-ops pipeline never sees ink (Adoption principle 2).
+     */
+    fun onStrokeBeautifyAccepted(rawItem: NoteItem, beautified: NoteItem) {
+        val committed = items.firstOrNull { it.id == rawItem.id } ?: return
+        if (committed.kind != STROKE_KIND) return
+        // Re-anchor the cleaned payload onto the *stored* item so layer / z /
+        // noteId assigned at commit time are preserved exactly.
+        val cleaned = committed.copy(payload = beautified.payload)
+        if (cleaned.payload.contentEquals(committed.payload)) return
+        apply(EditorAction.CompositeEdit(
+            description = "Beautify",
+            added = emptyList(),
+            removed = emptyList(),
+            modified = listOf(committed to cleaned),
+        ))
+    }
+
     /** Remove items matching [ids] (issued by the eraser swipe). */
     fun removeItems(ids: List<String>) {
         if (ids.isEmpty()) return

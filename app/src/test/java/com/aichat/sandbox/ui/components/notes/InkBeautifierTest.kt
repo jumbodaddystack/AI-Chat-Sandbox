@@ -2,6 +2,7 @@ package com.aichat.sandbox.ui.components.notes
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
@@ -103,5 +104,44 @@ class InkBeautifierTest {
         val a = InkBeautifier.beautify(input.copyOf(), stride)
         val b = InkBeautifier.beautify(input.copyOf(), stride)
         assertArrayEquals(a, b, 0f)
+    }
+
+    // ── Phase I5 — candidate() decision (ghost-preview gating) ──────────────
+
+    @Test
+    fun beautifyMatchesCandidateSamples() {
+        val input = noisyLine(60, 4f)
+        val viaBeautify = InkBeautifier.beautify(input.copyOf(), stride)
+        val viaCandidate = InkBeautifier.candidate(input.copyOf(), stride).samples
+        assertArrayEquals(viaBeautify, viaCandidate, 0f)
+    }
+
+    @Test
+    fun noisyStrokeIsWorthOffering() {
+        // Real jitter the clean visibly removes → offer the ghost.
+        val candidate = InkBeautifier.candidate(noisyLine(60, 8f), stride)
+        assertTrue("a visibly jittery stroke should be offered", candidate.changed)
+    }
+
+    @Test
+    fun alreadyStraightStrokeIsNotOffered() {
+        // A clean straight line: the clean wouldn't visibly alter it.
+        val count = 40
+        val clean = FloatArray(count * stride)
+        for (i in 0 until count) {
+            clean[i * stride] = i * 10f
+            clean[i * stride + 1] = 100f
+            clean[i * stride + 2] = 0.5f
+            clean[i * stride + 3] = 0.1f
+        }
+        val candidate = InkBeautifier.candidate(clean, stride)
+        assertFalse("a clean line should not nag with a ghost", candidate.changed)
+    }
+
+    @Test
+    fun shortStrokeIsNotOffered() {
+        val candidate = InkBeautifier.candidate(noisyLine(5, 4f), stride)
+        assertFalse(candidate.changed)
+        assertArrayEquals(noisyLine(5, 4f), candidate.samples, 0f)
     }
 }

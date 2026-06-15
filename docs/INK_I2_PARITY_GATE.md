@@ -75,6 +75,9 @@ Reports written by the run:
 | 14 | **Fallback recovers without data loss** (toggle off mid-stroke; ink call failure drops one stroke) | ◑ logic in place, device feel open | `detachInkAuthoring`/`cancelInkStroke` guard every ink call; the in-flight stroke is abandoned cleanly. Verified by reading the lifecycle; the *felt* recovery needs the device. |
 | 15 | **Jitter + procedural texture parity** (pen grain, marker/watercolor tiles) | ◑ **partially closed by I4** | I4 closed the *geometry* brush gaps (taper, tilt-width, highlighter width — items 6/7). **Procedural texture** stays deferred: it's a `BrushPaint.TextureLayer` appearance item that needs the on-device `CanvasStrokeRenderer` pixel pass (item 11). **Jitter** stays deferred: stable 1.0.0 exposes no randomized/noise `BrushBehavior.Source`, so a faithful jitter brush is only expressible on the isolated 1.1-alpha path (`data.ink.experimental.InkProgrammableBrush`) — never on the stable seam. |
 
+| 16 | **Live beautify (I5/N3) geometry** — input-smoothing low-pass + RDP + Chaikin clean, and the ink-rendered result is smoother | ✅ headless | `StrokeSmoothingTest`, `InkBeautifierTest` (candidate/offer), `InkSmoothParityTest` — ink's native mesh outline turning sum drops ~6× (60.1→9.7) after beautify, faithful to within ~3.3% of the bbox diagonal |
+| 17 | **Live beautify ghost appearance + tap-to-accept feel** | ⬜ device-only | The translucent candidate overlay and the confirm-tap target; logic/state wired (`pendingBeautify` → `onStrokeBeautifyAccepted` → one `CompositeEdit`), appearance needs the panel — see "On-device harness" E |
+
 Legend: ✅ verified headless · ◑ logic verified headless, on-device confirmation still owed · ⬜ device-only / deferred.
 
 ---
@@ -121,6 +124,21 @@ pixel-level appearance. To close it:
 9. Toggle the switch off mid-stroke and force an ink failure (e.g. detach); confirm
    no half-drawn or lost stroke and a clean fall back to the quad-Bézier path.
 
+### E. Live beautify ghost + accept (items 16, 17 — phase I5)
+The beautify **geometry** is verified headless (item 16). What needs the device
+is the **preview surface**, with the ink switch forced on and beautify enabled:
+10. Draw a jittery stroke; confirm the raw stroke commits and a translucent
+    **cleaned ghost** appears over it. Confirm the ghost is the smoother line
+    (it should read as visibly de-noised vs the raw beneath it).
+11. **Tap the ghost** → it replaces the raw stroke as one edit; a single **undo**
+    restores the exact raw ink. **Tap away** (or start a new stroke) → the ghost
+    dismisses and the raw stroke is kept untouched.
+12. Confirm a **hold-to-recognize** gesture still wins (a held lift recognizes a
+    shape and no beautify ghost is offered for that stroke).
+13. With a recording active, beautify a stroke and confirm **audio sync** holds
+    (the v2 `t` lane survives the clean — headless-checked, re-confirm the felt
+    replay timing on device).
+
 ---
 
 ## Decision
@@ -139,6 +157,13 @@ only on:
   **procedural texture** (a `BrushPaint.TextureLayer` appearance item folded into
   the device pixel diff, item 11) and **jitter** (no stable randomized source;
   isolated to the 1.1-alpha path). Neither is a headless-expressible regression.
+
+**Phase I5 (live beautify / N3)** adds two rows (16, 17): the beautify
+**geometry** is closed headless — including against the *real* ink engine
+(`InkSmoothParityTest` shows ink renders the beautified stroke with a ~6×
+smaller mesh-outline turning sum) — while the ghost **appearance** and
+tap-to-accept feel join the device-only column (section E). I5 builds on the
+authoring path but does **not** change this decision.
 
 Per Adoption principle 1 ("ink is the intended primary, the flag exists to fall
 *back*, not to opt *in* — but it still needs a checklist before default-on"), the

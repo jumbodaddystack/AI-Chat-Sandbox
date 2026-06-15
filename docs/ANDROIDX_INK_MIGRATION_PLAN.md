@@ -245,6 +245,26 @@ as migration consumers so the engine work preserves their requirements.
 - **Pipeline:** purely local for the geometric clean; AI only consulted for the
   ambiguous "did you mean this shape?" cases (reuses `AUTO_SHAPE` /
   `replace_with_shape`). Ghost-preview the beautified stroke; tap to accept.
+- **Status (I5):** **done — headless slice; ghost appearance device-only.** The
+  three-stage clean is now (1) [`StrokeSmoothing`] input-smoothing low-pass →
+  (2) RDP de-noise → (3) Chaikin, wired into **both** commit paths
+  (`commitLiveStroke` and the ink-authoring `onInkStrokesFinished`). Beautify is
+  a tap-to-accept **candidate**: the raw stroke commits, and when the clean would
+  visibly alter it ([`InkBeautifier.Candidate.changed`]) a translucent ghost is
+  staged; a tap on it accepts (`onStrokeBeautifyAccepted` → one undoable
+  `CompositeEdit("Beautify")`), a tap elsewhere (or a new stroke) declines. The
+  committed payload stays canonical [`StrokeCodec`] (v2 timestamps preserved — we
+  beautify in the payload's own stride), so the AI edit-ops pipeline never sees
+  ink. **Headless-verified:** `StrokeSmoothingTest`, the extended
+  `InkBeautifierTest` (candidate/offer decision), and `InkSmoothParityTest` —
+  which builds *real ink strokes* (`ink-*-jvm` + `libink.so`) and shows ink
+  renders the beautified stroke with a ~6× smaller mesh-outline turning sum
+  (60.1 → 9.7) while staying faithful to the input (max deviation ~3.3% of the
+  stroke's size). **Device-only (documented checklist, not claimed to pass):**
+  the on-screen ghost appearance, the tap-to-accept feel, and the live wet-layer
+  smoothing on the S25 Ultra — see [`INK_I2_PARITY_GATE.md`](INK_I2_PARITY_GATE.md).
+  I5 builds on the authoring path but is **not** a trigger to flip the I2
+  default-on switch: ink stays **default-off**.
 
 ### N4. Stroke replay / "draw with me"  (supports ideas #7)
 - **What:** replay drawing order as an animation — timelapse export, and a
@@ -273,7 +293,7 @@ as migration consumers so the engine work preserves their requirements.
 | **I2 — Rendering + behavior parity gate** 🟡 **headless slice done; I4 brush gaps closed; device items open — ink stays default-off** | Match ink mesh rendering to `StrokeRenderer` (taper/tilt/width) and verify latency, undo/redo, layer commit, eraser (incl. **no regression for non-stroke kinds** — shapes, stickies, connectors, paths), shape recognition, and audio timestamp sync before default-on. **Headless verified:** eraser parity across all `NoteItem` kinds, commit-pipeline + audio-timestamp correctness, and — after I4 — pressure-taper / pencil-tilt-width / highlighter-width / footprint geometry parity, all as permanent JVM tests (`data.ink.parity.*`). **Still open (no device here):** on-device latency/front-buffer, the colour/opacity/**texture**/AA pixel diff, overlay touch pass-through, and the deferred procedural-texture + jitter brush appearance. See [`INK_I2_PARITY_GATE.md`](INK_I2_PARITY_GATE.md). | rendering, brush | Med |
 | **I3 — Optional additive storage + v3 lane** | `StrokeCodec` stays canonical (decided). *Only* if a concrete need appears (e.g. an AI-designed `BrushFamily` per stroke, or a cross-device interchange blob), add **additive dual-write** data that existing code never reads; define the exact v3 orientation/timestamp layout if a brush needs it. Ink-native canonical is ruled out. | strokes, storage | Low/Med |
 | **I4 — Brush richness + N1 foundation** ✅ **done (stable adapter + N1 scaffold; texture/jitter still deferred)** | Stable custom-brush adapter ([`InkBrushFamilies`](INK_I2_PARITY_GATE.md)) closes the I2 gate's brush-geometry gaps — pressure taper (pen), tilt-width (pencil), highlighter width — all at parity headless (corr > 0.999; every tool now GO). The 1.1-alpha programmable/jitter path is isolated and **not** depended on (`data.ink.experimental.InkProgrammableBrush`). The `DESIGN_BRUSH` (N1) AI mode is scaffolded end-to-end (text→validated brush-spec JSON→user-scope `BrushPreset`, no canvas mutation). Procedural **texture** + **jitter** stay deferred (device-pixel / alpha-only). | brush, rendering | Med |
-| **I5 — Live beautify (N3)** | ink input smoothing into the pen-lift beautify flow | authoring, rendering | Low/Med |
+| **I5 — Live beautify (N3)** ✅ **done (headless slice; ghost appearance device-only; ink stays default-off)** | ink input smoothing into the pen-lift beautify flow. A pure-JVM input-smoothing low-pass ([`StrokeSmoothing`](../app/src/main/java/com/aichat/sandbox/ui/components/notes/StrokeSmoothing.kt)) — the headless stand-in for `ink-authoring`'s Android-only device-side input modeler — now feeds [`InkBeautifier`]'s RDP+Chaikin clean, on **both** the legacy and the ink-authoring commit paths. The clean is a **candidate**, not an in-place mutation: the pen-lift commits the raw stroke and a ghost is offered (tap to accept → raw→beautified as one undoable `CompositeEdit`, decline = keep raw), reusing the hold-recognize swap model. The geometric clean stays **purely local**; the AI is consulted only for the ambiguous shape cases via the unchanged `AUTO_SHAPE`/`replace_with_shape` hold-recognize path. Verified headless against the **real ink engine**: ink renders the beautified stroke with a ~6× smoother native mesh outline (`InkSmoothParityTest`). | authoring, rendering | Low/Med |
 | **I6 — Mesh-backed geometry adoption** | Back `HitTest`/`LassoController` with `PartitionedMesh`; add per-stroke mesh cache, invalidation, spatial prefilter, and item/layer mapping | geometry | Low/Med |
 | **I7 — Select-similar + snapping (N2, idea #8)** | mesh-based similarity + constraint engine + AI ranking | geometry | Med |
 | **I8 — Replay / draw-with-me (N4, idea #7)** | timestamp-driven replay, tutor guide layer, timelapse export | strokes, rendering | Med |
@@ -366,6 +386,56 @@ The full default-on checklist and the reproducible on-device harness live in
   the I4 brush-richness work (jitter, procedural texture, highlighter-width and
   pencil tilt/grain). Until the on-device harness passes and I4 closes the
   texture/jitter gap, the "Ink engine (experimental)" switch is **not** flipped.
+
+### I5 — what shipped (headless) vs. device-only
+
+The live-beautify (N3) clean-snap, built on the I1 authoring path and kept
+**default-off** (it does not flip the I2 switch):
+
+- **Three-stage clean.** `InkBeautifier` now runs an **input-smoothing low-pass**
+  (`StrokeSmoothing`) before its existing RDP de-noise + Chaikin. The low-pass is
+  a binomial (`0.25/0.5/0.25`) centerline filter — endpoint- and
+  monotone-timestamp-preserving, stride-agnostic, pure and deterministic. It is
+  the **headless stand-in** for `ink-authoring`'s device-side input modeler:
+  that modeler lives in the Android-only `ink-authoring` module (off the
+  unit-test classpath) and only shapes the *wet* rendering — the finished
+  `Stroke.inputs` ink hands back on pen-lift are raw — so to feed "ink-style"
+  smoothing into beautify *and* verify it headless, I5 re-expresses the low-pass
+  in pure JVM.
+- **Both commit paths.** Beautify is offered identically from `commitLiveStroke`
+  (legacy quad-Bézier path) and `onInkStrokesFinished` (ink-authoring path), so
+  turning ink on doesn't change the clean behaviour.
+- **Candidate + ghost, not in-place mutation.** The pen-lift commits the **raw**
+  stroke; `InkBeautifier.candidate()` returns the cleaned samples plus a
+  `changed` flag (max-deviation vs the raw, normalised by the stroke's bbox —
+  so dots/already-clean strokes don't nag). When changed, `DrawingSurface` stages
+  a translucent ghost; the next touch-down resolves it (tap on it → accept, tap
+  elsewhere → decline). Accept fires `onStrokeBeautifyAccepted`, which swaps
+  raw → beautified via one `CompositeEdit("Beautify")` (matched by id through
+  `modified`) so a single undo restores the raw ink — the same swap model as
+  hold-to-recognize, which still takes precedence when a hold is detected.
+- **Inviolable contract held.** The beautified payload is encoded in the raw
+  stroke's own codec stride (v2 keeps its per-sample `t` lane, so audio sync
+  survives) and stays a canonical `StrokeCodec` `STROKE_KIND` item — the AI
+  edit-ops pipeline never sees ink (Adoption principle 2).
+
+- **Verified headless (permanent JVM tests):**
+  - `StrokeSmoothingTest` — endpoint preservation, jitter attenuation,
+    sample-count + monotone-time invariance, iteration monotonicity,
+    no-input-mutation, determinism.
+  - `InkBeautifierTest` (extended) — `beautify == candidate.samples`, and the
+    offer decision (noisy → offered, clean line / short stroke → not offered).
+  - `InkSmoothParityTest` (`data.ink.parity.*`) — the **ink-native** slice:
+    builds real ink `Stroke`s through `InkInterop` and measures ink's
+    `PartitionedMesh` outline. The beautified stroke renders with a ~6× smaller
+    total turning sum than the raw (60.1 → 9.7 radians), and the clean stays
+    faithful (max deviation ~3.3% of the stroke's bbox diagonal). This is the
+    genuine "ink input smoothing makes the snap cleaner", proven against ink's
+    own geometry on the headless container.
+- **Deferred to device (documented checklist, not claimed to pass):** the
+  on-screen ghost appearance, the tap-to-accept feel, and whether the live ink
+  wet-layer smoothing is visibly cleaner on the S25 Ultra. See
+  [`INK_I2_PARITY_GATE.md`](INK_I2_PARITY_GATE.md), section E.
 
 ## Risks & open questions
 
