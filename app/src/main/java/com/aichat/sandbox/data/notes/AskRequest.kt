@@ -56,5 +56,14 @@ data class AskRequest(
     val refine: Boolean = false,
 )
 
-/** Top-level dispatch for [NoteAiService] — see [AskRequest.mode]. */
-enum class AskMode { ASK, EDIT }
+/**
+ * Top-level dispatch for [NoteAiService] — see [AskRequest.mode].
+ *
+ * - [ASK] — free-form question about the note.
+ * - [EDIT] — reply with a typed `edit-ops` document ([EditOpsParser]).
+ * - [DESIGN_BRUSH] — phase I4 / N1: reply with a small, validated brush-spec
+ *   JSON ([BrushSpecParser]) that becomes a user-scope `BrushPreset`. No canvas
+ *   mutation — only the user's brush library grows — so it ignores
+ *   selection / layers entirely and reads only [userPrompt].
+ */
+enum class AskMode { ASK, EDIT, DESIGN_BRUSH }

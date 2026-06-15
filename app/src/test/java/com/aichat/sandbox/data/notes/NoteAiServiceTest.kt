@@ -385,6 +385,57 @@ class NoteAiServiceTest {
         assertEquals(EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE, streamer.lastChat!!.systemMessage)
     }
 
+    // ---- I4 / N1: DESIGN_BRUSH mode ----
+
+    @Test
+    fun designBrushModeEmitsValidatedBrushDesign() = runTest {
+        val streamer = RecordingChatStreamer(
+            flow = flowOf(
+                StreamEvent.Delta("```json\n{ \"schema\": 1, \"brush\": { "),
+                StreamEvent.Delta("\"name\": \"Inky Pen\", \"tool\": \"pen\", "),
+                StreamEvent.Delta("\"color\": \"#101820\", \"width\": 5, \"taperEnd\": 0.3 } }\n```"),
+                StreamEvent.Complete(Usage(promptTokens = 3, completionTokens = 4, totalTokens = 7)),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = ExplodingImageRenderer, // brush design must not rasterize
+        )
+
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = emptyList(),
+                selection = null,
+                userPrompt = "an inky pen with taper",
+                modelId = "gpt-4o",
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.DESIGN_BRUSH,
+            )
+        ).toList()
+
+        val design = chunks.filterIsInstance<AiChunk.BrushDesign>().single()
+        assertEquals("Inky Pen", design.spec.name)
+        assertEquals("pen", design.spec.tool)
+        assertEquals(0xFF101820.toInt(), design.spec.colorArgb)
+        assertEquals(5f, design.spec.baseWidthPx, 0f)
+        assertEquals(0.3f, design.spec.taperEnd, 1e-4f)
+        assertEquals(7, design.usage?.totalTokens)
+        // The designer uses its own system message and a plain text turn — no raster.
+        assertEquals(NoteAiService.DESIGN_BRUSH_SYSTEM_MESSAGE, streamer.lastChat!!.systemMessage)
+        val sent = streamer.lastMessages.single()
+        assertEquals("text", sent.contentType)
+        assertTrue(sent.content.contains("an inky pen with taper"))
+    }
+
+    // NOTE: the malformed-reply *service* path (parse failure → AiChunk.Error)
+    // is intentionally not unit-tested here — it routes through `android.util.Log`
+    // which is unmocked on the JVM host (the same documented limitation as
+    // `editModeMalformedReplyEmitsError`). The parse-failure behaviour itself is
+    // covered headlessly by `BrushSpecParserTest.emptyOrJsonlessReplyFails`.
+
     // ---- helpers ----
 
     private fun visionRequest(strokes: List<NoteItem>): AskRequest = AskRequest(

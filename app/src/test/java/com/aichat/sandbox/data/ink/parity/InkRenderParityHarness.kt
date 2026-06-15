@@ -18,13 +18,13 @@ import kotlin.math.hypot
  * footprint* question (coverage / area IoU); this harness answers the
  * complementary **width-profile** question taper actually turns on: *does ink's
  * local stroke thickness rise and fall along the stroke the same way the current
- * engine's [ToolDynamics] curve does?* The measured answer (see
- * `InkRenderParityTest.pressureTaperIsCurrentEngineOnlyUntilI4`) is **no, not
- * yet**: ink's stable stock `pressurePen` holds a constant `size`-width tube,
- * because `InkInterop` maps only the stable brush *identity* (family + colour +
- * size) — pressure-driven taper needs a custom `BrushTip`/`BrushBehavior` and is
- * an explicit **I4** item. This harness exists to *measure* that gap precisely,
- * not to assert a parity that doesn't hold yet.
+ * engine's [ToolDynamics] curve does?* Pre-I4 the answer was *no* (ink's stock
+ * `pressurePen` held a constant `size`-width tube). Phase **I4** closed it: the
+ * custom [com.aichat.sandbox.data.ink.InkBrushFamilies] families drive
+ * `SIZE_MULTIPLIER` from pressure (pen) and tilt (pencil), so this harness now
+ * measures ink tracking the current engine's profile (see
+ * `InkRenderParityTest.pressureTaperMatchesCurrentEngineAfterI4` /
+ * `pencilTiltWidthMatchesCurrentEngineAfterI4`).
  *
  * Both profiles are sampled at the stroke's own centerline points:
  *  - **current:** the [ToolDynamics] half-width at that sample's pressure/tilt —
@@ -193,7 +193,19 @@ object InkRenderParityHarness {
     // ── Sample synthesis ──────────────────────────────────────────────────────
 
     /** Horizontal stroke with a per-sample pressure profile, as `[x,y,p,t]*`. */
-    fun horizontalStroke(n: Int, pressure: (Float) -> Float, tilt: Float = 0.15f): FloatArray {
+    fun horizontalStroke(n: Int, pressure: (Float) -> Float, tilt: Float = 0.15f): FloatArray =
+        horizontalStroke(n, pressure = pressure, tilt = { tilt })
+
+    /**
+     * Horizontal stroke with per-sample pressure **and** tilt profiles. The
+     * tilt-ramp form is what the pencil tilt-width parity test exercises (the
+     * current engine fans the pencil wider as tilt rises; I4 must too).
+     */
+    fun horizontalStroke(
+        n: Int,
+        pressure: (Float) -> Float = { 0.6f },
+        tilt: (Float) -> Float,
+    ): FloatArray {
         val out = FloatArray(n * StrokeCodec.FLOATS_PER_SAMPLE)
         for (i in 0 until n) {
             val t = if (n <= 1) 0f else i.toFloat() / (n - 1)
@@ -201,7 +213,7 @@ object InkRenderParityHarness {
             out[b] = 40f + 320f * t
             out[b + 1] = 200f
             out[b + 2] = pressure(t).coerceIn(0f, 1f)
-            out[b + 3] = tilt
+            out[b + 3] = tilt(t).coerceIn(0f, (Math.PI / 2).toFloat())
         }
         return out
     }

@@ -25,4 +25,14 @@ sealed interface AiChunk {
         val layerMap: Map<String, String>,
         val usage: Usage? = null,
     ) : AiChunk
+
+    /**
+     * Phase I4 / N1 — terminal event emitted by `DESIGN_BRUSH` mode. Carries the
+     * validated [spec] the UI turns into a user-scope `BrushPreset` (via
+     * [BrushSpec.toPreset]). No canvas edit is implied — only the brush library.
+     */
+    data class BrushDesign(
+        val spec: BrushSpec,
+        val usage: Usage? = null,
+    ) : AiChunk
 }

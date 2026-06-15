@@ -144,3 +144,25 @@ concrete items into **I4 (brush richness)**:
 And one item for the **I2 parity gate**: the on-device **colour / opacity /
 texture / anti-aliasing** pixel diff that this headless geometry spike
 deliberately does not cover.
+
+---
+
+## Update — closed by phase I4 (brush richness)
+
+Both carried items above are now **closed** by the stable I4 adapter
+([`InkBrushFamilies`](../app/src/main/java/com/aichat/sandbox/data/ink/InkBrushFamilies.kt)),
+re-measured by this same corpus
+(`InkRenderParityTest.footprintVerdictsHoldAsPermanentGate`):
+
+1. **Highlighter width — done.** A calibrated round tip brings the highlighter
+   footprint from **areaRatio 0.71× → 1.01×** (mean coverage 0.694 → **0.974**);
+   its verdict is now **GO**.
+2. **Pencil tilt-width — done.** A `TILT_IN_RADIANS → SIZE_MULTIPLIER` behavior
+   restores the tilt broadening (mean coverage 0.836 → **0.942**, verdict **GO**).
+   The pencil *grain texture* is the one piece that remains deferred — it's a
+   `BrushPaint.TextureLayer` appearance item that needs the on-device pixel pass,
+   not a geometry gap.
+
+For the record, after I4 **all four tools are GO** (pen 0.811→0.923,
+pencil 0.836→0.942, highlighter 0.694→0.974, marker 0.885 unchanged). The
+on-device colour/opacity/**texture**/AA pixel diff remains the I2 device item.
