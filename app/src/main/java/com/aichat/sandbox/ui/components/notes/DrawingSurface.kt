@@ -1560,58 +1560,20 @@ class DrawingSurface(context: Context) : View(context) {
             // items can't be hit because they aren't rendered.
             if (layerLookup.isLocked(item)) continue
             if (!layerLookup.isVisible(item)) continue
-            val hit = when (item.kind) {
-                STROKE_KIND -> {
-                    val decoded = decode(item) ?: continue
-                    if (!HitTest.bboxContainsPoint(decoded.bounds, px, py, radius)) false
-                    else HitTest.pointWithinStroke(decoded.samples, decoded.count, px, py, radius)
-                }
-                Shape.KIND -> {
-                    val shape = ShapeCodec.decode(item.payload).shape
-                    val sb = ShapeCodec.boundsOf(shape) ?: continue
-                    if (!HitTest.bboxContainsPoint(sb, px, py, radius)) false
-                    else HitTest.shapeContainsPoint(shape, px, py, radius)
-                }
-                // 11.1/11.2 — stickies erase via their rect; connectors via
-                // the resolved segment (line hit-test with eraser radius).
-                StickyCodec.KIND -> {
-                    val sb = StickyCodec.boundsOf(StickyCodec.decode(item.payload))
-                    px >= sb[0] - radius && px <= sb[2] + radius &&
-                        py >= sb[1] - radius && py <= sb[3] + radius
-                }
-                ConnectorCodec.KIND -> {
-                    // 14.2 — erase against the routed polyline (curves
-                    // flatten), so elbow/curved connectors erase where they
-                    // actually draw.
-                    val pts = ConnectorRouter.flatten(
-                        routeConnector(ConnectorCodec.decode(item.payload)),
-                    )
-                    var segHit = false
-                    for (s in 0 until pts.size / 2 - 1) {
-                        if (HitTest.shapeContainsPoint(
-                                Shape.Line(
-                                    pts[s * 2], pts[s * 2 + 1],
-                                    pts[s * 2 + 2], pts[s * 2 + 3],
-                                ),
-                                px, py, radius,
-                            )
-                        ) {
-                            segHit = true
-                            break
-                        }
-                    }
-                    segHit
-                }
-                // 12.1 — paths erase via the flattened curve (interior counts
-                // when closed, mirroring closed polygons).
-                PathCodec.KIND -> {
-                    val payload = PathCodec.decode(item.payload)
-                    val pb = PathCodec.boundsOf(payload) ?: continue
-                    if (!HitTest.bboxContainsPoint(pb, px, py, radius)) false
-                    else HitTest.pathContainsPoint(payload, px, py, radius)
-                }
-                else -> false
-            }
+            // Per-kind hit decision lives in the pure [EraserHitTest] helper so
+            // the I2 gate can lock in that *every* kind (not just ink strokes)
+            // keeps erasing through [HitTest] — ink's stroke-only mesh never
+            // displaces it. The decoded-stroke cache and connector routing are
+            // injected because they depend on this view's live state.
+            val hit = EraserHitTest.hits(
+                item, px, py, radius,
+                decodeStroke = { stroke ->
+                    decode(stroke)?.let { EraserHitTest.StrokeGeom(it.samples, it.count, it.bounds) }
+                },
+                connectorPolyline = { connector ->
+                    ConnectorRouter.flatten(routeConnector(ConnectorCodec.decode(connector.payload)))
+                },
+            )
             if (hit) {
                 pendingErase.add(item.id)
                 changed = true

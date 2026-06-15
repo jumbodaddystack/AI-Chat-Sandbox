@@ -261,7 +261,7 @@ as migration consumers so the engine work preserves their requirements.
 | **I0.5 — Toolchain bump** | `compileSdk`/`targetSdk` 36, AGP 8.9+/8.11+, Gradle wrapper, re-verify build | — | Low/Med |
 | **I0.7 — Rendering fidelity spike** ✅ **done** | Render 50–100 representative strokes through both `StrokeRenderer` and `CanvasStrokeRenderer`; pixel/visual diff; per-tool go/no-go (pen, pencil, highlighter, marker) **before** building the authoring path. **Result:** pen/pencil/marker **GO**, highlighter **GO-with-brush-work** (ink stock highlighter ~0.71× our footprint); no NO-GO — see [`INK_I07_RENDERING_FIDELITY_SPIKE.md`](INK_I07_RENDERING_FIDELITY_SPIKE.md) | rendering, brush | Low — throwaway |
 | **I1 — Authoring prototype (ink-first)** ✅ **done** | `InProgressStrokesView` wired finish→convert→commit behind a fallback-capable runtime switch ("Ink engine (experimental)", default **off**); not default until the I2 parity checklist passes. ink ships on-device (`ink-authoring`/`ink-rendering` + `libink.so`); the live wet layer is ink's, the pen-lift `Stroke → StrokeCodec` conversion (`InkInterop.fromStroke`) keeps the committed payload byte-identical so storage / undo / the AI edit pipeline never see ink. | authoring, rendering | Med |
-| **I2 — Rendering + behavior parity gate** | Match ink mesh rendering to `StrokeRenderer` (taper/jitter/texture) and verify latency, undo/redo, layer commit, eraser (incl. **no regression for non-stroke kinds** — shapes, stickies, connectors, paths), shape recognition, and audio timestamp sync before default-on | rendering, brush | Med |
+| **I2 — Rendering + behavior parity gate** 🟡 **headless slice done; device items + I4 open — ink stays default-off** | Match ink mesh rendering to `StrokeRenderer` (taper/jitter/texture) and verify latency, undo/redo, layer commit, eraser (incl. **no regression for non-stroke kinds** — shapes, stickies, connectors, paths), shape recognition, and audio timestamp sync before default-on. **Headless verified:** eraser parity across all `NoteItem` kinds, commit-pipeline + audio-timestamp correctness, taper/footprint geometry parity — all as permanent JVM tests (`data.ink.parity.*`). **Still open (no device here):** on-device latency/front-buffer, the colour/opacity/texture/AA pixel diff, overlay touch pass-through, and the I4 jitter/texture/highlighter-width/pencil-tilt brush work. See [`INK_I2_PARITY_GATE.md`](INK_I2_PARITY_GATE.md). | rendering, brush | Med |
 | **I3 — Optional additive storage + v3 lane** | `StrokeCodec` stays canonical (decided). *Only* if a concrete need appears (e.g. an AI-designed `BrushFamily` per stroke, or a cross-device interchange blob), add **additive dual-write** data that existing code never reads; define the exact v3 orientation/timestamp layout if a brush needs it. Ink-native canonical is ruled out. | strokes, storage | Low/Med |
 | **I4 — Brush richness + N1 foundation** | Stable brush-family mapping first; isolate 1.1-alpha programmable brush experiments; add `DESIGN_BRUSH` only after the spec/adapter settles | brush, rendering | Med |
 | **I5 — Live beautify (N3)** | ink input smoothing into the pen-lift beautify flow | authoring, rendering | Low/Med |
@@ -322,6 +322,41 @@ colour/opacity/texture/AA pixel diff, undo/redo + layer-commit + eraser
 and pencil tilt-width/grain from I0.7/I4, and confirming the overlay's
 touch-pass-through and front-buffer compositing on the S25 Ultra panel before
 ink can become default-on.
+
+### I2 — what's verified headless vs. deferred to device
+
+The full default-on checklist and the reproducible on-device harness live in
+[`INK_I2_PARITY_GATE.md`](INK_I2_PARITY_GATE.md). Summary of this phase's work:
+
+- **Verified headless (permanent JVM tests, `data.ink.parity.*`):**
+  - **Eraser parity across every `NoteItem` kind.** The per-kind eraser dispatch
+    was lifted out of `DrawingSurface.eraseAtLastSample` into a pure
+    `EraserHitTest` helper; `EraserHitTestParityTest` proves strokes, shapes,
+    stickies, connectors, and paths all still hit-test through `HitTest` — and
+    that the non-stroke kinds erase **without ever touching stroke geometry**, so
+    ink's stroke-only mesh hit-testing can't displace them. It also proves a
+    committed ink-authored stroke erases byte-for-byte like a hand-drawn one.
+  - **Commit-pipeline + audio-timestamp correctness.** `InkCommitParityTest`
+    proves the two-clock reconciliation survives the authoring round-trip
+    (ink sees stroke-relative time; the commit restores recording-relative time),
+    that no-recording strokes stay v1, and that the committed payload decodes to
+    the canonical `[x,y,p,t]` lanes the AI `edit-ops` pipeline reads — `StrokeCodec`
+    stays canonical and the AI pipeline never sees ink (Adoption principle 2).
+  - **Rendering taper measurement + footprint geometry parity.**
+    `InkRenderParityTest` adds a perpendicular cross-section **width-profile**
+    measurement and, with it, **pins the taper gap**: the current engine tapers
+    ~2.5× over a pressure ramp, while ink's *stable stock* `pressurePen` holds a
+    constant `size`-width tube — pressure taper needs a custom
+    `BrushTip`/`BrushBehavior` and is an explicit **I4** item, so this is a parity
+    *gap*, not parity. It also promotes the throwaway I0.7 coverage spike into a
+    **permanent** per-tool footprint regression guard (no tool may regress to
+    NO_GO; pen/marker stay GO).
+- **Deferred to device / I4 (gate still open → ink stays default-off):**
+  the on-device colour/opacity/**texture**/AA pixel diff via `CanvasStrokeRenderer`,
+  latency + front-buffer compositing feel, the overlay's touch pass-through, and
+  the I4 brush-richness work (jitter, procedural texture, highlighter-width and
+  pencil tilt/grain). Until the on-device harness passes and I4 closes the
+  texture/jitter gap, the "Ink engine (experimental)" switch is **not** flipped.
 
 ## Risks & open questions
 
