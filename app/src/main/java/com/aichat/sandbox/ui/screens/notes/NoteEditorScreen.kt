@@ -618,6 +618,7 @@ fun NoteEditorScreen(
                     onTextTap = viewModel::onTextToolTap,
                     onStickyTap = viewModel::onStickyToolTap,
                     onStrokeHoldRecognized = viewModel::onStrokeHoldRecognized,
+                    onStrokeBeautifyAccepted = viewModel::onStrokeBeautifyAccepted,
                     modifier = Modifier.fillMaxSize(),
                     snapMask = snapMask,
                     layers = layers,
