@@ -70,5 +70,10 @@ data class AskRequest(
  *   colour plan. Non-mutating: the result is surfaced as swatches; applying it
  *   is a separate, previewable `recolor` step. [userPrompt] carries the chosen
  *   scheme hint; selection / layers scope the colours the model is shown.
+ * - [CRITIQUE] — phase 3: reply with a validated composition-critique JSON
+ *   ([CritiqueParser]) — 3–5 beginner-friendly suggestions, each with an
+ *   optional, *safe* edit-op payload. Non-mutating: the suggestions are
+ *   surfaced as cards; applying a suggestion's fix is a separate, previewable
+ *   step. selection / layers scope the geometry the model is shown.
  */
-enum class AskMode { ASK, EDIT, DESIGN_BRUSH, SUGGEST_PALETTE }
+enum class AskMode { ASK, EDIT, DESIGN_BRUSH, SUGGEST_PALETTE, CRITIQUE }

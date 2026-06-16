@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **Phases 1–2 implemented and verified as of 2026-06-16**.
+Status: **Phases 1–3 implemented and verified as of 2026-06-16**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -41,9 +41,14 @@ sessions.
 
 ### Still missing or only partially covered
 
-- **Composition critique** is still missing. `VectorQualityScorer` is not a
-  substitute: it scores vector XML readiness, not a user's hand-drawn note via
-  vision with beginner-friendly guidance.
+- **Composition critique** shipped in Phase 3. A "Critique" chip in the AI sheet
+  asks the model "how can I improve this?" and renders 3–5 beginner-friendly
+  suggestion cards (`CompositionCritique` / `CritiqueParser`), each with a
+  plain-language reason, confidence/effort labels, and — when a *safe*,
+  validated edit-op payload is present — a "Preview fix" that stages through the
+  shared `PendingEdit` / `AiEditDiffOverlay` accept/reject surface. (Previously
+  noted: `VectorQualityScorer` was not a substitute — it scores vector XML
+  readiness, not a hand-drawn note via vision.)
 - **Palette / color-harmony assistant** shipped in Phase 2. A "Palette help"
   panel in the AI sheet proposes 3–6 cohesive swatches (local color theory via
   `ColorHarmony`, optionally refined by the model through `AskMode.SUGGEST_PALETTE`
@@ -206,24 +211,62 @@ that stages edit-ops such as align, scale, simplify, restyle, or recolor.
 
 ### Tasks
 
-- [ ] Define a structured critique schema: `summary`, `suggestions[]`,
+- [x] Define a structured critique schema: `summary`, `suggestions[]`,
   `principle`, `why`, `optionalEditOps`, and `safetyNotes`.
-- [ ] Add a critique prompt that uses vision when available and falls back to
+  - Implemented as `CompositionCritique` (`data/notes/CompositionCritique.kt`):
+    `summary`, `suggestions` (1–5), and `safetyNotes`. Each `CritiqueSuggestion`
+    has `title`, `principle`, `why`, a `CritiqueConfidence` and `CritiqueEffort`
+    label, and an optional `ops: List<EditOp>` (the "optionalEditOps" payload).
+- [x] Add a critique prompt that uses vision when available and falls back to
   `VectorCanvasJson`/OCR when not.
-- [ ] Add parser/validator logic that tolerates prose-only suggestions and rejects
+  - `AskMode.CRITIQUE` + `NoteAiService.collectCritique` serialize the in-scope
+    items via `VectorCanvasJson` (so op ids line up) and attach the rasterized
+    preview for vision-capable models; non-vision models get OCR text +
+    `VectorCanvasJson` via `buildCritiquePromptBody`. `CritiqueParser.SYSTEM_MESSAGE`
+    pins a beginner-friendly, jargon-free JSON contract and the safe op vocabulary.
+- [x] Add parser/validator logic that tolerates prose-only suggestions and rejects
   unsafe or unparseable edit-op payloads.
-- [ ] Add a ViewModel entry point such as `requestCompositionCritique(scope)`.
-- [ ] Add UI to display suggestions as cards with “Preview fix” only when an
+  - `CritiqueParser` keeps prose-only suggestions, re-validates each suggestion's
+    `ops` through `EditOpsParser` (dropping invented / locked-layer ids), then
+    restricts survivors to a non-destructive subset (`CritiqueSuggestion.isSafeOp`:
+    `transform`/`recolor`/`restyle`/`simplify`/`smooth`/`replace_with_shape`).
+    Destructive/broad ops (`delete`, `add_*`, `set_layer`, `merge_paths`, `group`)
+    never survive, so a card with only unsafe ops degrades to prose-only rather
+    than sinking the reply.
+- [x] Add a ViewModel entry point such as `requestCompositionCritique(scope)`.
+  - `NoteEditorViewModel.requestCompositionCritique()` (freezes scope, fires the
+    `CRITIQUE` request, fills `critiqueState`), `previewCritiqueFix(index)`
+    (stages a suggestion's fix), and `dismissCritique()`. State rides a
+    `critiqueState: StateFlow<CritiqueUiState?>`.
+- [x] Add UI to display suggestions as cards with “Preview fix” only when an
   edit-op is valid.
-- [ ] Route “Preview fix” through the existing staged edit surface.
-- [ ] Add tests for prose-only critique, mixed valid/invalid actions, and locked
+  - `CritiquePanel` + `CritiqueCard` in `AiSideSheet.kt`, opened by a "Critique"
+    chip: a loading state, summary, scrollable suggestion cards (title, principle,
+    why, confidence/effort), and a "Preview fix" action shown only when
+    `suggestion.hasFix` (prose-only cards show a quiet "Tip only" marker). Includes
+    a re-run control and `safetyNotes` footer.
+- [x] Route “Preview fix” through the existing staged edit surface.
+  - `previewCritiqueFix` resolves the suggestion's ops through the captured
+    short-id ↔ uuid maps and `EditPreviewController.simulate`, then stages a
+    `PendingEdit`, so it previews through the same `AiEditDiffOverlay` + banner
+    accept/reject as every other AI edit.
+- [x] Add tests for prose-only critique, mixed valid/invalid actions, and locked
   layer handling.
+  - `CritiqueParserTest` (all green): prose-only validity, mixed valid/invalid
+    ops (unknown-id + unsafe ops dropped), unsafe-ops-strip-to-prose, unknown
+    layer drop, card clamping, fenced/bare JSON, and garbage no-throw.
 
 ### Acceptance criteria
 
-- The feature is useful even when no edit-op is returned.
-- Suggested edits are previewed on canvas and can be rejected.
-- The model cannot silently apply broad layout changes.
+- [x] The feature is useful even when no edit-op is returned.
+  - Prose-only suggestions are first-class; every card explains its `why` in
+    plain language and renders without a fix button.
+- [x] Suggested edits are previewed on canvas and can be rejected.
+  - "Preview fix" stages a `PendingEdit` through the shared diff overlay + banner.
+- [x] The model cannot silently apply broad layout changes.
+  - Fixes are restricted to a non-destructive op subset at parse time, and the
+    shared simulator drops locked-layer items and no-ops as a backstop; nothing
+    is ever applied without an explicit accept on the canvas banner.
 
 ---
 

@@ -17,10 +17,13 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -107,6 +110,10 @@ fun AiSideSheet(
     onPaletteAi: () -> Unit,
     onPalettePreviewRecolor: () -> Unit,
     onPaletteClose: () -> Unit,
+    critiqueState: CritiqueUiState?,
+    onRequestCritique: () -> Unit,
+    onPreviewCritiqueFix: (Int) -> Unit,
+    onCritiqueClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
@@ -175,6 +182,10 @@ fun AiSideSheet(
                     onPaletteAi = onPaletteAi,
                     onPalettePreviewRecolor = onPalettePreviewRecolor,
                     onPaletteClose = onPaletteClose,
+                    critiqueState = critiqueState,
+                    onRequestCritique = onRequestCritique,
+                    onPreviewCritiqueFix = onPreviewCritiqueFix,
+                    onCritiqueClose = onCritiqueClose,
                 )
             }
         }
@@ -206,6 +217,10 @@ private fun SheetContent(
     onPaletteAi: () -> Unit,
     onPalettePreviewRecolor: () -> Unit,
     onPaletteClose: () -> Unit,
+    critiqueState: CritiqueUiState?,
+    onRequestCritique: () -> Unit,
+    onPreviewCritiqueFix: (Int) -> Unit,
+    onCritiqueClose: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SheetHeader(
@@ -240,6 +255,17 @@ private fun SheetContent(
             )
             HorizontalDivider()
         }
+        // Phase 3 — composition critique panel sits alongside the palette panel,
+        // above the scope row, when open.
+        if (critiqueState?.isOpen == true) {
+            CritiquePanel(
+                state = critiqueState,
+                onPreviewFix = onPreviewCritiqueFix,
+                onRetry = onRequestCritique,
+                onClose = onCritiqueClose,
+            )
+            HorizontalDivider()
+        }
         ScopeAndCannedPromptRow(
             scopeLabel = state.scopeLabel,
             hasSelection = state.pendingSelection != null,
@@ -248,11 +274,13 @@ private fun SheetContent(
             isStreaming = state.isStreaming,
             canReScope = canReScope,
             paletteOpen = paletteState?.isOpen == true,
+            critiqueOpen = critiqueState?.isOpen == true,
             onCannedPrompt = onCannedPrompt,
             onIconQuickAction = onIconQuickAction,
             onClearScope = onClearScope,
             onReScopeToSelection = onReScopeToSelection,
             onOpenPalette = onOpenPalette,
+            onRequestCritique = onRequestCritique,
         )
         SheetFooter(
             inputText = state.inputText,
@@ -646,11 +674,13 @@ private fun ScopeAndCannedPromptRow(
     isStreaming: Boolean,
     canReScope: Boolean,
     paletteOpen: Boolean,
+    critiqueOpen: Boolean,
     onCannedPrompt: (CannedPrompt) -> Unit,
     onIconQuickAction: (IconQuickAction) -> Unit,
     onClearScope: () -> Unit,
     onReScopeToSelection: () -> Unit,
     onOpenPalette: () -> Unit,
+    onRequestCritique: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -716,6 +746,16 @@ private fun ScopeAndCannedPromptRow(
                     onClick = onOpenPalette,
                     enabled = !paletteOpen,
                     label = { Text("Palette help") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+            // Phase 3 — composition critique entry point, available for both
+            // notes and icons. Disabled while the panel is already open.
+            item(key = "critique") {
+                AssistChip(
+                    onClick = onRequestCritique,
+                    enabled = !critiqueOpen,
+                    label = { Text("Critique") },
                     colors = AssistChipDefaults.assistChipColors(),
                 )
             }
@@ -883,6 +923,195 @@ private fun PalettePanel(
 
 /** Format an opaque ARGB int as an `#RRGGBB` string for copy / a11y labels. */
 private fun hexOf(argb: Int): String = "#%06X".format(argb and 0xFFFFFF)
+
+/**
+ * Phase 3 — guided composition / layout critique panel. Opens in a loading
+ * state (a critique always needs the model), then renders the summary plus 3–5
+ * advisory cards. Each card explains a design principle in plain language;
+ * cards that carry a safe, validated edit-op payload also offer "Preview fix",
+ * which stages the change through the normal on-canvas diff (accept/reject lives
+ * in the banner). Prose-only cards are still useful — the panel never mutates
+ * the canvas on its own.
+ */
+@Composable
+private fun CritiquePanel(
+    state: CritiqueUiState,
+    onPreviewFix: (Int) -> Unit,
+    onRetry: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val critique = state.critique
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Composition critique",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            // Re-run is offered once a result (or error) has landed.
+            if (!state.loading) {
+                IconButton(onClick = onRetry, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "Re-run critique",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close critique panel",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        when {
+            state.loading -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Looking at your drawing…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            critique == null -> {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = state.error ?: "Couldn't get a critique. Try again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            else -> {
+                if (critique.summary.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = critique.summary,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                // Cards can be tall (up to five); keep the panel bounded and let
+                // the cards scroll inside it so the footer/input stay reachable.
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    critique.suggestions.forEachIndexed { index, suggestion ->
+                        CritiqueCard(
+                            suggestion = suggestion,
+                            onPreviewFix = { onPreviewFix(index) },
+                        )
+                    }
+                }
+                if (critique.safetyNotes.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = critique.safetyNotes,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // A preview error (e.g. "nothing left to change") shows under the
+                // cards without clearing the critique itself.
+                state.error?.let { err ->
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One critique suggestion rendered as a card: title, principle, a plain-language
+ * reason, small confidence/effort labels, and — only when the suggestion carries
+ * a validated fix — a "Preview fix" action. Prose-only cards show a quiet "Tip
+ * only" marker so the absence of a button reads as intentional.
+ */
+@Composable
+private fun CritiqueCard(
+    suggestion: com.aichat.sandbox.data.notes.CritiqueSuggestion,
+    onPreviewFix: () -> Unit,
+) {
+    Surface(
+        tonalElevation = 2.dp,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Text(
+                text = suggestion.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (suggestion.principle.isNotBlank()) {
+                Text(
+                    text = suggestion.principle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            if (suggestion.why.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = suggestion.why,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "${suggestion.confidence.label} · ${suggestion.effort.label}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                if (suggestion.hasFix) {
+                    AssistChip(
+                        onClick = onPreviewFix,
+                        label = { Text("Preview fix") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        },
+                        colors = AssistChipDefaults.assistChipColors(),
+                    )
+                } else {
+                    Text(
+                        text = "Tip only",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SheetFooter(

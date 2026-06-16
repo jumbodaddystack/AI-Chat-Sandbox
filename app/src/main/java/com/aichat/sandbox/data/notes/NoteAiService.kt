@@ -55,6 +55,10 @@ class NoteAiService @Inject constructor(
             collectPalette(request, caps.supportsVision)
             return@flow
         }
+        if (request.mode == AskMode.CRITIQUE) {
+            collectCritique(request, caps.supportsVision)
+            return@flow
+        }
         if (request.mode == AskMode.EDIT) {
             if (request.generate) {
                 collectGenerate(request, caps.supportsVision)
@@ -246,6 +250,135 @@ class NoteAiService @Inject constructor(
         }
         append("\n\n")
         append("Here is the vector JSON of the in-scope items (reference colours by `id`):\n")
+        append("```json\n")
+        append(vectorJson)
+        append("\n```")
+    }
+
+    /**
+     * Phase 3 — composition-critique dispatcher. Serializes the in-scope
+     * geometry as [VectorCanvasJson] (so any per-suggestion op ids line up with
+     * the applier), optionally attaches the rasterized preview for a vision
+     * model, buffers the reply, validates it with [CritiqueParser], and emits a
+     * single [AiChunk.CritiqueResult]. Non-mutating — the suggestions are
+     * surfaced as advisory cards; applying a fix is a separate, previewable step.
+     */
+    private suspend fun FlowCollector<AiChunk>.collectCritique(
+        request: AskRequest,
+        supportsVision: Boolean,
+    ) {
+        val serialized = VectorCanvasJson.serialize(
+            items = request.selection ?: request.allItems,
+            bounds = null,
+            layers = request.layers,
+        )
+        val chat = Chat(
+            id = SYNTHETIC_CHAT_ID,
+            title = "Critique",
+            model = request.modelId,
+            systemMessage = CritiqueParser.SYSTEM_MESSAGE,
+        )
+        val items = request.selection ?: request.allItems
+        // Fall back to OCR text only when we can't show the model the image; a
+        // vision model reads the drawing directly.
+        val ocrText = if (supportsVision) null
+            else resolveOcrText(request).takeIf { it.isNotBlank() }
+        val promptBody = buildCritiquePromptBody(request.userPrompt, serialized.json, ocrText)
+        val userMessage = if (supportsVision && items.isNotEmpty()) {
+            withContext(Dispatchers.Default) {
+                val pngBytes = try {
+                    imageRenderer.renderToPng(
+                        items = items,
+                        backgroundStyle = request.note.backgroundStyle,
+                        maxEdgePx = MAX_EDGE_PX,
+                    )
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Failed to rasterize note ${request.note.id} for critique", t)
+                    null
+                }
+                if (pngBytes == null) {
+                    textMessage(promptBody)
+                } else {
+                    val dataUri = "data:image/png;base64,${Base64.getEncoder().encodeToString(pngBytes)}"
+                    val metadata = gson.toJson(
+                        ImageMetadata(images = listOf(ImageAttachment(dataUri = dataUri)))
+                    )
+                    Message(
+                        chatId = SYNTHETIC_CHAT_ID,
+                        role = MessageRole.USER.value,
+                        content = promptBody,
+                        contentType = "multimodal",
+                        metadata = metadata,
+                    )
+                }
+            }
+        } else {
+            textMessage(promptBody)
+        }
+        val upstream = chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = chat,
+            messages = listOf(userMessage),
+        )
+        val buffer = StringBuilder()
+        var lastUsage: com.aichat.sandbox.data.model.Usage? = null
+        var errored = false
+        upstream.collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> buffer.append(event.content)
+                is StreamEvent.Complete -> { lastUsage = event.usage }
+                is StreamEvent.Error -> {
+                    errored = true
+                    emit(AiChunk.Error(event.message))
+                }
+                is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
+            }
+        }
+        if (errored) return
+        CritiqueParser.parse(
+            raw = buffer.toString(),
+            knownIds = serialized.idMap.keys,
+            knownLayers = serialized.layerMap.keys,
+        ).fold(
+            onSuccess = { critique ->
+                emit(AiChunk.CritiqueResult(
+                    critique = critique,
+                    idMap = serialized.idMap,
+                    layerMap = serialized.layerMap,
+                    usage = lastUsage,
+                ))
+            },
+            onFailure = { t ->
+                Log.w(TAG, "critique parse failed: ${t.message}")
+                emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
+            },
+        )
+    }
+
+    /**
+     * Build the critique prompt body. Exposed `internal` so a unit test can pin
+     * the wire format. Any OCR transcription leads (non-vision branch only), the
+     * user's framing follows, then the canvas JSON so the model can reference
+     * items by id when it proposes a fix.
+     */
+    internal fun buildCritiquePromptBody(
+        userPrompt: String,
+        vectorJson: String,
+        ocrText: String?,
+    ): String = buildString {
+        if (!ocrText.isNullOrBlank()) {
+            append("Transcribed note (may have OCR errors):\n")
+            append(ocrText)
+            append("\n\n")
+        }
+        if (userPrompt.isNotBlank()) {
+            append(userPrompt)
+        } else {
+            append("How can I improve the composition and layout of this drawing?")
+        }
+        append("\n\n")
+        append("Here is the vector JSON of the in-scope items (reference items by `id`):\n")
         append("```json\n")
         append(vectorJson)
         append("\n```")

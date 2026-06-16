@@ -1,6 +1,7 @@
 package com.aichat.sandbox.ui.screens.notes
 
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.data.notes.CompositionCritique
 import com.aichat.sandbox.data.notes.PaletteScheme
 import com.aichat.sandbox.data.notes.PaletteSource
 import com.aichat.sandbox.data.notes.PaletteSuggestion
@@ -101,6 +102,29 @@ data class PaletteUiState(
     /** Colours currently in scope, used to seed the local fallback. */
     val scopeColors: List<Int> get() = scope.map { it.colorArgb }
 }
+
+/**
+ * Phase 3 — state for the guided composition / layout critique panel hosted
+ * inside the AI side sheet. Opened from the "Critique" chip; [scope] freezes the
+ * items the critique was computed from.
+ *
+ * Unlike the palette panel there is no local fallback — a critique requires the
+ * model — so the panel opens in a [loading] state and renders the [critique]
+ * cards once the reply lands (or an [error] if it failed). [idMap] / [layerMap]
+ * are the short-id → live-UUID tables captured at request time so a suggestion's
+ * "Preview fix" can resolve its ops back to real items.
+ */
+data class CritiqueUiState(
+    val isOpen: Boolean = false,
+    val scope: List<NoteItem> = emptyList(),
+    val critique: CompositionCritique? = null,
+    /** short-id → on-disk item UUID, captured with the critique for previewing fixes. */
+    val idMap: Map<String, String> = emptyMap(),
+    /** short-layer-id → on-disk layer UUID. */
+    val layerMap: Map<String, String> = emptyMap(),
+    val loading: Boolean = false,
+    val error: String? = null,
+)
 
 data class AskTurn(
     val id: String,
