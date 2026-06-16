@@ -96,22 +96,14 @@ Key properties worth noting for our pipelines:
    key off orientation. Treat the exact v3 binary marker/layout as part of the
    storage-decision phase so timestamp handling stays unambiguous.
 
-## Toolchain prerequisite (decided: bump minSdk to 35/36)
+## Toolchain prerequisite (I0.5 — done: Android-16-only target)
 
-Raising `minSdk` to match the Android-16-only target is approved, but it is
-**not a one-line change**: `minSdk` cannot exceed `compileSdk`, which is
-currently **34** (AGP **8.2.2**, Gradle **8.5**, Kotlin **1.9.22**). Reaching
-`minSdk 36` requires:
-
-- `compileSdk` / `targetSdk` → **36**,
-- **AGP** → 8.9+ (8.11+ recommended for SDK 36) and a matching **Gradle**
-  wrapper bump,
-- a re-verify of the build + the known-good Android SDK install steps in
-  `CLAUDE.md`.
-
-Treat this as its own small, verified task (toolchain upgrade) **before** the
-ink-authoring phase, since `InProgressStrokesView` is where assuming modern
-APIs pays off. Until then, ink itself still works (it supports API 21+).
+The toolchain prerequisite has landed in code: `compileSdk`, `targetSdk`, and
+`minSdk` are all **36**, AGP is **8.11.1**, the Gradle wrapper is **8.13**, and
+Kotlin is **2.0.21**. `CLAUDE.md` now documents the SDK 36 install steps for
+fresh containers. This means the Android-16-only assumption is no longer a
+future blocker for `InProgressStrokesView`; the remaining gate is the I2
+on-device parity/default-on checklist, not the build toolchain.
 
 ### Sample ↔ ink conversion seam (the one new primitive everything shares)
 
@@ -345,7 +337,7 @@ as migration consumers so the engine work preserves their requirements.
 | Phase | Scope | Ink modules | Risk |
 |---|---|---|---|
 | **I0 — `InkInterop` seam** | Bidirectional `StrokeCodec ↔ StrokeInputBatch/Stroke`; stable `BrushPreset → Brush` adapter; JVM round-trip tests | strokes, brush, geometry | Low — no UI |
-| **I0.5 — Toolchain bump** | `compileSdk`/`targetSdk` 36, AGP 8.9+/8.11+, Gradle wrapper, re-verify build | — | Low/Med |
+| **I0.5 — Toolchain bump** ✅ **done** | `compileSdk`/`targetSdk`/`minSdk` 36, AGP 8.11.1, Gradle wrapper 8.13, Kotlin 2.0.21, and `CLAUDE.md` SDK 36 setup re-verified/documented | — | Low/Med |
 | **I0.7 — Rendering fidelity spike** ✅ **done** | Render 50–100 representative strokes through both `StrokeRenderer` and `CanvasStrokeRenderer`; pixel/visual diff; per-tool go/no-go (pen, pencil, highlighter, marker) **before** building the authoring path. **Result:** pen/pencil/marker **GO**, highlighter **GO-with-brush-work** (ink stock highlighter ~0.71× our footprint); no NO-GO — see [`INK_I07_RENDERING_FIDELITY_SPIKE.md`](INK_I07_RENDERING_FIDELITY_SPIKE.md) | rendering, brush | Low — throwaway |
 | **I1 — Authoring prototype (ink-first)** ✅ **done** | `InProgressStrokesView` wired finish→convert→commit behind a fallback-capable runtime switch ("Ink engine (experimental)", default **off**); not default until the I2 parity checklist passes. ink ships on-device (`ink-authoring`/`ink-rendering` + `libink.so`); the live wet layer is ink's, the pen-lift `Stroke → StrokeCodec` conversion (`InkInterop.fromStroke`) keeps the committed payload byte-identical so storage / undo / the AI edit pipeline never see ink. | authoring, rendering | Med |
 | **I2 — Rendering + behavior parity gate** 🟡 **headless slice done; I4 brush gaps closed; device items open — ink stays default-off** | Match ink mesh rendering to `StrokeRenderer` (taper/tilt/width) and verify latency, undo/redo, layer commit, eraser (incl. **no regression for non-stroke kinds** — shapes, stickies, connectors, paths), shape recognition, and audio timestamp sync before default-on. **Headless verified:** eraser parity across all `NoteItem` kinds, commit-pipeline + audio-timestamp correctness, and — after I4 — pressure-taper / pencil-tilt-width / highlighter-width / footprint geometry parity, all as permanent JVM tests (`data.ink.parity.*`). **Still open (no device here):** on-device latency/front-buffer, the colour/opacity/**texture**/AA pixel diff, overlay touch pass-through, and the deferred procedural-texture + jitter brush appearance. See [`INK_I2_PARITY_GATE.md`](INK_I2_PARITY_GATE.md). | rendering, brush | Med |
@@ -688,16 +680,18 @@ maintainer runs the device harness and flips the switch.
   already carries — neither requires changing the source of truth. I3 only
   decides whether any *additive* dual-write data is worth its write-path
   consistency cost, and the exact v3 orientation/timestamp layout.
-- **Toolchain upgrade.** The minSdk 36 bump drags AGP/Gradle/Kotlin forward
-  (I0.5). Self-contained, but verify the build + the `CLAUDE.md` SDK-install
-  steps still hold afterward.
+- **Toolchain upgrade — addressed in I0.5.** The Android-16-only build target
+  now matches the plan (`compileSdk`/`targetSdk`/`minSdk` 36, AGP 8.11.1,
+  Gradle 8.13, Kotlin 2.0.21), and `CLAUDE.md` carries the SDK 36 setup steps.
+  Ongoing risk is ordinary dependency/toolchain drift, not a migration blocker.
 - **APK size / native libs.** ink bundles a native core (`ink-nativeloader`).
   Less of a concern for a personal single-ABI (arm64) install, but worth a
   glance.
-- **Alpha vs stable.** Programmable brushes (N1) rely on **1.1.0-alpha**; pin a
-  version and isolate behind the brush path until 1.1 stabilizes. Do not let the
-  alpha API block the stable `BrushPreset → Brush` adapter or authoring
-  migration. Core authoring/geometry/rendering are on **stable 1.0.0**.
+- **Alpha vs stable — isolated.** The shipped `BrushPreset → Brush` adapter,
+  authoring, geometry, and rendering paths are on **stable 1.0.0**. The
+  programmable/jitter exploration remains isolated in
+  `data.ink.experimental.InkProgrammableBrush` with **no alpha dependency** in
+  the app, so it cannot block the stable migration path.
 - **Geometry cache correctness — addressed in I6.** Mesh-backed hit testing and
   selection need cache invalidation for transforms/restyles/deletes, spatial
   prefiltering for large notes, and deterministic mapping from geometry hits back
