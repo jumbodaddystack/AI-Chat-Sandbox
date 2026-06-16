@@ -215,13 +215,28 @@ object EditOpsParser {
     }
 
     private fun parseIdList(obj: JsonObject, knownIds: Set<String>?): List<String> {
-        val arr = obj.get("ids") as? JsonArray ?: return emptyList()
-        val out = ArrayList<String>(arr.size())
-        for (el in arr) {
-            val s = el?.takeIf { it.isJsonPrimitive }?.asString ?: continue
-            if (knownIds == null || s in knownIds) out += s
+        // Order-preserving + de-duped: a drifting model can supply the same id
+        // through more than one of the accepted shapes below.
+        val out = LinkedHashSet<String>()
+        fun consider(s: String?) {
+            val id = s?.trim().orEmpty()
+            if (id.isEmpty()) return
+            if (knownIds == null || id in knownIds) out += id
         }
-        return out
+        when (val idsEl = obj.get("ids")) {
+            is JsonArray -> for (el in idsEl) {
+                consider(el?.takeIf { it.isJsonPrimitive }?.asString)
+            }
+            // Some models pass the plural `ids` as a single string, or a
+            // comma-separated list, instead of a JSON array.
+            else -> idsEl?.takeIf { it.isJsonPrimitive }?.asString
+                ?.split(',')?.forEach(::consider)
+        }
+        // Single-target ops (smooth, simplify, delete, recolor, …) routinely
+        // arrive with the singular `id` even though the op takes a list. Accept
+        // it so they aren't rejected as "no valid ids".
+        consider(obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString)
+        return out.toList()
     }
 
     private fun parseMatrix(el: JsonElement?): FloatArray {
@@ -244,7 +259,18 @@ object EditOpsParser {
 
     private fun parseColor(hex: String?): Int {
         if (hex.isNullOrBlank()) throw IllegalArgumentException("color: missing hex")
-        val raw = hex.trim().removePrefix("#")
+        val trimmed = hex.trim()
+        // SVG paint keywords the model borrows when it wants an outline-only
+        // shape: "none"/"transparent" mean *no paint*. The canvas already uses
+        // ARGB 0 as its "no fill / no stroke" sentinel (VectorCanvasJson only
+        // emits `fill` when `fillArgb != 0`), so map onto it rather than
+        // rejecting the whole op.
+        if (trimmed.equals("none", ignoreCase = true) ||
+            trimmed.equals("transparent", ignoreCase = true)
+        ) {
+            return 0
+        }
+        val raw = trimmed.removePrefix("#")
         return when (raw.length) {
             6 -> 0xFF000000.toInt() or raw.toLong(16).toInt()
             8 -> raw.toLong(16).toInt()
