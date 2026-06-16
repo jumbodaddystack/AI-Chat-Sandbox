@@ -109,6 +109,7 @@ fun NoteEditorScreen(
     // Sub-phase 12.3 — non-null while a single path is in node-edit mode.
     val nodeEditTarget by viewModel.nodeEditTarget.collectAsState()
     val aiSheetState by viewModel.aiSheetState.collectAsState()
+    val paletteState by viewModel.paletteState.collectAsState()
     val availableModels by viewModel.availableModels.collectAsState()
     val chats by viewModel.chats.collectAsState()
     val sendToChatMode by viewModel.sendToChatMode.collectAsState()
@@ -1270,6 +1271,12 @@ fun NoteEditorScreen(
             onModelSelected = viewModel::setAiModelId,
             availableModels = availableModels,
             customModels = emptyList(),
+            paletteState = paletteState,
+            onOpenPalette = viewModel::openPalette,
+            onPaletteScheme = viewModel::setPaletteScheme,
+            onPaletteAi = viewModel::suggestPaletteWithAi,
+            onPalettePreviewRecolor = viewModel::previewPaletteRecolor,
+            onPaletteClose = viewModel::dismissPalette,
         )
       }
     }

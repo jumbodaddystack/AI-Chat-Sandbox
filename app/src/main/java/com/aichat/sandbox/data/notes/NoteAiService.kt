@@ -51,6 +51,10 @@ class NoteAiService @Inject constructor(
             collectDesignBrush(request)
             return@flow
         }
+        if (request.mode == AskMode.SUGGEST_PALETTE) {
+            collectPalette(request, caps.supportsVision)
+            return@flow
+        }
         if (request.mode == AskMode.EDIT) {
             if (request.generate) {
                 collectGenerate(request, caps.supportsVision)
@@ -127,6 +131,124 @@ class NoteAiService @Inject constructor(
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
+    }
+
+    /**
+     * Phase 2 — palette assistant dispatcher. Serializes the in-scope colours as
+     * [VectorCanvasJson] (so any per-item assignment ids line up with the
+     * applier), optionally attaches the rasterized preview for a vision model,
+     * buffers the reply, validates it with [PaletteParser], and emits a single
+     * [AiChunk.PaletteResult]. Non-mutating — the swatches are surfaced as
+     * suggestions, never applied here.
+     */
+    private suspend fun FlowCollector<AiChunk>.collectPalette(
+        request: AskRequest,
+        supportsVision: Boolean,
+    ) {
+        val serialized = VectorCanvasJson.serialize(
+            items = request.selection ?: request.allItems,
+            bounds = null,
+            layers = request.layers,
+        )
+        val chat = Chat(
+            id = SYNTHETIC_CHAT_ID,
+            title = "Palette",
+            model = request.modelId,
+            systemMessage = PaletteParser.SYSTEM_MESSAGE,
+        )
+        val promptBody = buildPalettePromptBody(request.userPrompt, serialized.json)
+        val items = request.selection ?: request.allItems
+        val userMessage = if (supportsVision && items.isNotEmpty()) {
+            withContext(Dispatchers.Default) {
+                val pngBytes = try {
+                    imageRenderer.renderToPng(
+                        items = items,
+                        backgroundStyle = request.note.backgroundStyle,
+                        maxEdgePx = MAX_EDGE_PX,
+                    )
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Failed to rasterize note ${request.note.id} for palette", t)
+                    null
+                }
+                if (pngBytes == null) {
+                    textMessage(promptBody)
+                } else {
+                    val dataUri = "data:image/png;base64,${Base64.getEncoder().encodeToString(pngBytes)}"
+                    val metadata = gson.toJson(
+                        ImageMetadata(images = listOf(ImageAttachment(dataUri = dataUri)))
+                    )
+                    Message(
+                        chatId = SYNTHETIC_CHAT_ID,
+                        role = MessageRole.USER.value,
+                        content = promptBody,
+                        contentType = "multimodal",
+                        metadata = metadata,
+                    )
+                }
+            }
+        } else {
+            textMessage(promptBody)
+        }
+        val upstream = chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = chat,
+            messages = listOf(userMessage),
+        )
+        val buffer = StringBuilder()
+        var lastUsage: com.aichat.sandbox.data.model.Usage? = null
+        var errored = false
+        upstream.collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> buffer.append(event.content)
+                is StreamEvent.Complete -> { lastUsage = event.usage }
+                is StreamEvent.Error -> {
+                    errored = true
+                    emit(AiChunk.Error(event.message))
+                }
+                is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
+            }
+        }
+        if (errored) return
+        PaletteParser.parse(buffer.toString(), knownIds = serialized.idMap.keys).fold(
+            onSuccess = { suggestion ->
+                emit(AiChunk.PaletteResult(
+                    suggestion = suggestion,
+                    idMap = serialized.idMap,
+                    usage = lastUsage,
+                ))
+            },
+            onFailure = { t ->
+                Log.w(TAG, "palette parse failed: ${t.message}")
+                emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
+            },
+        )
+    }
+
+    private fun textMessage(body: String): Message = Message(
+        chatId = SYNTHETIC_CHAT_ID,
+        role = MessageRole.USER.value,
+        content = body,
+        contentType = "text",
+        metadata = null,
+    )
+
+    /**
+     * Build the palette prompt body. Exposed `internal` so a unit test can pin
+     * the wire format. The user's scheme hint leads; the canvas JSON follows so
+     * the model can read the current colours and reference items by id.
+     */
+    internal fun buildPalettePromptBody(userPrompt: String, vectorJson: String): String = buildString {
+        if (userPrompt.isNotBlank()) {
+            append(userPrompt)
+        } else {
+            append("Suggest a cohesive colour palette for this drawing.")
+        }
+        append("\n\n")
+        append("Here is the vector JSON of the in-scope items (reference colours by `id`):\n")
+        append("```json\n")
+        append(vectorJson)
+        append("\n```")
     }
 
     /**

@@ -65,5 +65,10 @@ data class AskRequest(
  *   JSON ([BrushSpecParser]) that becomes a user-scope `BrushPreset`. No canvas
  *   mutation — only the user's brush library grows — so it ignores
  *   selection / layers entirely and reads only [userPrompt].
+ * - [SUGGEST_PALETTE] — phase 2: reply with a validated palette JSON
+ *   ([PaletteParser]) — a cohesive colour scheme plus an optional per-item
+ *   colour plan. Non-mutating: the result is surfaced as swatches; applying it
+ *   is a separate, previewable `recolor` step. [userPrompt] carries the chosen
+ *   scheme hint; selection / layers scope the colours the model is shown.
  */
-enum class AskMode { ASK, EDIT, DESIGN_BRUSH }
+enum class AskMode { ASK, EDIT, DESIGN_BRUSH, SUGGEST_PALETTE }

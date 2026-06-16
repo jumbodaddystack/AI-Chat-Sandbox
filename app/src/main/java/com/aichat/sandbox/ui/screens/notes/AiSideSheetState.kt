@@ -1,6 +1,9 @@
 package com.aichat.sandbox.ui.screens.notes
 
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.data.notes.PaletteScheme
+import com.aichat.sandbox.data.notes.PaletteSource
+import com.aichat.sandbox.data.notes.PaletteSuggestion
 
 /**
  * In-memory state for the editor's AI side sheet (sub-phase 2.6 of
@@ -70,6 +73,33 @@ enum class IconQuickAction(val label: String) {
     ADD_DETAIL("Add detail"),
     AUTO_SHAPE("Auto-shape"),
     RECOLOR("Recolor"),
+}
+
+/**
+ * Phase 2 — state for the palette & colour-harmony panel hosted inside the AI
+ * side sheet. Opened from the "Palette help" chip; [scope] freezes the items
+ * the suggestion is computed from (the sheet's selection scope or the whole
+ * note) so background selection changes don't drift it.
+ *
+ * The panel always has a [suggestion] once open (a local [PaletteScheme]
+ * palette is generated instantly); [source] notes whether the current swatches
+ * came from local colour theory or the model, and [explicit] holds any
+ * model-proposed per-item colours already resolved to live item UUIDs so
+ * "Preview recolor" can stage them.
+ */
+data class PaletteUiState(
+    val isOpen: Boolean = false,
+    val scope: List<NoteItem> = emptyList(),
+    val scheme: PaletteScheme = PaletteScheme.DEFAULT,
+    val suggestion: PaletteSuggestion? = null,
+    val source: PaletteSource = PaletteSource.LOCAL,
+    /** Resolved per-item colour plan (item UUID → ARGB), AI source only. */
+    val explicit: Map<String, Int> = emptyMap(),
+    val loading: Boolean = false,
+    val error: String? = null,
+) {
+    /** Colours currently in scope, used to seed the local fallback. */
+    val scopeColors: List<Int> get() = scope.map { it.colorArgb }
 }
 
 data class AskTurn(

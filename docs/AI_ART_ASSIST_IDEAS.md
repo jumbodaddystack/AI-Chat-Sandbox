@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **Phase 1 implemented and verified as of 2026-06-16**.
+Status: **Phases 1–2 implemented and verified as of 2026-06-16**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -44,9 +44,11 @@ sessions.
 - **Composition critique** is still missing. `VectorQualityScorer` is not a
   substitute: it scores vector XML readiness, not a user's hand-drawn note via
   vision with beginner-friendly guidance.
-- **Palette / color-harmony assistant** is still missing. The `recolor` edit-op
-  and user-chosen `aiRecolorPrompt()` exist, but no feature proposes harmonious
-  palettes.
+- **Palette / color-harmony assistant** shipped in Phase 2. A "Palette help"
+  panel in the AI sheet proposes 3–6 cohesive swatches (local color theory via
+  `ColorHarmony`, optionally refined by the model through `AskMode.SUGGEST_PALETTE`
+  / `PaletteParser`) and stages a previewable `recolor` batch through the shared
+  `PendingEdit` surface via `PaletteRecolor`.
 - **Named style preset restyling** is partial. Local `StyleTransfer` copies style
   from one item to another, and GENERATE can use style-reference icons when
   authoring new icons. There is no user-facing “restyle this selection as flat /
@@ -143,26 +145,53 @@ previewable `recolor` batch.
 
 ### Tasks
 
-- [ ] Add a structured palette response contract, e.g. `PaletteSuggestion` with
+- [x] Add a structured palette response contract, e.g. `PaletteSuggestion` with
   scheme name, swatches, rationale, and optional id-to-color assignments.
-- [ ] Add prompt text to ask the model for beginner-friendly color harmony using
+  - Implemented as `PaletteSuggestion` (`data/notes/PaletteSuggestion.kt`):
+    `schemeName`, `swatches` (3–6 opaque ARGB), `rationale`, and an optional
+    short-id → ARGB `assignments` map. Includes a `PaletteScheme` enum
+    (analogous / complementary / triadic / monochromatic) and a `PaletteSource`
+    (LOCAL vs AI) marker.
+- [x] Add prompt text to ask the model for beginner-friendly color harmony using
   current canvas colors from `VectorCanvasJson` and, when available, the raster
   preview.
-- [ ] Add a local color-theory fallback for simple analogous/complementary/triadic
+  - `AskMode.SUGGEST_PALETTE` + `NoteAiService.collectPalette` serialize the
+    in-scope items via `VectorCanvasJson` (so assignment ids line up) and attach
+    the rasterized preview for vision-capable models. `PaletteParser.SYSTEM_MESSAGE`
+    pins a beginner-friendly, jargon-free JSON contract;
+    `buildPalettePromptBody` embeds the canvas JSON and scheme hint.
+- [x] Add a local color-theory fallback for simple analogous/complementary/triadic
   palettes so the feature can still suggest swatches when AI is unavailable.
-- [ ] Add a ViewModel entry point such as `suggestPalette(scope, scheme)` that can
+  - `ColorHarmony` (pure JVM HSV maths, no `android.graphics.Color`) derives a
+    seed from the dominant canvas color and rotates/tints it per scheme; the
+    panel fills in a local palette instantly on open and on every scheme change.
+- [x] Add a ViewModel entry point such as `suggestPalette(scope, scheme)` that can
   either return swatches only or stage `recolor` edit-ops.
-- [ ] Add UI in the AI sheet or a compact art-assist menu: scheme chips,
+  - `NoteEditorViewModel` exposes `openPalette()`, `setPaletteScheme(scheme)`
+    (local, swatches-only), `suggestPaletteWithAi()` (model refinement), and
+    `previewPaletteRecolor()` (stages `recolor` ops). State rides a
+    `paletteState: StateFlow<PaletteUiState?>`.
+- [x] Add UI in the AI sheet or a compact art-assist menu: scheme chips,
   swatches, “Preview recolor”, “Apply”, and “Copy palette”.
-- [ ] Ensure recolor preview goes through `PendingEdit` and `AiEditDiffOverlay`.
-- [ ] Add tests for parser validation, fallback palette generation, and recolor
+  - `PalettePanel` in `AiSideSheet.kt`, opened by a "Palette help" chip: scheme
+    `FilterChip`s, swatch chips with hex a11y labels, rationale, source badge,
+    and an action row with "Preview recolor" (stages → accept via the canvas
+    banner), "Copy palette" (clipboard), and "Ask AI" (with a progress spinner).
+- [x] Ensure recolor preview goes through `PendingEdit` and `AiEditDiffOverlay`.
+  - `previewPaletteRecolor` builds grouped `EditOp.Recolor` ops via
+    `PaletteRecolor` and stages them with the existing `stageLocalEdit` path, so
+    they preview through the same `AiEditDiffOverlay` + banner accept/reject.
+- [x] Add tests for parser validation, fallback palette generation, and recolor
   op construction.
+  - `PaletteParserTest`, `ColorHarmonyTest`, and `PaletteRecolorTest` (all green).
 
 ### Acceptance criteria
 
-- A user can get a palette suggestion without changing the canvas.
-- Applying the palette is previewable and rejectable.
-- Existing colors and locked layers are respected.
+- [x] A user can get a palette suggestion without changing the canvas.
+- [x] Applying the palette is previewable and rejectable.
+- [x] Existing colors and locked layers are respected.
+  - The recolor ops route through `EditPreviewController.simulate`, which drops
+    locked-layer items and no-op (same-color) recolors as a hard backstop.
 
 ---
 
