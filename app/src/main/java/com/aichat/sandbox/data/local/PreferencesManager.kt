@@ -51,6 +51,9 @@ class PreferencesManager @Inject constructor(
         val DARK_MODE = booleanPreferencesKey("dark_mode")
         val AUTO_GENERATE_TITLES = booleanPreferencesKey("auto_generate_titles")
         val CUSTOM_MODELS = stringPreferencesKey("custom_models")
+        // Developer: capture each note/canvas AI exchange (prompt + raw reply +
+        // parse outcome) into the in-app AI debug log. Off by default.
+        val AI_DEBUG_LOG = booleanPreferencesKey("ai_debug_log")
 
         private val gson = Gson()
 
@@ -105,6 +108,7 @@ class PreferencesManager @Inject constructor(
     val defaultFrequencyPenalty: Flow<Float> = dataStore.data.map { it[DEFAULT_FREQUENCY_PENALTY] ?: ChatSettings.Defaults.FREQUENCY_PENALTY }
     val darkMode: Flow<Boolean> = dataStore.data.map { it[DARK_MODE] ?: ChatSettings.Defaults.DARK_MODE }
     val autoGenerateTitles: Flow<Boolean> = dataStore.data.map { it[AUTO_GENERATE_TITLES] ?: true }
+    val aiDebugLogEnabled: Flow<Boolean> = dataStore.data.map { it[AI_DEBUG_LOG] ?: false }
 
     val customModels: Flow<Map<String, List<String>>> = dataStore.data.map { prefs ->
         val json = prefs[CUSTOM_MODELS] ?: "{}"
@@ -307,6 +311,14 @@ class PreferencesManager @Inject constructor(
             dataStore.edit { it[DARK_MODE] = enabled }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save dark mode preference", e)
+        }
+    }
+
+    suspend fun setAiDebugLogEnabled(enabled: Boolean) {
+        try {
+            dataStore.edit { it[AI_DEBUG_LOG] = enabled }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save AI debug log preference", e)
         }
     }
 

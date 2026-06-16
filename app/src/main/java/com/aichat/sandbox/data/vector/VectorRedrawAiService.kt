@@ -4,6 +4,7 @@ import android.util.Log
 import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.data.model.MessageRole
+import com.aichat.sandbox.data.notes.AiDebugLog
 import com.aichat.sandbox.data.remote.ChatStreamer
 import com.aichat.sandbox.data.remote.StreamEvent
 import kotlinx.coroutines.flow.Flow
@@ -86,6 +87,7 @@ data class VectorRedrawAiResult(
 @Singleton
 class VectorRedrawAiService @Inject constructor(
     private val chatStreamer: ChatStreamer,
+    private val aiDebugLog: AiDebugLog = AiDebugLog(),
 ) {
 
     fun redraw(request: VectorRedrawAiRequest): Flow<VectorRedrawAiChunk> = flow {
@@ -120,11 +122,15 @@ class VectorRedrawAiService @Inject constructor(
                 is StreamEvent.ToolCallDelta -> Unit // impossible: we send no tools.
             }
         }
-        if (errored) return@flow
+        if (errored) {
+            aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "stream error")
+            return@flow
+        }
 
         val scene = VectorSceneParser.parse(buffer.toString(), request.document.viewport)
             .getOrElse { t ->
                 logWarn("redraw scene parse failed: ${t.message}")
+                aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "parse failed: ${t.message}")
                 emit(VectorRedrawAiChunk.Error(PARSE_FAILED_MESSAGE))
                 return@flow
             }
@@ -133,10 +139,12 @@ class VectorRedrawAiService @Inject constructor(
             VectorSceneCompiler.compile(scene)
         }.getOrElse { t ->
             logWarn("redraw scene compile failed", t)
+            aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "compile failed: ${t.message}")
             emit(VectorRedrawAiChunk.Error(COMPILE_FAILED_MESSAGE))
             return@flow
         }
 
+        aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "scene compiled")
         emit(
             VectorRedrawAiChunk.Complete(
                 VectorRedrawAiResult(

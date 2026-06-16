@@ -14,11 +14,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichat.sandbox.data.model.ApiProvider
 import com.aichat.sandbox.data.model.ChatSettings
 import com.aichat.sandbox.ui.components.ModelSelector
 import com.aichat.sandbox.ui.components.SettingsSlider
+import com.aichat.sandbox.ui.screens.notes.AiDebugLogScreen
+import com.aichat.sandbox.ui.screens.notes.AiDebugLogViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -188,6 +192,12 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // Developer — capture each note/canvas AI exchange so the raw model
+        // reply and parse outcome can be inspected when an edit misbehaves.
+        DeveloperSection()
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         // About
             Text(
                 text = "About",
@@ -208,6 +218,58 @@ fun SettingsScreen(
             )
 
             Spacer(modifier = Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
+ * Developer tools. The "Capture AI debug log" switch gates recording of every
+ * note/canvas AI exchange; "View AI debug log" opens the inspector (raw model
+ * replies + parse outcomes) as a full-screen dialog. Backed by
+ * [AiDebugLogViewModel] so the toggle here and the one inside the log screen
+ * stay in sync.
+ */
+@Composable
+private fun DeveloperSection(
+    viewModel: AiDebugLogViewModel = hiltViewModel(),
+) {
+    val enabled by viewModel.enabled.collectAsState()
+    var showLog by remember { mutableStateOf(false) }
+
+    Text(
+        text = "Developer",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.padding(bottom = 12.dp),
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Capture AI debug log", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Record prompts and raw model replies to inspect why an AI edit failed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = { viewModel.setEnabled(it) })
+    }
+    TextButton(onClick = { showLog = true }) {
+        Text("View AI debug log")
+    }
+
+    if (showLog) {
+        Dialog(
+            onDismissRequest = { showLog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(modifier = Modifier.fillMaxSize()) {
+                AiDebugLogScreen(onClose = { showLog = false }, viewModel = viewModel)
+            }
         }
     }
 }
