@@ -121,6 +121,19 @@ class ReplayTimeline private constructor(
     fun allItems(): List<NoteItem> = segments.map { it.item }
 
     /**
+     * Phase 6 (N4 / idea #7) — ids of items not yet *started* at [positionMs],
+     * i.e. the ones a playhead reveal should keep hidden. Feeds the canvas's
+     * `tutorHiddenIds` channel so an interactive replay pops each mark in at its
+     * draw time (whole-item granularity — partial-stroke clipping lives in
+     * [itemsAt] and is reserved for the device-only frame export path). At
+     * `positionMs == 0` only the first mark is visible; at [totalDurationMs]
+     * nothing is hidden.
+     */
+    fun hiddenItemIdsAt(positionMs: Long): Set<String> =
+        segments.filterTo(ArrayList()) { it.startMs > positionMs }
+            .mapTo(HashSet()) { it.item.id }
+
+    /**
      * Build the clipped prefix of the in-progress [seg] at [positionMs]. The
      * v2 `t` lane paces the reveal (samples with stroke-relative time ≤ the
      * local fraction of the real span); v1 strokes reveal a uniform fraction of

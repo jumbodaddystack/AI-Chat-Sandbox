@@ -154,6 +154,49 @@ data class BrushDesignUiState(
     val canSave: Boolean get() = spec != null && savedName == null && !loading
 }
 
+/**
+ * Phase 6 (N4 / idea #7) — state for the "Draw with me" launcher panel hosted
+ * inside the AI side sheet. This panel only *starts* a tutor: the user describes
+ * what they want to learn to draw, and the prompt routes through the unchanged
+ * GENERATE pipeline so the construction strokes preview as a normal staged edit
+ * before they land on a ghosted guide layer.
+ *
+ * The stepped Next / Back / Skip / Redo controls deliberately do NOT live here —
+ * they are a canvas overlay driven by the view model's `tutorSession`, because
+ * they stay useful after the sheet is closed and the user is tracing on the
+ * canvas. Likewise the replay playhead is its own overlay.
+ *
+ * The whole feature is gated behind the experimental ink engine (Adoption
+ * principle 4): the launch button is disabled with explanatory copy when ink is
+ * off, mirroring Phase 5's "Smart select" gating.
+ */
+data class DrawWithMeUiState(
+    val isOpen: Boolean = false,
+    val prompt: String = "",
+    val error: String? = null,
+)
+
+/**
+ * Phase 6 (N4 / idea #7, sub-phase a) — state for the interactive replay
+ * playhead. A scrub over the note's draw-order timeline that reveals each mark
+ * at its draw time; [hiddenIds] are the ids the canvas suppresses at the current
+ * [positionMs] (fed through the same channel as the tutor's hidden items).
+ *
+ * The timeline itself lives in the view model (it holds resolved [NoteItem]s);
+ * this is just the playback chrome. Video/GIF *encoding* is the device-only
+ * export path and is intentionally out of scope.
+ */
+data class ReplayUiState(
+    val isOpen: Boolean = false,
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val playing: Boolean = false,
+    val hiddenIds: Set<String> = emptySet(),
+) {
+    /** True when the note has no timeline to scrub (empty note). */
+    val isEmpty: Boolean get() = durationMs <= 0L
+}
+
 data class AskTurn(
     val id: String,
     val prompt: String,

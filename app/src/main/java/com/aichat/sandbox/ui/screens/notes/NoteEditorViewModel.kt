@@ -2239,6 +2239,163 @@ class NoteEditorViewModel @Inject constructor(
         _tutorSession.value = null
     }
 
+    // ── Phase 6 — "Draw with me" launcher (N4 / idea #7) ─────────────────────
+    //
+    // The AI-sheet panel that *starts* a tutor: a prompt field that routes the
+    // model through the unchanged GENERATE pipeline ([startDrawWithMe]). The
+    // stepped controls live on the canvas (the sheet may be closed while the
+    // user traces), driven by [tutorSession]. Gated behind the experimental ink
+    // engine (Adoption principle 4) — surfaced, but the launch button is
+    // disabled with explanatory copy when ink is off.
+
+    private val _drawWithMeState = MutableStateFlow<DrawWithMeUiState?>(null)
+    val drawWithMeState: StateFlow<DrawWithMeUiState?> = _drawWithMeState.asStateFlow()
+
+    /** Open the "Draw with me" launcher panel. */
+    fun openDrawWithMe() {
+        _drawWithMeState.value = DrawWithMeUiState(isOpen = true)
+    }
+
+    /** Update the launcher's prompt (clearing any stale validation error). */
+    fun setDrawWithMePrompt(text: String) {
+        _drawWithMeState.update { it?.copy(prompt = text, error = null) }
+    }
+
+    /**
+     * Fire a "Draw with me" generation from the launcher. Validates the ink-engine
+     * gate and a non-blank prompt, then hands off to [startDrawWithMe] (the
+     * GENERATE → staged-preview → [acceptTutorEdit] path) and closes the launcher;
+     * progress now lives in the conversation turn + the on-canvas diff preview.
+     */
+    fun submitDrawWithMe() {
+        val state = _drawWithMeState.value ?: return
+        if (!inkAuthoring.value) {
+            _drawWithMeState.update {
+                it?.copy(error = "Turn on the experimental ink engine (More ▸ Ink engine) to use draw-with-me.")
+            }
+            return
+        }
+        val prompt = state.prompt.trim()
+        if (prompt.isBlank()) {
+            _drawWithMeState.update { it?.copy(error = "Describe what you'd like to learn to draw first.") }
+            return
+        }
+        // Close any replay so the tutor session (opened on accept) doesn't share
+        // the canvas with the playhead overlay.
+        closeReplay()
+        startDrawWithMe(prompt)
+        _drawWithMeState.value = null
+    }
+
+    /** Close the "Draw with me" launcher without starting anything. */
+    fun dismissDrawWithMe() {
+        _drawWithMeState.value = null
+    }
+
+    // ── Phase 6 — replay playhead (N4 / idea #7, sub-phase a) ────────────────
+    //
+    // An interactive scrub over [buildReplayTimeline]: a play/seek surface that
+    // reveals the note's marks in draw order by feeding the timeline's
+    // not-yet-started ids through the same canvas suppression channel the tutor
+    // uses ([replayHiddenIds] is unioned with [tutorHiddenIds] downstream).
+    // Video/GIF *encoding* stays the device-only export path (deferred).
+
+    private var replayTimeline: ReplayTimeline? = null
+    private var replayJob: Job? = null
+
+    private val _replayState = MutableStateFlow<ReplayUiState?>(null)
+    val replayState: StateFlow<ReplayUiState?> = _replayState.asStateFlow()
+
+    /** Ids the replay playhead is currently suppressing (empty when not replaying). */
+    val replayHiddenIds: StateFlow<Set<String>> = _replayState
+        .map { it?.hiddenIds ?: emptySet() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /**
+     * Open the replay playhead over the current note. Builds the timeline once,
+     * parks the playhead at the start (only the first mark visible), and ends any
+     * live tutor session so the two reveal channels don't fight. No-op with the
+     * ink engine off or an empty note.
+     */
+    fun openReplay() {
+        if (!inkAuthoring.value) return
+        val timeline = buildReplayTimeline()
+        if (timeline.totalDurationMs <= 0L || timeline.allItems().isEmpty()) {
+            _replayState.value = ReplayUiState(isOpen = true, durationMs = 0L)
+            replayTimeline = timeline
+            return
+        }
+        _tutorSession.value = null
+        replayTimeline = timeline
+        replayJob?.cancel()
+        replayJob = null
+        _replayState.value = ReplayUiState(
+            isOpen = true,
+            positionMs = 0L,
+            durationMs = timeline.totalDurationMs,
+            playing = false,
+            hiddenIds = timeline.hiddenItemIdsAt(0L),
+        )
+    }
+
+    /** Scrub the replay playhead to [positionMs] (clamped); pauses playback. */
+    fun seekReplay(positionMs: Long) {
+        val timeline = replayTimeline ?: return
+        replayJob?.cancel()
+        replayJob = null
+        val clamped = positionMs.coerceIn(0L, timeline.totalDurationMs)
+        _replayState.update {
+            it?.copy(positionMs = clamped, playing = false, hiddenIds = timeline.hiddenItemIdsAt(clamped))
+        }
+    }
+
+    /**
+     * Start or stop replay playback. Play resumes from the current playhead
+     * (restarting from 0 when parked at the end) and advances in wall-clock
+     * steps, revealing marks at their draw time until it reaches the end.
+     */
+    fun setReplayPlaying(playing: Boolean) {
+        val timeline = replayTimeline ?: return
+        replayJob?.cancel()
+        replayJob = null
+        if (!playing) {
+            _replayState.update { it?.copy(playing = false) }
+            return
+        }
+        val start = _replayState.value
+            ?.let { if (it.positionMs >= timeline.totalDurationMs) 0L else it.positionMs }
+            ?: 0L
+        _replayState.update {
+            it?.copy(playing = true, positionMs = start, hiddenIds = timeline.hiddenItemIdsAt(start))
+        }
+        replayJob = viewModelScope.launch {
+            val stepMs = 33L
+            while (true) {
+                delay(stepMs)
+                val current = _replayState.value ?: break
+                if (!current.playing) break
+                val next = current.positionMs + stepMs
+                if (next >= timeline.totalDurationMs) {
+                    _replayState.update {
+                        it?.copy(positionMs = timeline.totalDurationMs, playing = false, hiddenIds = emptySet())
+                    }
+                    break
+                }
+                _replayState.update {
+                    it?.copy(positionMs = next, hiddenIds = timeline.hiddenItemIdsAt(next))
+                }
+            }
+        }
+    }
+
+    /** Close the replay playhead, restoring the full note to the canvas. */
+    fun closeReplay() {
+        replayJob?.cancel()
+        replayJob = null
+        replayTimeline = null
+        _replayState.value = null
+    }
+
     // ── Path node editing (sub-phase 12.3) ───────────────────────────────
     //
     // A single selected path can enter node-edit mode: the editor swaps the

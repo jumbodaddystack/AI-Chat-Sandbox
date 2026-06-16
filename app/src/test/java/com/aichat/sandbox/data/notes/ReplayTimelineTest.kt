@@ -161,4 +161,35 @@ class ReplayTimelineTest {
         val fast = ReplayTimeline.build(listOf(s), ReplayTimeline.Config(speed = 2f)).totalDurationMs
         assertTrue("2x speed is shorter ($fast < $base)", fast < base)
     }
+
+    // ── Phase 6 — interactive playhead hidden-id reveal ──────────────────────
+
+    @Test
+    fun hiddenItemIdsAtStartShowsOnlyFirstMark() {
+        val a = v2Stroke(0, listOf(0f, 100f, 200f))
+        val b = v2Stroke(1, listOf(1000f, 1100f))
+        val c = v2Stroke(2, listOf(2000f, 2100f))
+        val t = ReplayTimeline.build(listOf(a, b, c))
+        val ids = t.segments.map { it.item.id }
+        // At the very start only the first segment (startMs == 0) is visible.
+        val hidden = t.hiddenItemIdsAt(0L)
+        assertEquals(setOf(ids[1], ids[2]), hidden)
+    }
+
+    @Test
+    fun hiddenItemIdsRevealInDrawOrderAndClearAtEnd() {
+        val a = v2Stroke(0, listOf(0f, 100f))
+        val b = v2Stroke(1, listOf(1000f, 1100f))
+        val c = v2Stroke(2, listOf(2000f, 2100f))
+        val t = ReplayTimeline.build(listOf(a, b, c))
+        val ids = t.segments.map { it.item.id }
+        // Just before the second segment starts it's still hidden; just at/after
+        // its start it (and only later marks) is revealed.
+        val secondStart = t.segments[1].startMs
+        assertTrue(ids[1] in t.hiddenItemIdsAt(secondStart - 1))
+        assertTrue(ids[1] !in t.hiddenItemIdsAt(secondStart))
+        assertTrue(ids[2] in t.hiddenItemIdsAt(secondStart))
+        // At the end nothing is hidden.
+        assertTrue(t.hiddenItemIdsAt(t.totalDurationMs).isEmpty())
+    }
 }

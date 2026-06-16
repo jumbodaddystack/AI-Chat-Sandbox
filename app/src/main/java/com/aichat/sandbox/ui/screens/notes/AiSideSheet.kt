@@ -123,6 +123,13 @@ fun AiSideSheet(
     onSaveBrush: () -> Unit,
     onClearBrushDesign: () -> Unit,
     onBrushDesignerClose: () -> Unit,
+    drawWithMeState: DrawWithMeUiState?,
+    inkAuthoringEnabled: Boolean,
+    onOpenDrawWithMe: () -> Unit,
+    onDrawWithMePromptChanged: (String) -> Unit,
+    onStartDrawWithMe: () -> Unit,
+    onOpenReplay: () -> Unit,
+    onDrawWithMeClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
@@ -202,6 +209,13 @@ fun AiSideSheet(
                     onSaveBrush = onSaveBrush,
                     onClearBrushDesign = onClearBrushDesign,
                     onBrushDesignerClose = onBrushDesignerClose,
+                    drawWithMeState = drawWithMeState,
+                    inkAuthoringEnabled = inkAuthoringEnabled,
+                    onOpenDrawWithMe = onOpenDrawWithMe,
+                    onDrawWithMePromptChanged = onDrawWithMePromptChanged,
+                    onStartDrawWithMe = onStartDrawWithMe,
+                    onOpenReplay = onOpenReplay,
+                    onDrawWithMeClose = onDrawWithMeClose,
                 )
             }
         }
@@ -244,6 +258,13 @@ private fun SheetContent(
     onSaveBrush: () -> Unit,
     onClearBrushDesign: () -> Unit,
     onBrushDesignerClose: () -> Unit,
+    drawWithMeState: DrawWithMeUiState?,
+    inkAuthoringEnabled: Boolean,
+    onOpenDrawWithMe: () -> Unit,
+    onDrawWithMePromptChanged: (String) -> Unit,
+    onStartDrawWithMe: () -> Unit,
+    onOpenReplay: () -> Unit,
+    onDrawWithMeClose: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SheetHeader(
@@ -302,6 +323,19 @@ private fun SheetContent(
             )
             HorizontalDivider()
         }
+        // Phase 6 (N4) — "Draw with me" launcher sits alongside the other
+        // art-assist panels, above the scope row, when open.
+        if (drawWithMeState?.isOpen == true) {
+            DrawWithMePanel(
+                state = drawWithMeState,
+                inkEnabled = inkAuthoringEnabled,
+                onPromptChanged = onDrawWithMePromptChanged,
+                onStart = onStartDrawWithMe,
+                onReplay = onOpenReplay,
+                onClose = onDrawWithMeClose,
+            )
+            HorizontalDivider()
+        }
         ScopeAndCannedPromptRow(
             scopeLabel = state.scopeLabel,
             hasSelection = state.pendingSelection != null,
@@ -312,6 +346,7 @@ private fun SheetContent(
             paletteOpen = paletteState?.isOpen == true,
             critiqueOpen = critiqueState?.isOpen == true,
             brushDesignerOpen = brushDesignState?.isOpen == true,
+            drawWithMeOpen = drawWithMeState?.isOpen == true,
             onCannedPrompt = onCannedPrompt,
             onIconQuickAction = onIconQuickAction,
             onClearScope = onClearScope,
@@ -319,6 +354,7 @@ private fun SheetContent(
             onOpenPalette = onOpenPalette,
             onRequestCritique = onRequestCritique,
             onOpenBrushDesigner = onOpenBrushDesigner,
+            onOpenDrawWithMe = onOpenDrawWithMe,
         )
         SheetFooter(
             inputText = state.inputText,
@@ -714,6 +750,7 @@ private fun ScopeAndCannedPromptRow(
     paletteOpen: Boolean,
     critiqueOpen: Boolean,
     brushDesignerOpen: Boolean,
+    drawWithMeOpen: Boolean,
     onCannedPrompt: (CannedPrompt) -> Unit,
     onIconQuickAction: (IconQuickAction) -> Unit,
     onClearScope: () -> Unit,
@@ -721,6 +758,7 @@ private fun ScopeAndCannedPromptRow(
     onOpenPalette: () -> Unit,
     onRequestCritique: () -> Unit,
     onOpenBrushDesigner: () -> Unit,
+    onOpenDrawWithMe: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -807,6 +845,17 @@ private fun ScopeAndCannedPromptRow(
                     onClick = onOpenBrushDesigner,
                     enabled = !brushDesignerOpen,
                     label = { Text("Brush designer") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+            // Phase 6 (N4) — "Draw with me" tutor + replay entry point. Always
+            // present so the capability is discoverable; the launch button
+            // inside the panel is gated behind the experimental ink engine.
+            item(key = "draw_with_me") {
+                AssistChip(
+                    onClick = onOpenDrawWithMe,
+                    enabled = !drawWithMeOpen,
+                    label = { Text("Draw with me") },
                     colors = AssistChipDefaults.assistChipColors(),
                 )
             }
@@ -1312,6 +1361,114 @@ private val BRUSH_EXAMPLES = listOf(
     "dry gouache",
     "soft marker",
     "scratchy pencil",
+)
+
+/**
+ * Phase 6 (N4 / idea #7) — "Draw with me" launcher. Two related N4 actions:
+ *  - **Learn to draw**: type a subject; the model authors simple construction
+ *    strokes through the unchanged GENERATE pipeline (so they preview as a
+ *    normal staged edit) that land on a ghosted guide layer, then the canvas
+ *    overlay steps the reveal Next / Back / Skip / Redo.
+ *  - **Replay**: scrub the marks already on the note in draw order.
+ *
+ * Both are gated behind the experimental ink engine: when [inkEnabled] is false
+ * the actions render disabled under a line of copy explaining how to turn it on
+ * (mirroring Phase 5's "Smart select"), so the feature is discoverable without
+ * flipping the default.
+ */
+@Composable
+private fun DrawWithMePanel(
+    state: DrawWithMeUiState,
+    inkEnabled: Boolean,
+    onPromptChanged: (String) -> Unit,
+    onStart: () -> Unit,
+    onReplay: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Draw with me",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close draw with me",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Text(
+            text = "Learn a subject step by step on a ghost guide layer, or replay how this drawing was made.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!inkEnabled) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Turn on the experimental ink engine (More ▸ Ink engine) to use draw-with-me and replay.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = state.prompt,
+            onValueChange = onPromptChanged,
+            placeholder = { Text("e.g. a fox sitting") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            maxLines = 2,
+            enabled = inkEnabled,
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        // Example subjects — one tap fills the field (doesn't fire) so a
+        // blank-page user has somewhere to start.
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(DRAW_WITH_ME_EXAMPLES, key = { it }) { example ->
+                AssistChip(
+                    onClick = { onPromptChanged(example) },
+                    enabled = inkEnabled,
+                    label = { Text(example) },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+        }
+        state.error?.let { err ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = err,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onStart,
+                enabled = inkEnabled && state.prompt.isNotBlank(),
+            ) { Text("Start") }
+            TextButton(
+                onClick = onReplay,
+                enabled = inkEnabled,
+            ) { Text("Replay drawing") }
+        }
+    }
+}
+
+/** Example subjects surfaced as one-tap chips in the draw-with-me launcher (Phase 6). */
+private val DRAW_WITH_ME_EXAMPLES = listOf(
+    "a fox",
+    "a simple house",
+    "a coffee cup",
+    "a smiling face",
 )
 
 @Composable
