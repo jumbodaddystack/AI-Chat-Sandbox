@@ -17,8 +17,7 @@ import java.io.File
 /**
  * Phase 18 (audit P0.1, finding A1) — on-canvas preview of a staged AI edit.
  *
- * Until now an AI edit was accepted blind: the banner showed only a count.
- * This overlay draws the [EditPreviewController.Simulation] directly over the
+ * The staged edit surface draws the [EditPreviewController.Simulation] directly over the
  * live canvas *before* the user accepts / rejects, so the change is visible:
  *
  *  - **removed**  → red, ghosted (geometry that would disappear).

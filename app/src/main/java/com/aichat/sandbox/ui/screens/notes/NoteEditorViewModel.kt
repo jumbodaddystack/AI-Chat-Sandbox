@@ -2070,6 +2070,32 @@ class NoteEditorViewModel @Inject constructor(
         )
     }
 
+
+    /**
+     * Stage a locally-authored net diff that is already computed outside the
+     * edit-op protocol (for example one-tap tidy). This still produces a
+     * [PendingEdit], so the canvas uses the same diff overlay and accept/reject
+     * controls as model-authored edit-ops.
+     */
+    private fun stageCompositeLocalEdit(
+        description: String,
+        added: List<NoteItem>,
+        removed: List<NoteItem>,
+        modified: List<Pair<NoteItem, NoteItem>>,
+    ) {
+        if (added.isEmpty() && removed.isEmpty() && modified.isEmpty()) return
+        _pendingEdit.value = PendingEdit(
+            description = description,
+            doc = EditOpsDoc(EditOpsDoc.SCHEMA, description, emptyList()),
+            simulation = EditPreviewController.Simulation(
+                added = added,
+                removed = removed,
+                modified = modified,
+                skipped = emptyList(),
+            ),
+        )
+    }
+
     // ── Replay / draw-with-me (phase I8 / N4, idea #7) ───────────────────
     //
     // Two consumers of the canonical v2 `t` lane and the AI generation pipeline,
@@ -2786,7 +2812,8 @@ class NoteEditorViewModel @Inject constructor(
     /**
      * Phase 17.5 follow-on — one-tap **tidy** over the selection: simplify
      * strokes, snap path anchors to the icon grid, and fold style-compatible
-     * paths together ([NoteTidy]). Lands as a single `CompositeEdit("Tidy")`.
+     * paths together ([NoteTidy]). Stages as a previewable `PendingEdit` first,
+     * then lands as a single `CompositeEdit("Tidy")` only if accepted.
      * Grid snapping only applies to icons (the artboard grid); plain notes get
      * simplify + merge. No-ops when nothing changes.
      */
@@ -2801,19 +2828,12 @@ class NoteEditorViewModel @Inject constructor(
             newItemNoteId = resolvedNoteId,
         )
         if (result.isEmpty) return
-        apply(EditorAction.CompositeEdit(
+        stageCompositeLocalEdit(
             description = "Tidy",
             added = result.added,
             removed = result.removed,
             modified = result.modified,
-        ))
-        val removedIds = result.removed.mapTo(HashSet(result.removed.size)) { it.id }
-        val newSelection = target.mapNotNull { it.id.takeUnless { id -> id in removedIds } }
-            .toMutableSet()
-        newSelection += result.added.map { it.id }
-        _selection.value = newSelection
-        _selectionWorldBounds.value = recomputeSelectionBounds()
-        _selectionMatrix.value = StrokeTransform.IDENTITY
+        )
     }
 
     // ── Phase 13.3 — eyedropper + style copy/paste ───────────────────────
