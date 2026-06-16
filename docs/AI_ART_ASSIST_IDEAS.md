@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **Phases 1–4 implemented and verified as of 2026-06-16**.
+Status: **Phases 1–5 implemented and verified as of 2026-06-16**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -33,9 +33,14 @@ sessions.
   a deterministic sample-stroke preview, and an explicit preview-then-save flow
   (`designBrushPreview()` / `saveBrushDesign()`) that writes a uniquely-named
   user-scope `BrushPreset` and makes it the active brush.
-- **Select-similar + snap suggestions (N2 / idea #8)** exist in the ViewModel as
-  `selectSimilarTo`, `proposeSnaps`, and `aiRankSelection`. They are gated behind
-  `inkAuthoring` and have no visible magic-wand/snap UI entry point.
+- **Select-similar + snap suggestions (N2 / idea #8)** are now productized
+  (Phase 5). The headless ViewModel paths (`selectSimilarTo`, `proposeSnaps`,
+  `aiRankSelection`) are fronted by a "Smart select" section in the selection
+  overflow menu: "Select similar" (magic wand) for a single stroke, plus "Snap
+  layout" and "AI group" for a multi-selection. They stay gated behind the
+  experimental ink engine (`inkAuthoring`); when it's off the controls render
+  disabled under a line of copy explaining how to turn it on. The locked-layer +
+  group-expansion policy was extracted into the pure, testable `SmartSelect`.
 - **Draw-with-me tutor + replay (N4 / idea #7)** exists as `startDrawWithMe`,
   `buildReplayTimeline`, `TutorGuide`, and `TutorSession`. It is also gated behind
   `inkAuthoring` and lacks a start UI, tutor controls, replay playhead UI, and
@@ -353,25 +358,65 @@ snap/alignment suggestions as normal staged edits.
 
 ### Tasks
 
-- [ ] Decide product gating: experimental-only while `inkAuthoring` is off by
+- [x] Decide product gating: experimental-only while `inkAuthoring` is off by
   default, or add a non-ink fallback for simple bounds-based selection/snapping.
-- [ ] Add a visible Magic Wand action when a single stroke is selected and
+  - Decision: **experimental-only**. The select-similar (mesh-backed) and snap
+    engines stay gated behind the experimental ink engine (`inkAuthoring`,
+    default-off), honouring principle 4 ("don't make AndroidX Ink default-on
+    from an art-assist feature"). Rather than building a separate non-ink
+    fallback engine, the controls are *surfaced* in every selection but render
+    disabled, under a line of copy, when ink is off — so the capability is
+    discoverable without flipping the default. (`selectSimilarTo` still degrades
+    to a plain single tap-select with ink off, so no gesture is ever lost.)
+- [x] Add a visible Magic Wand action when a single stroke is selected and
   `inkSelectionToolsEnabled()` is true.
-- [ ] Wire the action to `selectSimilarTo(itemId)` and update selection chrome.
-- [ ] Add threshold/strictness UI only after the one-tap default feels good.
-- [ ] Add “Snap selection” or “Align suggestion” action for multi-selection when
+  - A "Select similar" item (✦ `AutoAwesome`) under a new "Smart select" section
+    in the selection overflow (`SelectionOverlay` ▸ "More"), shown only when
+    `selectionIsSingleStroke` and enabled only when `inkSelectionToolsEnabled()`.
+- [x] Wire the action to `selectSimilarTo(itemId)` and update selection chrome.
+  - `onSelectSimilar = viewModel::selectSimilarToSelection`, which resolves the
+    single selected stroke and calls `selectSimilarTo`. That routes through
+    `selectExactly`, which rewrites `_selection` + recomputes
+    `_selectionWorldBounds`, so the overlay chrome snaps to the new set.
+- [~] Add threshold/strictness UI only after the one-tap default feels good.
+  - **Intentionally deferred** per the task's own condition. The one-tap default
+    uses `SelectSimilar.DEFAULT_THRESHOLD`; `selectSimilarTo` /
+    `selectSimilarToSelection` already accept a `threshold` parameter, so a
+    strictness slider can be layered on later without touching the engine.
+- [x] Add “Snap selection” or “Align suggestion” action for multi-selection when
   `inkSelectionToolsEnabled()` is true.
-- [ ] Wire snap action to `proposeSnaps(selection)`.
-- [ ] Optionally add “Ask AI to group/refine selection” wired to
+  - A "Snap layout" item (`Straighten`) in the same "Smart select" section,
+    shown when `selectionIsMulti` (≥2) and enabled only with ink on.
+- [x] Wire snap action to `proposeSnaps(selection)`.
+  - `onSnapSelection = { viewModel.proposeSnaps() }` (defaults to the live
+    selection), which stages the constraint nudges via `stageLocalEdit`.
+- [x] Optionally add “Ask AI to group/refine selection” wired to
   `aiRankSelection(extraInstruction)`.
-- [ ] Add UI copy explaining why the controls are unavailable when ink is off.
-- [ ] Add tests for selection expansion, locked layers, and staged snap previews.
+  - An "AI group" item (`GroupWork`) in the same section for multi-selections,
+    wired to `viewModel.aiRankSelection()`.
+- [x] Add UI copy explaining why the controls are unavailable when ink is off.
+  - When `inkSelectionToolsEnabled()` is false the "Smart select" section still
+    appears (whenever a smart action is contextually possible) with the actions
+    disabled and a `bodySmall` caption: "Turn on the experimental ink engine
+    (More ▸ Ink engine) to select similar strokes and snap layouts."
+- [x] Add tests for selection expansion, locked layers, and staged snap previews.
+  - `SmartSelectTest` (all green): similar-vs-dissimilar selection, group
+    expansion of matches, locked-layer exclusion (as candidate and group
+    sibling), non-stroke/missing-target degradation, and a staged-snap preview
+    that modifies the unlocked item while the shared simulator drops the locked
+    one's transform.
 
 ### Acceptance criteria
 
-- Select-similar changes selection only; it does not mutate the canvas.
-- Snap suggestions stage as previewable `PendingEdit` transforms.
-- Hidden experimental gating is visible and understandable to users.
+- [x] Select-similar changes selection only; it does not mutate the canvas.
+  - `selectSimilarTo` only calls `selectExactly`; it never stages a
+    `PendingEdit` or touches `items`.
+- [x] Snap suggestions stage as previewable `PendingEdit` transforms.
+  - `proposeSnaps` emits `EditOp.Transform`s and stages them via the shared
+    `stageLocalEdit` → `AiEditDiffOverlay` + banner accept/reject path.
+- [x] Hidden experimental gating is visible and understandable to users.
+  - The "Smart select" controls are present (not hidden) for any qualifying
+    selection, disabled with explanatory copy when the ink engine is off.
 
 ---
 

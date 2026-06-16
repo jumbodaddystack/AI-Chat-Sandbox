@@ -752,6 +752,14 @@ fun NoteEditorScreen(
                     onPasteStyle = viewModel::pasteStyleToSelection,
                     canPickColor = selection.size == 1,
                     onPickColor = viewModel::pickColorFromSelection,
+                    // Phase 5 — smart select (N2): magic-wand select-similar +
+                    // constraint-snap suggestions, surfaced behind the
+                    // experimental ink engine (with copy when it's off).
+                    inkSelectionToolsEnabled = viewModel.inkSelectionToolsEnabled(),
+                    selectionIsSingleStroke = viewModel.selectionIsSingleStroke(),
+                    onSelectSimilar = viewModel::selectSimilarToSelection,
+                    onSnapSelection = { viewModel.proposeSnaps() },
+                    onAiGroupSelection = { viewModel.aiRankSelection() },
                 )
                 // Sub-phase 12.3 — node-edit overlay replaces the selection
                 // overlay (the selection cleared when node editing began).

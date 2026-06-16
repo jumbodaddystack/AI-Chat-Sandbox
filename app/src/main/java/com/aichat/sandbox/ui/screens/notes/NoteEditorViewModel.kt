@@ -1978,25 +1978,28 @@ class NoteEditorViewModel @Inject constructor(
             selectExactly(setOf(itemId))
             return
         }
-        // Build features for every stroke on a selectable (unlocked) layer.
-        val candidates = ArrayList<SelectSimilar.Candidate>()
-        for (item in items) {
-            if (item.kind != STROKE_KIND) continue
-            val layer = _layers.value.firstOrNull { it.id == item.layerId }
-            if (layer != null && layer.locked) continue
-            val features = StrokeSimilarity.featuresOf(
-                item.payload, item.tool ?: "", item.colorArgb, item.baseWidthPx,
-            ) ?: continue
-            candidates.add(SelectSimilar.Candidate(item.id, features))
-        }
-        val matched = SelectSimilar.selectSimilar(itemId, candidates, threshold).toHashSet()
-        // Reuse the lasso's group expansion + locked-layer rule.
-        val expanded = expandSelectionToGroups(matched, items) { item ->
-            val layer = _layers.value.firstOrNull { it.id == item.layerId }
-            layer == null || !layer.locked
-        }
+        // Locked-layer filtering + group expansion live in the pure
+        // [SmartSelect] policy so they stay unit-testable without the VM.
+        val expanded = SmartSelect.selectSimilarIds(itemId, items.toList(), _layers.value, threshold)
+        if (expanded.isEmpty()) return
         selectExactly(expanded)
         palette.select(palette.lastInkTool)
+    }
+
+    /** True when exactly one stroke is selected — the magic-wand precondition. */
+    fun selectionIsSingleStroke(): Boolean {
+        val ids = _selection.value
+        if (ids.size != 1) return false
+        return items.any { it.id == ids.first() && it.kind == STROKE_KIND }
+    }
+
+    /**
+     * Phase 5 entry point — run "select similar" on the single selected stroke.
+     * No-op unless exactly one stroke is selected (the UI only offers it then).
+     */
+    fun selectSimilarToSelection(threshold: Float = SelectSimilar.DEFAULT_THRESHOLD) {
+        val id = _selection.value.singleOrNull() ?: return
+        selectSimilarTo(id, threshold)
     }
 
     /** Replace the active selection with [ids], recomputing the overlay bounds. */
