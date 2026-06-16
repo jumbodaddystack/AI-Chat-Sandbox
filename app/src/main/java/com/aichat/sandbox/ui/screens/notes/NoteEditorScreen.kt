@@ -1618,20 +1618,23 @@ private fun AiEditPreviewBanner(
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    DiffLegendItem(Color(AI_DIFF_ADDED_ARGB), "${sim.added.size} added")
-                    DiffLegendItem(Color(AI_DIFF_REMOVED_ARGB), "${sim.removed.size} removed")
-                    DiffLegendItem(Color(AI_DIFF_MODIFIED_ARGB), "${sim.modified.size} modified")
+                    aiEditLegendLabels(sim).forEachIndexed { index, label ->
+                        val color = when (index) {
+                            0 -> Color(AI_DIFF_ADDED_ARGB)
+                            1 -> Color(AI_DIFF_REMOVED_ARGB)
+                            else -> Color(AI_DIFF_MODIFIED_ARGB)
+                        }
+                        DiffLegendItem(color, label)
+                    }
                 }
-                // A5 fix — partial-failure summary. Two sources used to be
-                // invisible: ops the parser couldn't read (`doc.rejected`) and
-                // ops that parsed but couldn't apply against the live items
-                // (`simulation.skipped`). Without this the user got 7 of 10 ops
-                // with no notice of the 3 dropped. We sum both and name the
-                // first reason so the gap is acknowledged, not silent.
-                val invalidReasons = sim.skipped + pending.doc.rejected.map { it.reason }
+                // Partial-failure summary. Two sources can be unavailable:
+                // ops the parser couldn't read (`doc.rejected`) and ops that
+                // parsed but couldn't apply against the live items
+                // (`simulation.skipped`). We sum both and name the first
+                // reason so the gap is acknowledged, not silent.
+                val invalidReasons = aiEditInvalidReasons(pending)
                 if (invalidReasons.isNotEmpty()) {
-                    val emitted = pending.doc.ops.size + pending.doc.rejected.size
-                    val applied = (emitted - invalidReasons.size).coerceAtLeast(0)
+                    val (applied, emitted) = aiEditAppliedOfEmitted(pending)
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "Applied $applied of $emitted edits · " +

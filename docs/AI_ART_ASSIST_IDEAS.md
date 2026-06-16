@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **reconciled with the app codebase as of 2026-06-16**.
+Status: **Phase 1 implemented and verified as of 2026-06-16**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -92,23 +92,44 @@ locally-authored snap/tidy edits, and generated geometry.
 
 ### Tasks
 
-- [ ] Add/verify JVM coverage for `AiEditDiffOverlay`-adjacent behavior at the
+- [x] Add/verify JVM coverage for `AiEditDiffOverlay`-adjacent behavior at the
   simulation layer: added, removed, modified, and skipped edit buckets.
-- [ ] Add a small UI smoke test or screenshot test for the banner legend counts
+  - Completed in `EditPreviewControllerPhase1Test`, which exercises the shared
+    `EditPreviewController.Simulation` buckets used by the overlay.
+- [x] Add a small UI smoke test or screenshot test for the banner legend counts
   and partial-failure message, if the project test stack supports it.
-- [ ] Audit every existing art-assist entry point and document whether it stages
+  - Completed as a JVM smoke test over extracted banner summary helpers
+    (`aiEditLegendLabels`, `aiEditInvalidReasons`, and
+    `aiEditAppliedOfEmitted`) because the project has broad JVM test coverage
+    but no existing Compose screenshot test stack for this screen.
+- [x] Audit every existing art-assist entry point and document whether it stages
   `PendingEdit`, mutates locally, or only returns prose.
-- [ ] Ensure locally-authored snap/tidy docs use `stageLocalEdit` so they receive
+  - Audit result: AI EDIT (`submitAiEdit`) stages `PendingEdit` via
+    `stagePendingEdit`; GENERATE and REFINE are EDIT requests with generate /
+    refine flags and also stage via `stagePendingEdit`; locally-authored snap
+    suggestions (`proposeSnaps`) stage via `stageLocalEdit`; one-tap tidy now
+    stages a locally computed `PendingEdit` simulation before accept; AI ranking
+    (`aiRankSelection`) routes through AI EDIT; select-similar mutates selection
+    only; brush design returns/persists brush presets and does not mutate canvas;
+    draw-with-me tutor stages guide generation through the GENERATE edit-ops
+    path; replay/tutor guide metadata is non-mutating prose/control data.
+- [x] Ensure locally-authored snap/tidy docs use `stageLocalEdit` so they receive
   the same visual diff as model-authored edits.
-- [ ] Update stale comments in `NoteEditorScreen` that still describe the visual
+  - Snap already used `stageLocalEdit`. Tidy now uses a locally computed
+    `PendingEdit` simulation because its net add/remove/modify diff is produced
+    outside the edit-op protocol; it still previews through the same overlay,
+    banner, and accept/reject path.
+- [x] Update stale comments in `NoteEditorScreen` that still describe the visual
   diff as a future follow-up.
+  - Updated comments in the banner/overlay path to describe the current shared
+    staged edit surface rather than a future follow-up.
 
 ### Acceptance criteria
 
-- AI EDIT, GENERATE, REFINE, and locally-staged snap/tidy all preview through the
+- [x] AI EDIT, GENERATE, REFINE, and locally-staged snap/tidy all preview through the
   same accept/reject surface.
-- The user can tell what will be added, removed, and modified before accepting.
-- No new AI art-assist feature bypasses `PendingEdit` for canvas mutation.
+- [x] The user can tell what will be added, removed, and modified before accepting.
+- [x] No new AI art-assist feature bypasses `PendingEdit` for canvas mutation.
 
 ---
 
