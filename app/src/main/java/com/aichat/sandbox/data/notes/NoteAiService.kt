@@ -63,6 +63,10 @@ class NoteAiService @Inject constructor(
             collectCritique(request, caps.supportsVision)
             return@flow
         }
+        if (request.mode == AskMode.RESTYLE) {
+            collectRestyle(request, caps.supportsVision)
+            return@flow
+        }
         if (request.mode == AskMode.EDIT) {
             if (request.generate) {
                 collectGenerate(request, caps.supportsVision)
@@ -406,6 +410,148 @@ class NoteAiService @Inject constructor(
         }
         append("\n\n")
         append("Here is the vector JSON of the in-scope items (reference items by `id`):\n")
+        append("```json\n")
+        append(vectorJson)
+        append("\n```")
+    }
+
+    /**
+     * Phase 7 — named-style **restyle** dispatcher. Mirrors [collectEdit] /
+     * [collectCritique]: serializes the in-scope geometry as [VectorCanvasJson]
+     * (so op ids line up with the applier), optionally attaches the rasterized
+     * preview for a vision model, buffers the reply, and validates it through
+     * [RestyleParser] — which keeps only the non-additive, non-moving op subset
+     * so a restyle can never add new subject matter. Emits a single
+     * [AiChunk.EditPreview] so the result stages through exactly the same
+     * preview/diff/accept-reject surface as any other AI edit.
+     */
+    private suspend fun FlowCollector<AiChunk>.collectRestyle(
+        request: AskRequest,
+        supportsVision: Boolean,
+    ) {
+        val serialized = VectorCanvasJson.serialize(
+            items = request.selection ?: request.allItems,
+            bounds = null,
+            layers = request.layers,
+        )
+        val chat = Chat(
+            id = SYNTHETIC_CHAT_ID,
+            title = "Restyle",
+            model = request.modelId,
+            systemMessage = RestyleParser.SYSTEM_MESSAGE,
+        )
+        val items = request.selection ?: request.allItems
+        val ocrText = if (supportsVision) null
+            else resolveOcrText(request).takeIf { it.isNotBlank() }
+        val promptBody = buildRestylePromptBody(request.userPrompt, serialized.json, ocrText)
+        val userMessage = if (supportsVision && items.isNotEmpty()) {
+            withContext(Dispatchers.Default) {
+                val pngBytes = try {
+                    imageRenderer.renderToPng(
+                        items = items,
+                        backgroundStyle = request.note.backgroundStyle,
+                        maxEdgePx = MAX_EDGE_PX,
+                    )
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Failed to rasterize note ${request.note.id} for restyle", t)
+                    null
+                }
+                if (pngBytes == null) {
+                    textMessage(promptBody)
+                } else {
+                    val dataUri = "data:image/png;base64,${Base64.getEncoder().encodeToString(pngBytes)}"
+                    val metadata = gson.toJson(
+                        ImageMetadata(images = listOf(ImageAttachment(dataUri = dataUri)))
+                    )
+                    Message(
+                        chatId = SYNTHETIC_CHAT_ID,
+                        role = MessageRole.USER.value,
+                        content = promptBody,
+                        contentType = "multimodal",
+                        metadata = metadata,
+                    )
+                }
+            }
+        } else {
+            textMessage(promptBody)
+        }
+        val upstream = chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = chat,
+            messages = listOf(userMessage),
+        )
+        val buffer = StringBuilder()
+        var lastUsage: com.aichat.sandbox.data.model.Usage? = null
+        var errored = false
+        upstream.collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> buffer.append(event.content)
+                is StreamEvent.Complete -> { lastUsage = event.usage }
+                is StreamEvent.Error -> {
+                    errored = true
+                    emit(AiChunk.Error(event.message))
+                }
+                is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
+            }
+        }
+        if (errored) {
+            aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            return
+        }
+        RestyleParser.parse(
+            raw = buffer.toString(),
+            knownIds = serialized.idMap.keys,
+            knownLayers = serialized.layerMap.keys,
+        ).fold(
+            onSuccess = { doc ->
+                aiDebugLog.record(
+                    mode = "RESTYLE",
+                    modelId = request.modelId,
+                    request = serialized.json,
+                    rawReply = buffer.toString(),
+                    outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
+                    rejections = doc.rejected.map { it.reason },
+                )
+                emit(AiChunk.EditPreview(
+                    doc = doc,
+                    idMap = serialized.idMap,
+                    layerMap = serialized.layerMap,
+                    usage = lastUsage,
+                ))
+            },
+            onFailure = { t ->
+                Log.w(TAG, "restyle parse failed: ${t.message}")
+                aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
+            },
+        )
+    }
+
+    /**
+     * Build the restyle prompt body. Exposed `internal` so a unit test can pin
+     * the wire format. Any OCR transcription leads (non-vision branch only), the
+     * preset instruction (from [StylePreset.buildInstruction]) follows, then the
+     * canvas JSON so the model references items by id.
+     */
+    internal fun buildRestylePromptBody(
+        userPrompt: String,
+        vectorJson: String,
+        ocrText: String?,
+    ): String = buildString {
+        if (!ocrText.isNullOrBlank()) {
+            append("Transcribed note (may have OCR errors):\n")
+            append(ocrText)
+            append("\n\n")
+        }
+        if (userPrompt.isNotBlank()) {
+            append(userPrompt)
+        } else {
+            append("Restyle these items into a cleaner, more cohesive look.")
+        }
+        append("\n\n")
+        append("Here is the vector JSON of the items to restyle (reference items by `id`; ")
+        append("restyle only these — do not add new ones):\n")
         append("```json\n")
         append(vectorJson)
         append("\n```")

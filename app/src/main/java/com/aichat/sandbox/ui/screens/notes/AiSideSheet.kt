@@ -69,6 +69,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.aichat.sandbox.data.notes.PaletteScheme
 import com.aichat.sandbox.data.notes.PaletteSource
+import com.aichat.sandbox.data.notes.StylePreset
+import com.aichat.sandbox.data.notes.StylePresetCatalog
 import com.aichat.sandbox.ui.components.ModelSelector
 import com.aichat.sandbox.ui.components.notes.BrushPreviewStroke
 
@@ -123,6 +125,10 @@ fun AiSideSheet(
     onSaveBrush: () -> Unit,
     onClearBrushDesign: () -> Unit,
     onBrushDesignerClose: () -> Unit,
+    restyleState: RestyleUiState?,
+    onOpenRestyle: () -> Unit,
+    onApplyStylePreset: (String) -> Unit,
+    onRestyleClose: () -> Unit,
     drawWithMeState: DrawWithMeUiState?,
     inkAuthoringEnabled: Boolean,
     onOpenDrawWithMe: () -> Unit,
@@ -209,6 +215,10 @@ fun AiSideSheet(
                     onSaveBrush = onSaveBrush,
                     onClearBrushDesign = onClearBrushDesign,
                     onBrushDesignerClose = onBrushDesignerClose,
+                    restyleState = restyleState,
+                    onOpenRestyle = onOpenRestyle,
+                    onApplyStylePreset = onApplyStylePreset,
+                    onRestyleClose = onRestyleClose,
                     drawWithMeState = drawWithMeState,
                     inkAuthoringEnabled = inkAuthoringEnabled,
                     onOpenDrawWithMe = onOpenDrawWithMe,
@@ -258,6 +268,10 @@ private fun SheetContent(
     onSaveBrush: () -> Unit,
     onClearBrushDesign: () -> Unit,
     onBrushDesignerClose: () -> Unit,
+    restyleState: RestyleUiState?,
+    onOpenRestyle: () -> Unit,
+    onApplyStylePreset: (String) -> Unit,
+    onRestyleClose: () -> Unit,
     drawWithMeState: DrawWithMeUiState?,
     inkAuthoringEnabled: Boolean,
     onOpenDrawWithMe: () -> Unit,
@@ -323,6 +337,16 @@ private fun SheetContent(
             )
             HorizontalDivider()
         }
+        // Phase 7 — named-style restyle panel sits alongside the other
+        // art-assist panels, above the scope row, when open.
+        if (restyleState?.isOpen == true) {
+            RestylePanel(
+                state = restyleState,
+                onApplyPreset = onApplyStylePreset,
+                onClose = onRestyleClose,
+            )
+            HorizontalDivider()
+        }
         // Phase 6 (N4) — "Draw with me" launcher sits alongside the other
         // art-assist panels, above the scope row, when open.
         if (drawWithMeState?.isOpen == true) {
@@ -346,6 +370,7 @@ private fun SheetContent(
             paletteOpen = paletteState?.isOpen == true,
             critiqueOpen = critiqueState?.isOpen == true,
             brushDesignerOpen = brushDesignState?.isOpen == true,
+            restyleOpen = restyleState?.isOpen == true,
             drawWithMeOpen = drawWithMeState?.isOpen == true,
             onCannedPrompt = onCannedPrompt,
             onIconQuickAction = onIconQuickAction,
@@ -354,6 +379,7 @@ private fun SheetContent(
             onOpenPalette = onOpenPalette,
             onRequestCritique = onRequestCritique,
             onOpenBrushDesigner = onOpenBrushDesigner,
+            onOpenRestyle = onOpenRestyle,
             onOpenDrawWithMe = onOpenDrawWithMe,
         )
         SheetFooter(
@@ -750,6 +776,7 @@ private fun ScopeAndCannedPromptRow(
     paletteOpen: Boolean,
     critiqueOpen: Boolean,
     brushDesignerOpen: Boolean,
+    restyleOpen: Boolean,
     drawWithMeOpen: Boolean,
     onCannedPrompt: (CannedPrompt) -> Unit,
     onIconQuickAction: (IconQuickAction) -> Unit,
@@ -758,6 +785,7 @@ private fun ScopeAndCannedPromptRow(
     onOpenPalette: () -> Unit,
     onRequestCritique: () -> Unit,
     onOpenBrushDesigner: () -> Unit,
+    onOpenRestyle: () -> Unit,
     onOpenDrawWithMe: () -> Unit,
 ) {
     Column(
@@ -845,6 +873,16 @@ private fun ScopeAndCannedPromptRow(
                     onClick = onOpenBrushDesigner,
                     enabled = !brushDesignerOpen,
                     label = { Text("Brush designer") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+            // Phase 7 — named-style restyle entry point, available for both
+            // notes and icons. Disabled while the panel is already open.
+            item(key = "restyle") {
+                AssistChip(
+                    onClick = onOpenRestyle,
+                    enabled = !restyleOpen,
+                    label = { Text("Restyle") },
                     colors = AssistChipDefaults.assistChipColors(),
                 )
             }
@@ -1362,6 +1400,124 @@ private val BRUSH_EXAMPLES = listOf(
     "soft marker",
     "scratchy pencil",
 )
+
+/**
+ * Phase 7 — named-style restyle panel. Tapping a preset chip ("Flat icon",
+ * "Line art", "Isometric", "Sticker") asks the model to re-dress the in-scope
+ * geometry into that look; the validated, restyle-safe ops stage as a normal
+ * on-canvas diff (accept/reject lives in the banner), so the panel itself never
+ * mutates the canvas. A spinner marks the preset in flight, and a footnote makes
+ * the difference from the local copy/paste-style tool explicit.
+ */
+@Composable
+private fun RestylePanel(
+    state: RestyleUiState,
+    onApplyPreset: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Restyle into a look",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close restyle panel",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Text(
+            text = "Pick a named look to restyle the selected items (or the whole drawing). " +
+                "You'll preview the change on the canvas before keeping it.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            StylePresetCatalog.PRESETS.forEach { preset ->
+                StylePresetCard(
+                    preset = preset,
+                    busy = state.loading && state.activePresetId == preset.id,
+                    enabled = !state.loading,
+                    onApply = { onApplyPreset(preset.id) },
+                )
+            }
+        }
+        state.error?.let { err ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = err,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "This restyles into an AI look. To copy the exact style of one item " +
+                "onto another instead, use copy/paste style from the selection menu.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * One named-style preset rendered as a card: the look's name + tagline and an
+ * "Apply" action (a spinner replaces it while that preset's request is in
+ * flight). Applying stages a previewable restyle edit on the canvas.
+ */
+@Composable
+private fun StylePresetCard(
+    preset: StylePreset,
+    busy: Boolean,
+    enabled: Boolean,
+    onApply: () -> Unit,
+) {
+    Surface(
+        tonalElevation = 2.dp,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(10.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = preset.displayName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = preset.tagline,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            if (busy) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            } else {
+                AssistChip(
+                    onClick = onApply,
+                    enabled = enabled,
+                    label = { Text("Apply") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+        }
+    }
+}
 
 /**
  * Phase 6 (N4 / idea #7) — "Draw with me" launcher. Two related N4 actions:

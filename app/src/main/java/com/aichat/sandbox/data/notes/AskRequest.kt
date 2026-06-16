@@ -75,5 +75,12 @@ data class AskRequest(
  *   optional, *safe* edit-op payload. Non-mutating: the suggestions are
  *   surfaced as cards; applying a suggestion's fix is a separate, previewable
  *   step. selection / layers scope the geometry the model is shown.
+ * - [RESTYLE] — phase 7: reply with an `edit-ops` document that restyles the
+ *   in-scope items into a named visual look ([StylePreset]). Like EDIT it
+ *   produces a previewable [AiChunk.EditPreview], but [RestyleParser] keeps only
+ *   the non-additive, non-moving op subset ([StylePreset.isRestyleOp]) so the
+ *   subject stays the same — only its appearance changes. [userPrompt] carries
+ *   the chosen preset's [StylePreset.buildInstruction]; selection / layers scope
+ *   the geometry the model restyles.
  */
-enum class AskMode { ASK, EDIT, DESIGN_BRUSH, SUGGEST_PALETTE, CRITIQUE }
+enum class AskMode { ASK, EDIT, DESIGN_BRUSH, SUGGEST_PALETTE, CRITIQUE, RESTYLE }

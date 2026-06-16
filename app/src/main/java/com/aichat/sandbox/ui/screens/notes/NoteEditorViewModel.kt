@@ -49,6 +49,8 @@ import com.aichat.sandbox.data.notes.PendingDraftStore
 import com.aichat.sandbox.data.notes.RecentColorsStore
 import com.aichat.sandbox.data.notes.ReplayTimeline
 import com.aichat.sandbox.data.notes.StampSearch
+import com.aichat.sandbox.data.notes.StylePreset
+import com.aichat.sandbox.data.notes.StylePresetCatalog
 import com.aichat.sandbox.data.notes.ToolPalettePrefsStore
 import com.aichat.sandbox.data.notes.TutorGuide
 import com.aichat.sandbox.data.notes.TutorSession
@@ -368,6 +370,15 @@ class NoteEditorViewModel @Inject constructor(
     private val _brushDesignState = MutableStateFlow<BrushDesignUiState?>(null)
     val brushDesignState: StateFlow<BrushDesignUiState?> = _brushDesignState.asStateFlow()
     private var brushDesignJob: Job? = null
+
+    // Phase 7 — named-style restyle panel. Null when closed. Tapping a preset
+    // chip fires an AskMode.RESTYLE request whose result stages a previewable
+    // PendingEdit through the shared accept/reject surface (never mutates
+    // directly). RestyleParser strips additive/moving ops so the subject stays
+    // the same — only its look changes.
+    private val _restyleState = MutableStateFlow<RestyleUiState?>(null)
+    val restyleState: StateFlow<RestyleUiState?> = _restyleState.asStateFlow()
+    private var restyleJob: Job? = null
 
     /**
      * Models offered by the in-sheet model picker (sub-phase 2.8). Mirrors
@@ -3489,6 +3500,119 @@ class NoteEditorViewModel @Inject constructor(
         dismissPalette()
         dismissCritique()
         dismissBrushDesigner()
+        dismissRestyle()
+    }
+
+    // ── Named-style restyle (Phase 7) ────────────────────────────────────
+
+    /**
+     * Open the restyle panel. The scope is frozen at open time (the sheet's
+     * selection scope, else the live canvas selection, else the whole note), so
+     * background selection changes don't drift which items a preset restyles.
+     */
+    fun openRestyle() {
+        _restyleState.value = RestyleUiState(
+            isOpen = true,
+            scope = currentPaletteScope(),
+        )
+    }
+
+    /**
+     * Apply a named [StylePreset] (by id) to the frozen scope. Fires an
+     * [AskMode.RESTYLE] request whose validated, restyle-safe ops stage as a
+     * previewable [PendingEdit] on the canvas — the user accepts or rejects in
+     * the banner, exactly like any other AI edit. No-op while a request is in
+     * flight; surfaces a friendly note when the model proposes nothing visible.
+     */
+    fun applyStylePreset(presetId: String) {
+        val preset = StylePresetCatalog.byId(presetId) ?: return
+        val state = _restyleState.value ?: return
+        if (state.loading) return
+        val scope = state.scope.ifEmpty { items.toList() }
+        if (scope.isEmpty()) {
+            _restyleState.update {
+                it?.copy(error = "Nothing to restyle — draw or select something first.")
+            }
+            return
+        }
+        restyleJob?.cancel()
+        _restyleState.update { it?.copy(loading = true, activePresetId = presetId, error = null) }
+        restyleJob = viewModelScope.launch {
+            try {
+                val modelId = _aiSheetState.value.activeModelId
+                    .ifEmpty { preferencesManager.defaultModel.first() }
+                val creds = preferencesManager.credentialsFor(modelId)
+                val request = AskRequest(
+                    note = _note.value,
+                    allItems = items.toList(),
+                    selection = scope,
+                    userPrompt = preset.buildInstruction(),
+                    modelId = modelId,
+                    baseUrl = creds.baseUrl,
+                    apiKey = creds.apiKey,
+                    mode = AskMode.RESTYLE,
+                    layers = _layers.value,
+                    isIcon = _note.value.isIcon,
+                )
+                aiService.ask(request).collect { chunk ->
+                    when (chunk) {
+                        is AiChunk.EditPreview -> stageRestyleEdit(chunk, preset)
+                        is AiChunk.Error ->
+                            _restyleState.update { it?.copy(loading = false, error = chunk.message) }
+                        else -> { /* deltas / completes ignored — restyle is terminal */ }
+                    }
+                }
+                _restyleState.update { if (it?.loading == true) it.copy(loading = false) else it }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _restyleState.update {
+                    it?.copy(loading = false, error = t.message ?: "Restyle request failed")
+                }
+            } finally {
+                restyleJob = null
+            }
+        }
+    }
+
+    /**
+     * Stage a restyle [chunk] as a previewable [PendingEdit]. Re-simulates the
+     * restyle-safe ops against the live items (the shared simulator also drops
+     * locked-layer items and no-op restyles); surfaces a friendly note when
+     * nothing visibly changes rather than staging an empty preview.
+     */
+    private fun stageRestyleEdit(chunk: AiChunk.EditPreview, preset: StylePreset) {
+        val description = "Restyle: ${preset.displayName}"
+        val simulation = EditPreviewController.simulate(
+            currentItems = items.toList(),
+            doc = chunk.doc,
+            idMap = chunk.idMap,
+            layerMap = chunk.layerMap,
+            layers = _layers.value,
+            newItemNoteId = _note.value.id,
+        )
+        if (simulation.isEmpty) {
+            _restyleState.update {
+                it?.copy(
+                    loading = false,
+                    error = "No visible change for “${preset.displayName}”. Try another style.",
+                )
+            }
+            return
+        }
+        _pendingEdit.value = PendingEdit(
+            description = description,
+            doc = chunk.doc,
+            simulation = simulation,
+        )
+        _restyleState.update { it?.copy(loading = false, error = null) }
+    }
+
+    /** Close the restyle panel and cancel any in-flight restyle request. */
+    fun dismissRestyle() {
+        restyleJob?.cancel()
+        restyleJob = null
+        _restyleState.value = null
     }
 
     // ── Palette & colour-harmony assistant (Phase 2) ─────────────────────
