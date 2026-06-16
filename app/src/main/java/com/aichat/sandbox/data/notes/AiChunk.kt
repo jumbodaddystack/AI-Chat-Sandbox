@@ -35,4 +35,17 @@ sealed interface AiChunk {
         val spec: BrushSpec,
         val usage: Usage? = null,
     ) : AiChunk
+
+    /**
+     * Phase 2 — terminal event emitted by `SUGGEST_PALETTE` mode. Carries the
+     * validated [suggestion] (swatches + rationale + optional short-id colour
+     * assignments) plus the short-id → on-disk-UUID [idMap] so the applier can
+     * resolve any assignment ids back to live items for a previewable recolor.
+     * No canvas mutation is implied — the swatches are surfaced as suggestions.
+     */
+    data class PaletteResult(
+        val suggestion: PaletteSuggestion,
+        val idMap: Map<String, String>,
+        val usage: Usage? = null,
+    ) : AiChunk
 }

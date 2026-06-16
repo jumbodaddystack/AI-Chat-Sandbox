@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -53,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -61,6 +63,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.aichat.sandbox.data.notes.PaletteScheme
+import com.aichat.sandbox.data.notes.PaletteSource
 import com.aichat.sandbox.ui.components.ModelSelector
 
 /**
@@ -97,6 +101,12 @@ fun AiSideSheet(
     onModelSelected: (String) -> Unit,
     availableModels: List<String>,
     customModels: List<String>,
+    paletteState: PaletteUiState?,
+    onOpenPalette: () -> Unit,
+    onPaletteScheme: (PaletteScheme) -> Unit,
+    onPaletteAi: () -> Unit,
+    onPalettePreviewRecolor: () -> Unit,
+    onPaletteClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
@@ -159,6 +169,12 @@ fun AiSideSheet(
                     onModelSelected = onModelSelected,
                     availableModels = availableModels,
                     customModels = customModels,
+                    paletteState = paletteState,
+                    onOpenPalette = onOpenPalette,
+                    onPaletteScheme = onPaletteScheme,
+                    onPaletteAi = onPaletteAi,
+                    onPalettePreviewRecolor = onPalettePreviewRecolor,
+                    onPaletteClose = onPaletteClose,
                 )
             }
         }
@@ -184,6 +200,12 @@ private fun SheetContent(
     onModelSelected: (String) -> Unit,
     availableModels: List<String>,
     customModels: List<String>,
+    paletteState: PaletteUiState?,
+    onOpenPalette: () -> Unit,
+    onPaletteScheme: (PaletteScheme) -> Unit,
+    onPaletteAi: () -> Unit,
+    onPalettePreviewRecolor: () -> Unit,
+    onPaletteClose: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SheetHeader(
@@ -206,6 +228,18 @@ private fun SheetContent(
             modifier = Modifier.weight(1f),
         )
         HorizontalDivider()
+        // Phase 2 — palette & colour-harmony panel sits above the scope row
+        // when open, so its swatches and actions read as part of the AI surface.
+        if (paletteState?.isOpen == true) {
+            PalettePanel(
+                state = paletteState,
+                onScheme = onPaletteScheme,
+                onAskAi = onPaletteAi,
+                onPreviewRecolor = onPalettePreviewRecolor,
+                onClose = onPaletteClose,
+            )
+            HorizontalDivider()
+        }
         ScopeAndCannedPromptRow(
             scopeLabel = state.scopeLabel,
             hasSelection = state.pendingSelection != null,
@@ -213,10 +247,12 @@ private fun SheetContent(
             convertEnabled = state.pendingSelection != null && !state.isStreaming,
             isStreaming = state.isStreaming,
             canReScope = canReScope,
+            paletteOpen = paletteState?.isOpen == true,
             onCannedPrompt = onCannedPrompt,
             onIconQuickAction = onIconQuickAction,
             onClearScope = onClearScope,
             onReScopeToSelection = onReScopeToSelection,
+            onOpenPalette = onOpenPalette,
         )
         SheetFooter(
             inputText = state.inputText,
@@ -609,10 +645,12 @@ private fun ScopeAndCannedPromptRow(
     convertEnabled: Boolean,
     isStreaming: Boolean,
     canReScope: Boolean,
+    paletteOpen: Boolean,
     onCannedPrompt: (CannedPrompt) -> Unit,
     onIconQuickAction: (IconQuickAction) -> Unit,
     onClearScope: () -> Unit,
     onReScopeToSelection: () -> Unit,
+    onOpenPalette: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -671,6 +709,16 @@ private fun ScopeAndCannedPromptRow(
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            // Phase 2 — palette assistant entry point, available for both notes
+            // and icons. Disabled while the panel is already open.
+            item(key = "palette_help") {
+                AssistChip(
+                    onClick = onOpenPalette,
+                    enabled = !paletteOpen,
+                    label = { Text("Palette help") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
             if (isIcon) {
                 // Icons get design-oriented edit actions instead of the
                 // note-centric ask prompts. Convert-to-text is dropped — it's
@@ -707,6 +755,134 @@ private fun ScopeAndCannedPromptRow(
         }
     }
 }
+
+/**
+ * Phase 2 — palette & colour-harmony panel. Scheme chips regenerate a local
+ * palette instantly; "Ask AI" refines it through the model. Swatches preview
+ * the colours; "Preview recolor" stages a `recolor` edit through the normal
+ * on-canvas diff (accept/reject lives in the banner), and "Copy palette" puts
+ * the hex list on the clipboard. The suggestion itself never mutates the canvas.
+ */
+@Composable
+private fun PalettePanel(
+    state: PaletteUiState,
+    onScheme: (PaletteScheme) -> Unit,
+    onAskAi: () -> Unit,
+    onPreviewRecolor: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val suggestion = state.suggestion
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Palette help",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = if (state.source == PaletteSource.AI) "AI" else "Local",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close palette panel",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        // Scheme chips.
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(PaletteScheme.entries, key = { it.name }) { scheme ->
+                FilterChip(
+                    selected = scheme == state.scheme,
+                    onClick = { onScheme(scheme) },
+                    enabled = !state.loading,
+                    label = { Text(scheme.label, style = MaterialTheme.typography.labelMedium) },
+                    colors = FilterChipDefaults.filterChipColors(),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        // Swatch row.
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            suggestion?.swatches?.forEach { argb ->
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(argb))
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            shape = RoundedCornerShape(8.dp),
+                        )
+                        .semantics { contentDescription = hexOf(argb) },
+                )
+            }
+        }
+        val rationale = suggestion?.rationale
+        if (!rationale.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = rationale,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        state.error?.let { err ->
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = err,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        // Action row.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            AssistChip(
+                onClick = onPreviewRecolor,
+                enabled = suggestion != null && !state.loading,
+                label = { Text("Preview recolor") },
+                colors = AssistChipDefaults.assistChipColors(),
+            )
+            AssistChip(
+                onClick = {
+                    suggestion?.let {
+                        clipboard.setText(AnnotatedString(it.swatches.joinToString(" ", transform = ::hexOf)))
+                    }
+                },
+                enabled = suggestion != null,
+                label = { Text("Copy palette") },
+                colors = AssistChipDefaults.assistChipColors(),
+            )
+            if (state.loading) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                AssistChip(
+                    onClick = onAskAi,
+                    label = { Text("Ask AI") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+        }
+    }
+}
+
+/** Format an opaque ARGB int as an `#RRGGBB` string for copy / a11y labels. */
+private fun hexOf(argb: Int): String = "#%06X".format(argb and 0xFFFFFF)
 
 @Composable
 private fun SheetFooter(

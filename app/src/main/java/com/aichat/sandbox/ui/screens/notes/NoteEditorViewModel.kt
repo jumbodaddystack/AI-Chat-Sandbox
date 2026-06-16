@@ -38,6 +38,11 @@ import com.aichat.sandbox.data.notes.NoteAiService
 import com.aichat.sandbox.data.notes.NoteExporter
 import com.aichat.sandbox.data.notes.NoteImageStore
 import com.aichat.sandbox.data.notes.NoteSvgExporter
+import com.aichat.sandbox.data.notes.ColorHarmony
+import com.aichat.sandbox.data.notes.PaletteRecolor
+import com.aichat.sandbox.data.notes.PaletteScheme
+import com.aichat.sandbox.data.notes.PaletteSource
+import com.aichat.sandbox.data.notes.PaletteSuggestion
 import com.aichat.sandbox.data.notes.PdfLayout
 import com.aichat.sandbox.data.notes.PendingDraftStore
 import com.aichat.sandbox.data.notes.RecentColorsStore
@@ -337,6 +342,14 @@ class NoteEditorViewModel @Inject constructor(
 
     private val _pendingEdit = MutableStateFlow<PendingEdit?>(null)
     val pendingEdit: StateFlow<PendingEdit?> = _pendingEdit.asStateFlow()
+
+    // Phase 2 — palette & colour-harmony panel. Null when closed. A local
+    // colour-theory palette is filled in instantly on open; an optional AI
+    // refinement replaces it. Applying a palette stages a `recolor` PendingEdit
+    // through the shared accept/reject surface (never mutates directly).
+    private val _paletteState = MutableStateFlow<PaletteUiState?>(null)
+    val paletteState: StateFlow<PaletteUiState?> = _paletteState.asStateFlow()
+    private var paletteJob: Job? = null
 
     /**
      * Models offered by the in-sheet model picker (sub-phase 2.8). Mirrors
@@ -3295,7 +3308,138 @@ class NoteEditorViewModel @Inject constructor(
      */
     fun closeAiSheet() {
         _aiSheetState.update { it.copy(isOpen = false) }
+        dismissPalette()
     }
+
+    // ── Palette & colour-harmony assistant (Phase 2) ─────────────────────
+
+    /**
+     * Open the palette panel and fill it with a local colour-theory palette for
+     * [PaletteScheme.DEFAULT] immediately, so the feature works offline. The
+     * scope is frozen at open time (the sheet's selection scope, else the live
+     * canvas selection, else the whole note).
+     */
+    fun openPalette() {
+        val scope = currentPaletteScope()
+        _paletteState.value = PaletteUiState(
+            isOpen = true,
+            scope = scope,
+            scheme = PaletteScheme.DEFAULT,
+            suggestion = ColorHarmony.suggest(PaletteScheme.DEFAULT, scope.map { it.colorArgb }),
+            source = PaletteSource.LOCAL,
+        )
+    }
+
+    /** Switch scheme; regenerates the local palette instantly. */
+    fun setPaletteScheme(scheme: PaletteScheme) {
+        val state = _paletteState.value ?: return
+        _paletteState.value = state.copy(
+            scheme = scheme,
+            suggestion = ColorHarmony.suggest(scheme, state.scopeColors),
+            source = PaletteSource.LOCAL,
+            explicit = emptyMap(),
+            error = null,
+        )
+    }
+
+    /**
+     * Ask the model for a palette in the current scheme. Replaces the local
+     * swatches on success (and captures any per-item assignment plan); leaves
+     * the local palette in place on failure so the panel is never left empty.
+     */
+    fun suggestPaletteWithAi() {
+        val state = _paletteState.value ?: return
+        if (state.loading) return
+        paletteJob?.cancel()
+        _paletteState.update { it?.copy(loading = true, error = null) }
+        paletteJob = viewModelScope.launch {
+            try {
+                val modelId = _aiSheetState.value.activeModelId
+                    .ifEmpty { preferencesManager.defaultModel.first() }
+                val creds = preferencesManager.credentialsFor(modelId)
+                val scheme = _paletteState.value?.scheme ?: PaletteScheme.DEFAULT
+                val request = AskRequest(
+                    note = _note.value,
+                    allItems = items.toList(),
+                    selection = state.scope.ifEmpty { null },
+                    userPrompt = "Suggest a ${scheme.aiHint} palette.",
+                    modelId = modelId,
+                    baseUrl = creds.baseUrl,
+                    apiKey = creds.apiKey,
+                    mode = AskMode.SUGGEST_PALETTE,
+                    layers = _layers.value,
+                    isIcon = _note.value.isIcon,
+                )
+                aiService.ask(request).collect { chunk ->
+                    when (chunk) {
+                        is AiChunk.PaletteResult -> {
+                            val explicit = PaletteRecolor.resolveAssignments(
+                                chunk.suggestion.assignments, chunk.idMap,
+                            )
+                            _paletteState.update {
+                                it?.copy(
+                                    suggestion = chunk.suggestion,
+                                    source = PaletteSource.AI,
+                                    explicit = explicit,
+                                    loading = false,
+                                    error = null,
+                                )
+                            }
+                        }
+                        is AiChunk.Error ->
+                            _paletteState.update { it?.copy(loading = false, error = chunk.message) }
+                        else -> { /* deltas / completes ignored — palette is terminal */ }
+                    }
+                }
+                _paletteState.update { if (it?.loading == true) it.copy(loading = false) else it }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _paletteState.update {
+                    it?.copy(loading = false, error = t.message ?: "Palette request failed")
+                }
+            } finally {
+                paletteJob = null
+            }
+        }
+    }
+
+    /**
+     * Stage the current palette as a previewable `recolor` edit. Routes through
+     * the same [stageLocalEdit] path as snap/tidy so the user sees the diff
+     * overlay + banner and can accept or reject; locked layers and unchanged
+     * items are dropped by the shared simulator. No-op (with a friendly note)
+     * when nothing would actually change.
+     */
+    fun previewPaletteRecolor() {
+        val state = _paletteState.value ?: return
+        val suggestion = state.suggestion ?: return
+        val scope = state.scope.ifEmpty { items.toList() }
+        val ops = PaletteRecolor.buildOps(scope, suggestion, state.explicit)
+        if (ops.isEmpty()) {
+            _paletteState.update { it?.copy(error = "These colours already match the palette.") }
+            return
+        }
+        val description = "Palette: ${suggestion.schemeName}"
+        stageLocalEdit(EditOpsDoc(EditOpsDoc.SCHEMA, description, ops), description)
+        _paletteState.update { it?.copy(error = null) }
+    }
+
+    /** Close the palette panel and cancel any in-flight AI palette request. */
+    fun dismissPalette() {
+        paletteJob?.cancel()
+        paletteJob = null
+        _paletteState.value = null
+    }
+
+    /**
+     * Resolve the items the palette applies to: the sheet's frozen selection
+     * scope, else the live canvas selection, else the whole note.
+     */
+    private fun currentPaletteScope(): List<NoteItem> =
+        _aiSheetState.value.pendingSelection
+            ?: items.filter { it.id in _selection.value }.takeIf { it.isNotEmpty() }
+            ?: items.toList()
 
     /** Compose `OutlinedTextField` callback. */
     fun onAiInputChanged(text: String) {
@@ -4033,6 +4177,9 @@ class NoteEditorViewModel @Inject constructor(
                         }
                         // Handled above via early return; unreachable here.
                         is AiChunk.BrushDesign -> turn
+                        // Palette results never flow through `runStream` — the
+                        // palette panel collects `SUGGEST_PALETTE` directly.
+                        is AiChunk.PaletteResult -> turn
                     }
                 }
             }
