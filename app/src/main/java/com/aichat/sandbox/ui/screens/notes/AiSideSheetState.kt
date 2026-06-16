@@ -1,6 +1,7 @@
 package com.aichat.sandbox.ui.screens.notes
 
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.data.notes.BrushSpec
 import com.aichat.sandbox.data.notes.CompositionCritique
 import com.aichat.sandbox.data.notes.PaletteScheme
 import com.aichat.sandbox.data.notes.PaletteSource
@@ -125,6 +126,33 @@ data class CritiqueUiState(
     val loading: Boolean = false,
     val error: String? = null,
 )
+
+/**
+ * Phase 4 (N1) — state for the AI brush designer panel hosted inside the AI side
+ * sheet. Opened from the "Brush designer" chip. The flow is deliberately
+ * **preview-then-save**: the user types a prompt (or taps an example), the model
+ * returns a validated [BrushSpec], the panel renders a deterministic sample
+ * stroke, and only an explicit "Save brush" tap persists it as a user-scope
+ * preset. Nothing about the canvas is touched.
+ *
+ * [spec] is the previewed-but-unsaved brush; [savedName] is non-null once the
+ * preset has been written to the brush library (drives the confirmation copy).
+ * [error] surfaces a parser failure or a missing-credentials problem without
+ * leaving a partial preset behind.
+ */
+data class BrushDesignUiState(
+    val isOpen: Boolean = false,
+    val prompt: String = "",
+    val loading: Boolean = false,
+    /** The previewed, not-yet-saved brush. Null until a design lands. */
+    val spec: BrushSpec? = null,
+    /** Non-null once [spec] has been saved as a user preset. */
+    val savedName: String? = null,
+    val error: String? = null,
+) {
+    /** A spec is previewable (and savable) once it has landed and isn't already saved. */
+    val canSave: Boolean get() = spec != null && savedName == null && !loading
+}
 
 data class AskTurn(
     val id: String,

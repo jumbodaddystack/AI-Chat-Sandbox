@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **Phases 1–3 implemented and verified as of 2026-06-16**.
+Status: **Phases 1–4 implemented and verified as of 2026-06-16**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -27,10 +27,12 @@ sessions.
 
 ### Built headless but not yet productized
 
-- **AI brush designer (N1)** has a service mode (`AskMode.DESIGN_BRUSH`), a
-  `designBrush(prompt, turnId)` ViewModel entry point, brush-spec parsing, and
-  preset persistence. It still lacks a Compose entry point, prompt sheet, preview
-  stroke, and save/apply flow.
+- **AI brush designer (N1)** is now productized (Phase 4). The headless data
+  path (`AskMode.DESIGN_BRUSH`, brush-spec parsing, preset persistence) is fronted
+  by a "Brush designer" panel in the AI sheet: a prompt field with example chips,
+  a deterministic sample-stroke preview, and an explicit preview-then-save flow
+  (`designBrushPreview()` / `saveBrushDesign()`) that writes a uniquely-named
+  user-scope `BrushPreset` and makes it the active brush.
 - **Select-similar + snap suggestions (N2 / idea #8)** exist in the ViewModel as
   `selectSimilarTo`, `proposeSnaps`, and `aiRankSelection`. They are gated behind
   `inkAuthoring` and have no visible magic-wand/snap UI entry point.
@@ -281,21 +283,63 @@ select it from the brush palette.
 
 ### Tasks
 
-- [ ] Add a Brush Designer entry point from the brush palette or AI sheet.
-- [ ] Add prompt input with example chips: “inky brush pen”, “dry gouache”,
+- [x] Add a Brush Designer entry point from the brush palette or AI sheet.
+  - A "Brush designer" `AssistChip` in `AiSideSheet`'s `ScopeAndCannedPromptRow`
+    (alongside "Palette help" and "Critique"), available for both notes and icons
+    and disabled while the panel is already open. Opens `BrushDesignerPanel`.
+- [x] Add prompt input with example chips: “inky brush pen”, “dry gouache”,
   “soft marker”, “scratchy pencil”.
-- [ ] Wire the UI to `NoteEditorViewModel.designBrush(prompt, turnId)`.
-- [ ] Show streaming/progress state in the sheet.
-- [ ] Render a deterministic preview stroke for the returned `BrushPreset`.
-- [ ] Add save/cancel controls and confirm the preset appears in the palette.
-- [ ] Add validation UX for unsupported spec fields or parser failure.
-- [ ] Add tests for brush-spec parsing, preset persistence, and duplicate names.
+  - `BrushDesignerPanel` has an `OutlinedTextField` plus a `LazyRow` of those
+    four example chips (`BRUSH_EXAMPLES`); tapping a chip fills the field (via
+    `setBrushDesignPrompt`) without firing the request, leaving room to tweak.
+- [x] Wire the UI to the existing `DESIGN_BRUSH` data path.
+  - `NoteEditorViewModel.designBrushPreview()` collects `AskMode.DESIGN_BRUSH`
+    directly (like the palette/critique panels) instead of through the
+    auto-saving `designBrush(prompt, turnId)` conversation turn, so the spec can
+    be previewed before it is persisted. Same service mode + `BrushSpecParser`.
+- [x] Show streaming/progress state in the sheet.
+  - `BrushDesignUiState.loading` drives a spinner + "Designing your brush…" row;
+    the prompt field and example chips disable while a request is in flight.
+- [x] Render a deterministic preview stroke for the returned `BrushPreset`.
+  - `BrushPreviewStroke` (`ui/components/notes/BrushPreviewStroke.kt`) draws a
+    sine-wave sample stroke from the `BrushSpec`. The geometry
+    (`brushPreviewSamples`) is pure/JVM-testable: width folds base width × taper
+    ramps × pressure-curve profile × **index-seeded** (not RNG) jitter, and alpha
+    carries opacity dimmed at the tapered ends — so the same spec always renders
+    the same swatch.
+- [x] Add save/cancel controls and confirm the preset appears in the palette.
+  - "Save brush" (`saveBrushDesign()`) writes a user-scope `BrushPreset` and sets
+    it as the active brush; the panel flips to a "Saved … — it's now your active
+    brush" confirmation with "Design another". "Re-roll" re-runs the prompt, and
+    the header close / "Design another" (`clearBrushDesign`) reset cleanly.
+- [x] Add validation UX for unsupported spec fields or parser failure.
+  - The parser already clamps/defaults bad *fields* (never fails on them); a
+    structurally broken reply surfaces `AiChunk.Error` → `BrushDesignUiState.error`
+    (red text) and a blank prompt is rejected with an inline message. No preset is
+    written on failure (save is a separate, explicit step).
+- [x] Add tests for brush-spec parsing, preset persistence, and duplicate names.
+  - Brush-spec parsing: existing `BrushSpecParserTest` (incl.
+    `toPresetIsUserScopeAndCarriesFields` for the persistence mapping) +
+    `NoteAiServiceTest.designBrushModeEmitsValidatedBrushDesign`. Duplicate names:
+    new `BrushPresetNamingTest` over `BrushPresetNaming.uniqueName` (the
+    disambiguator the save path uses). Preview geometry: new
+    `BrushPreviewStrokeTest` (determinism, taper, opacity, non-negative widths,
+    pressure-curve shaping).
 
 ### Acceptance criteria
 
-- No canvas mutation occurs during brush design.
-- Saved brushes are reusable, editable presets.
-- Failure states are understandable and do not leave partial presets behind.
+- [x] No canvas mutation occurs during brush design.
+  - The flow only ever writes to the brush library (`BrushPresetRepository`); it
+    never stages a `PendingEdit` or touches `items`. The request runs with
+    `selection = null` and no raster.
+- [x] Saved brushes are reusable, editable presets.
+  - A save produces a user-scope `BrushPreset` (UUID-keyed) that shows in the
+    brush sheet's preset chips and is editable via the existing BrushSheet
+    sliders / "Save as preset" like any other user preset.
+- [x] Failure states are understandable and do not leave partial presets behind.
+  - Preview-then-save means a parser failure or cancelled/closed panel writes
+    nothing; errors render inline, and duplicate names are disambiguated rather
+    than silently colliding.
 
 ---
 
