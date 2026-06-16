@@ -111,6 +111,7 @@ fun NoteEditorScreen(
     val aiSheetState by viewModel.aiSheetState.collectAsState()
     val paletteState by viewModel.paletteState.collectAsState()
     val critiqueState by viewModel.critiqueState.collectAsState()
+    val brushDesignState by viewModel.brushDesignState.collectAsState()
     val availableModels by viewModel.availableModels.collectAsState()
     val chats by viewModel.chats.collectAsState()
     val sendToChatMode by viewModel.sendToChatMode.collectAsState()
@@ -1282,6 +1283,13 @@ fun NoteEditorScreen(
             onRequestCritique = viewModel::requestCompositionCritique,
             onPreviewCritiqueFix = viewModel::previewCritiqueFix,
             onCritiqueClose = viewModel::dismissCritique,
+            brushDesignState = brushDesignState,
+            onOpenBrushDesigner = viewModel::openBrushDesigner,
+            onBrushPromptChanged = viewModel::setBrushDesignPrompt,
+            onDesignBrush = viewModel::designBrushPreview,
+            onSaveBrush = viewModel::saveBrushDesign,
+            onClearBrushDesign = viewModel::clearBrushDesign,
+            onBrushDesignerClose = viewModel::dismissBrushDesigner,
         )
       }
     }

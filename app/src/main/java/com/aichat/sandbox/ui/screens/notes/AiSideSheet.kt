@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -69,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import com.aichat.sandbox.data.notes.PaletteScheme
 import com.aichat.sandbox.data.notes.PaletteSource
 import com.aichat.sandbox.ui.components.ModelSelector
+import com.aichat.sandbox.ui.components.notes.BrushPreviewStroke
 
 /**
  * Right-edge slide-in sheet that hosts the AI ask/reply loop for the note
@@ -114,6 +116,13 @@ fun AiSideSheet(
     onRequestCritique: () -> Unit,
     onPreviewCritiqueFix: (Int) -> Unit,
     onCritiqueClose: () -> Unit,
+    brushDesignState: BrushDesignUiState?,
+    onOpenBrushDesigner: () -> Unit,
+    onBrushPromptChanged: (String) -> Unit,
+    onDesignBrush: () -> Unit,
+    onSaveBrush: () -> Unit,
+    onClearBrushDesign: () -> Unit,
+    onBrushDesignerClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
@@ -186,6 +195,13 @@ fun AiSideSheet(
                     onRequestCritique = onRequestCritique,
                     onPreviewCritiqueFix = onPreviewCritiqueFix,
                     onCritiqueClose = onCritiqueClose,
+                    brushDesignState = brushDesignState,
+                    onOpenBrushDesigner = onOpenBrushDesigner,
+                    onBrushPromptChanged = onBrushPromptChanged,
+                    onDesignBrush = onDesignBrush,
+                    onSaveBrush = onSaveBrush,
+                    onClearBrushDesign = onClearBrushDesign,
+                    onBrushDesignerClose = onBrushDesignerClose,
                 )
             }
         }
@@ -221,6 +237,13 @@ private fun SheetContent(
     onRequestCritique: () -> Unit,
     onPreviewCritiqueFix: (Int) -> Unit,
     onCritiqueClose: () -> Unit,
+    brushDesignState: BrushDesignUiState?,
+    onOpenBrushDesigner: () -> Unit,
+    onBrushPromptChanged: (String) -> Unit,
+    onDesignBrush: () -> Unit,
+    onSaveBrush: () -> Unit,
+    onClearBrushDesign: () -> Unit,
+    onBrushDesignerClose: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SheetHeader(
@@ -266,6 +289,19 @@ private fun SheetContent(
             )
             HorizontalDivider()
         }
+        // Phase 4 (N1) — AI brush designer panel sits alongside the palette and
+        // critique panels, above the scope row, when open.
+        if (brushDesignState?.isOpen == true) {
+            BrushDesignerPanel(
+                state = brushDesignState,
+                onPromptChanged = onBrushPromptChanged,
+                onDesign = onDesignBrush,
+                onSave = onSaveBrush,
+                onClear = onClearBrushDesign,
+                onClose = onBrushDesignerClose,
+            )
+            HorizontalDivider()
+        }
         ScopeAndCannedPromptRow(
             scopeLabel = state.scopeLabel,
             hasSelection = state.pendingSelection != null,
@@ -275,12 +311,14 @@ private fun SheetContent(
             canReScope = canReScope,
             paletteOpen = paletteState?.isOpen == true,
             critiqueOpen = critiqueState?.isOpen == true,
+            brushDesignerOpen = brushDesignState?.isOpen == true,
             onCannedPrompt = onCannedPrompt,
             onIconQuickAction = onIconQuickAction,
             onClearScope = onClearScope,
             onReScopeToSelection = onReScopeToSelection,
             onOpenPalette = onOpenPalette,
             onRequestCritique = onRequestCritique,
+            onOpenBrushDesigner = onOpenBrushDesigner,
         )
         SheetFooter(
             inputText = state.inputText,
@@ -675,12 +713,14 @@ private fun ScopeAndCannedPromptRow(
     canReScope: Boolean,
     paletteOpen: Boolean,
     critiqueOpen: Boolean,
+    brushDesignerOpen: Boolean,
     onCannedPrompt: (CannedPrompt) -> Unit,
     onIconQuickAction: (IconQuickAction) -> Unit,
     onClearScope: () -> Unit,
     onReScopeToSelection: () -> Unit,
     onOpenPalette: () -> Unit,
     onRequestCritique: () -> Unit,
+    onOpenBrushDesigner: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -756,6 +796,17 @@ private fun ScopeAndCannedPromptRow(
                     onClick = onRequestCritique,
                     enabled = !critiqueOpen,
                     label = { Text("Critique") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+            // Phase 4 (N1) — AI brush designer entry point. Available for both
+            // notes and icons; designing a brush never touches the canvas.
+            // Disabled while the panel is already open.
+            item(key = "brush_designer") {
+                AssistChip(
+                    onClick = onOpenBrushDesigner,
+                    enabled = !brushDesignerOpen,
+                    label = { Text("Brush designer") },
                     colors = AssistChipDefaults.assistChipColors(),
                 )
             }
@@ -1112,6 +1163,156 @@ private fun CritiqueCard(
         }
     }
 }
+
+/**
+ * Phase 4 (N1) — AI brush designer panel. The user describes a brush in plain
+ * words (or taps an example), the model returns a validated [BrushSpec], and the
+ * panel renders a deterministic sample stroke. Saving is a deliberate second
+ * step that writes a reusable user-scope preset to the brush palette — designing
+ * never touches the canvas, and a parse failure surfaces an error rather than
+ * leaving a half-made preset behind.
+ */
+@Composable
+private fun BrushDesignerPanel(
+    state: BrushDesignUiState,
+    onPromptChanged: (String) -> Unit,
+    onDesign: () -> Unit,
+    onSave: () -> Unit,
+    onClear: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val spec = state.spec
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Brush designer",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close brush designer",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Text(
+            text = "Describe a brush and AI builds a reusable preset. Your drawing isn't touched.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        OutlinedTextField(
+            value = state.prompt,
+            onValueChange = onPromptChanged,
+            placeholder = { Text("e.g. dry gouache with soft edges") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            maxLines = 3,
+            enabled = !state.loading,
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        // Example prompts — one tap fills the field so a blank-page user has a
+        // starting point. They don't fire the request, leaving room to tweak.
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(BRUSH_EXAMPLES, key = { it }) { example ->
+                AssistChip(
+                    onClick = { onPromptChanged(example) },
+                    enabled = !state.loading,
+                    label = { Text(example) },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        if (spec != null) {
+            // Deterministic sample stroke on a subtle card.
+            Surface(
+                tonalElevation = 1.dp,
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                BrushPreviewStroke(
+                    spec = spec,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(64.dp)
+                        .padding(8.dp),
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "${spec.name} · ${spec.tool} · ${spec.textureId.replaceFirstChar { it.uppercase() }}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        state.error?.let { err ->
+            Text(
+                text = err,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+        // Action row reflects the flow stage: design → preview/save → saved.
+        when {
+            state.loading -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Designing your brush…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            state.savedName != null -> {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "Saved “${state.savedName}” — it's now your active brush.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onClear) { Text("Design another") }
+                }
+            }
+            spec != null -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onSave, enabled = state.canSave) { Text("Save brush") }
+                    TextButton(onClick = onDesign) { Text("Re-roll") }
+                }
+            }
+            else -> {
+                Button(
+                    onClick = onDesign,
+                    enabled = state.prompt.isNotBlank(),
+                ) { Text("Design brush") }
+            }
+        }
+    }
+}
+
+/** Example brush prompts surfaced as one-tap chips in the designer (Phase 4). */
+private val BRUSH_EXAMPLES = listOf(
+    "inky brush pen",
+    "dry gouache",
+    "soft marker",
+    "scratchy pencil",
+)
 
 @Composable
 private fun SheetFooter(

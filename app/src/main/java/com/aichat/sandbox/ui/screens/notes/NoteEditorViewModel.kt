@@ -27,6 +27,7 @@ import com.aichat.sandbox.data.model.Stamp
 import com.aichat.sandbox.data.notes.AiChunk
 import com.aichat.sandbox.data.notes.AskMode
 import com.aichat.sandbox.data.notes.AskRequest
+import com.aichat.sandbox.data.notes.BrushPresetNaming
 import com.aichat.sandbox.data.notes.BrushSpec
 import com.aichat.sandbox.data.notes.CannedEditAction
 import com.aichat.sandbox.data.notes.EditOp
@@ -359,6 +360,14 @@ class NoteEditorViewModel @Inject constructor(
     private val _critiqueState = MutableStateFlow<CritiqueUiState?>(null)
     val critiqueState: StateFlow<CritiqueUiState?> = _critiqueState.asStateFlow()
     private var critiqueJob: Job? = null
+
+    // Phase 4 (N1) — AI brush designer panel. Null when closed. The flow is
+    // preview-then-save: a prompt yields a validated BrushSpec the panel renders
+    // as a sample stroke; only an explicit save writes a user-scope BrushPreset.
+    // No canvas mutation is ever implied.
+    private val _brushDesignState = MutableStateFlow<BrushDesignUiState?>(null)
+    val brushDesignState: StateFlow<BrushDesignUiState?> = _brushDesignState.asStateFlow()
+    private var brushDesignJob: Job? = null
 
     /**
      * Models offered by the in-sheet model picker (sub-phase 2.8). Mirrors
@@ -3319,6 +3328,7 @@ class NoteEditorViewModel @Inject constructor(
         _aiSheetState.update { it.copy(isOpen = false) }
         dismissPalette()
         dismissCritique()
+        dismissBrushDesigner()
     }
 
     // ── Palette & colour-harmony assistant (Phase 2) ─────────────────────
@@ -3557,6 +3567,126 @@ class NoteEditorViewModel @Inject constructor(
         critiqueJob?.cancel()
         critiqueJob = null
         _critiqueState.value = null
+    }
+
+    // ── AI brush designer (Phase 4 / N1) ─────────────────────────────────
+
+    /** Open the brush designer panel with an empty prompt. No request fires yet. */
+    fun openBrushDesigner() {
+        _brushDesignState.value = BrushDesignUiState(isOpen = true)
+    }
+
+    /** Update the prompt text as the user types or taps an example chip. */
+    fun setBrushDesignPrompt(text: String) {
+        _brushDesignState.update { it?.copy(prompt = text) }
+    }
+
+    /**
+     * Ask the model to design a brush from the current prompt. Mirrors the
+     * palette/critique panels: collects [AskMode.DESIGN_BRUSH] directly (never a
+     * conversation turn) and fills [brushDesignState] with the validated
+     * [BrushSpec] for preview. **Nothing is persisted here** — saving is an
+     * explicit second step ([saveBrushDesign]), so a parser failure or a
+     * cancelled request never leaves a partial preset behind. A blank prompt or
+     * an in-flight request is a no-op.
+     */
+    fun designBrushPreview() {
+        val state = _brushDesignState.value ?: return
+        if (state.loading) return
+        val prompt = state.prompt.trim()
+        if (prompt.isEmpty()) {
+            _brushDesignState.update { it?.copy(error = "Describe the brush you want first.") }
+            return
+        }
+        brushDesignJob?.cancel()
+        _brushDesignState.update { it?.copy(loading = true, error = null, savedName = null) }
+        brushDesignJob = viewModelScope.launch {
+            try {
+                val modelId = _aiSheetState.value.activeModelId
+                    .ifEmpty { preferencesManager.defaultModel.first() }
+                val creds = preferencesManager.credentialsFor(modelId)
+                val request = AskRequest(
+                    note = _note.value,
+                    allItems = items.toList(),
+                    selection = null,
+                    userPrompt = prompt,
+                    modelId = modelId,
+                    baseUrl = creds.baseUrl,
+                    apiKey = creds.apiKey,
+                    mode = AskMode.DESIGN_BRUSH,
+                    layers = _layers.value,
+                    isIcon = _note.value.isIcon,
+                )
+                aiService.ask(request).collect { chunk ->
+                    when (chunk) {
+                        is AiChunk.BrushDesign ->
+                            _brushDesignState.update {
+                                it?.copy(spec = chunk.spec, loading = false, error = null)
+                            }
+                        is AiChunk.Error ->
+                            _brushDesignState.update { it?.copy(loading = false, error = chunk.message) }
+                        else -> { /* deltas / completes ignored — a brush design is terminal */ }
+                    }
+                }
+                _brushDesignState.update { if (it?.loading == true) it.copy(loading = false) else it }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _brushDesignState.update {
+                    it?.copy(loading = false, error = t.message ?: "Brush design failed")
+                }
+            } finally {
+                brushDesignJob = null
+            }
+        }
+    }
+
+    /**
+     * Persist the previewed [BrushSpec] as a user-scope [BrushPreset], giving it
+     * a name that doesn't collide with existing presets (see [BrushPresetNaming]).
+     * The saved preset becomes the active brush so the user can draw with it
+     * immediately, and the panel flips to a saved-confirmation state. No-op if
+     * there's nothing previewed or it's already saved.
+     */
+    fun saveBrushDesign() {
+        val state = _brushDesignState.value ?: return
+        val spec = state.spec ?: return
+        if (state.savedName != null) return
+        viewModelScope.launch {
+            try {
+                val existingNames = brushPresetList.value.map { it.name }
+                val name = BrushPresetNaming.uniqueName(spec.name, existingNames)
+                val ordinal = brushPresets.forTool(spec.tool).size
+                val saved = brushPresets.saveUserPreset(spec.toPreset(ordinal).copy(name = name))
+                _activeBrushPreset.value = saved
+                _brushDesignState.update { it?.copy(savedName = name, error = null) }
+            } catch (t: Throwable) {
+                Log.w("NoteEditorViewModel", "saveBrushDesign failed", t)
+                _brushDesignState.update {
+                    it?.copy(error = "Couldn't save the brush. Try again.")
+                }
+            }
+        }
+    }
+
+    /**
+     * Clear the current preview so the user can iterate on a new prompt without
+     * closing the panel. Keeps the prompt text; drops the spec and any
+     * saved/error state.
+     */
+    fun clearBrushDesign() {
+        brushDesignJob?.cancel()
+        brushDesignJob = null
+        _brushDesignState.update {
+            it?.copy(spec = null, savedName = null, error = null, loading = false)
+        }
+    }
+
+    /** Close the brush designer panel and cancel any in-flight design request. */
+    fun dismissBrushDesigner() {
+        brushDesignJob?.cancel()
+        brushDesignJob = null
+        _brushDesignState.value = null
     }
 
     /** Compose `OutlinedTextField` callback. */
