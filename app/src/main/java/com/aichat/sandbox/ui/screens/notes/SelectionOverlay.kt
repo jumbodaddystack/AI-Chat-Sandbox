@@ -14,9 +14,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Brush
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Polyline
 import androidx.compose.material.icons.filled.QuestionAnswer
 import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Gesture
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.TextFields
@@ -152,6 +155,13 @@ fun SelectionOverlay(
     onPasteStyle: (() -> Unit)? = null,
     canPickColor: Boolean = false,
     onPickColor: (() -> Unit)? = null,
+    // Phase 5 — smart select (N2 / idea #8): magic-wand select-similar +
+    // constraint-snap suggestions, gated behind the experimental ink engine.
+    inkSelectionToolsEnabled: Boolean = false,
+    selectionIsSingleStroke: Boolean = false,
+    onSelectSimilar: (() -> Unit)? = null,
+    onSnapSelection: (() -> Unit)? = null,
+    onAiGroupSelection: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     if (selection.isEmpty() || worldBounds == null || viewport == null) return
@@ -395,6 +405,12 @@ fun SelectionOverlay(
             onPasteStyle = onPasteStyle,
             canPickColor = canPickColor,
             onPickColor = onPickColor,
+            inkSelectionToolsEnabled = inkSelectionToolsEnabled,
+            selectionIsSingleStroke = selectionIsSingleStroke,
+            selectionIsMulti = selection.size >= 2,
+            onSelectSimilar = onSelectSimilar,
+            onSnapSelection = onSnapSelection,
+            onAiGroupSelection = onAiGroupSelection,
             modifier = Modifier.layout { measurable, constraints ->
                 val placeable = measurable.measure(
                     Constraints(
@@ -562,6 +578,12 @@ private fun FloatingSelectionMenu(
     onPasteStyle: (() -> Unit)? = null,
     canPickColor: Boolean = false,
     onPickColor: (() -> Unit)? = null,
+    inkSelectionToolsEnabled: Boolean = false,
+    selectionIsSingleStroke: Boolean = false,
+    selectionIsMulti: Boolean = false,
+    onSelectSimilar: (() -> Unit)? = null,
+    onSnapSelection: (() -> Unit)? = null,
+    onAiGroupSelection: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     // V8 fix — the strip used to lay 20+ equal-weight buttons in one
@@ -584,7 +606,11 @@ private fun FloatingSelectionMenu(
         onPasteStyle != null ||
         (canGroup && onGroup != null) ||
         (canUngroup && onUngroup != null) ||
-        (onAlign != null && onDistribute != null && onReorder != null)
+        (onAlign != null && onDistribute != null && onReorder != null) ||
+        smartSelectVisible(
+            selectionIsSingleStroke, selectionIsMulti,
+            onSelectSimilar, onSnapSelection, onAiGroupSelection,
+        )
 
     Surface(
         modifier = modifier,
@@ -653,11 +679,34 @@ private fun FloatingSelectionMenu(
                     onCopyStyle = onCopyStyle,
                     canPasteStyle = canPasteStyle,
                     onPasteStyle = onPasteStyle,
+                    inkSelectionToolsEnabled = inkSelectionToolsEnabled,
+                    selectionIsSingleStroke = selectionIsSingleStroke,
+                    selectionIsMulti = selectionIsMulti,
+                    onSelectSimilar = onSelectSimilar,
+                    onSnapSelection = onSnapSelection,
+                    onAiGroupSelection = onAiGroupSelection,
                 )
             }
         }
     }
 }
+
+/**
+ * Phase 5 — whether the overflow's "Smart select" section has anything to show:
+ * select-similar for a single stroke, or snap / AI-group for a multi-selection.
+ * Driven purely by selection shape and which callbacks are wired, so the section
+ * (and the ink-off explanatory copy) appears whenever a smart-select action is
+ * contextually possible — even when the engine itself is gated off.
+ */
+private fun smartSelectVisible(
+    selectionIsSingleStroke: Boolean,
+    selectionIsMulti: Boolean,
+    onSelectSimilar: (() -> Unit)?,
+    onSnapSelection: (() -> Unit)?,
+    onAiGroupSelection: (() -> Unit)?,
+): Boolean =
+    (selectionIsSingleStroke && onSelectSimilar != null) ||
+        (selectionIsMulti && (onSnapSelection != null || onAiGroupSelection != null))
 
 /**
  * V8 — the selection menu's overflow. Folds every situational action
@@ -701,6 +750,12 @@ private fun SelectionMoreMenu(
     onCopyStyle: (() -> Unit)?,
     canPasteStyle: Boolean,
     onPasteStyle: (() -> Unit)?,
+    inkSelectionToolsEnabled: Boolean = false,
+    selectionIsSingleStroke: Boolean = false,
+    selectionIsMulti: Boolean = false,
+    onSelectSimilar: (() -> Unit)? = null,
+    onSnapSelection: (() -> Unit)? = null,
+    onAiGroupSelection: (() -> Unit)? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     fun <T> fire(action: (T) -> Unit, arg: T) { action(arg); expanded = false }
@@ -708,6 +763,54 @@ private fun SelectionMoreMenu(
     Box {
         MenuButton(icon = Icons.Filled.MoreHoriz, label = "More", onClick = { expanded = true })
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            // Phase 5 — smart select (N2 / idea #8). Magic-wand "select similar"
+            // for a single stroke, plus "snap layout" / "AI group" for a
+            // multi-selection. Both engines are gated behind the experimental
+            // ink engine; when it's off the actions render disabled under a line
+            // of copy that says how to turn it on (rather than silently hiding).
+            if (smartSelectVisible(
+                    selectionIsSingleStroke, selectionIsMulti,
+                    onSelectSimilar, onSnapSelection, onAiGroupSelection,
+                )
+            ) {
+                MenuSectionLabel("Smart select")
+                if (!inkSelectionToolsEnabled) {
+                    Text(
+                        text = "Turn on the experimental ink engine " +
+                            "(More ▸ Ink engine) to select similar strokes and snap layouts.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .widthIn(max = 248.dp),
+                    )
+                }
+                if (selectionIsSingleStroke && onSelectSimilar != null) {
+                    DropdownMenuItem(
+                        text = { Text("Select similar") },
+                        leadingIcon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
+                        enabled = inkSelectionToolsEnabled,
+                        onClick = { fire(onSelectSimilar) },
+                    )
+                }
+                if (selectionIsMulti && onSnapSelection != null) {
+                    DropdownMenuItem(
+                        text = { Text("Snap layout") },
+                        leadingIcon = { Icon(Icons.Filled.Straighten, contentDescription = null) },
+                        enabled = inkSelectionToolsEnabled,
+                        onClick = { fire(onSnapSelection) },
+                    )
+                }
+                if (selectionIsMulti && onAiGroupSelection != null) {
+                    DropdownMenuItem(
+                        text = { Text("AI group") },
+                        leadingIcon = { Icon(Icons.Filled.GroupWork, contentDescription = null) },
+                        enabled = inkSelectionToolsEnabled,
+                        onClick = { fire(onAiGroupSelection) },
+                    )
+                }
+            }
+
             // Canned AI / local edits.
             if (onCannedEdit != null) {
                 MenuSectionLabel("Edit")
