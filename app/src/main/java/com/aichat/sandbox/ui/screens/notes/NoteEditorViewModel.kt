@@ -351,6 +351,15 @@ class NoteEditorViewModel @Inject constructor(
     val paletteState: StateFlow<PaletteUiState?> = _paletteState.asStateFlow()
     private var paletteJob: Job? = null
 
+    // Phase 3 — guided composition / layout critique panel. Null when closed.
+    // Opens in a loading state (a critique always needs the model), then renders
+    // advisory suggestion cards. A suggestion's optional "Preview fix" stages a
+    // safe edit-op subset through the shared accept/reject surface — the
+    // critique itself never mutates the canvas.
+    private val _critiqueState = MutableStateFlow<CritiqueUiState?>(null)
+    val critiqueState: StateFlow<CritiqueUiState?> = _critiqueState.asStateFlow()
+    private var critiqueJob: Job? = null
+
     /**
      * Models offered by the in-sheet model picker (sub-phase 2.8). Mirrors
      * the chat-side `ModelSelector` source: built-in provider catalogue
@@ -3309,6 +3318,7 @@ class NoteEditorViewModel @Inject constructor(
     fun closeAiSheet() {
         _aiSheetState.update { it.copy(isOpen = false) }
         dismissPalette()
+        dismissCritique()
     }
 
     // ── Palette & colour-harmony assistant (Phase 2) ─────────────────────
@@ -3440,6 +3450,114 @@ class NoteEditorViewModel @Inject constructor(
         _aiSheetState.value.pendingSelection
             ?: items.filter { it.id in _selection.value }.takeIf { it.isNotEmpty() }
             ?: items.toList()
+
+    // ── Composition / layout critique (Phase 3) ─────────────────────────
+
+    /**
+     * Open the critique panel and ask the model "how can I improve this?".
+     * Unlike the palette panel there is no local fallback — a critique needs the
+     * model — so the panel opens in a loading state and fills in once the reply
+     * lands. The scope is frozen at open time (the sheet's selection scope, else
+     * the live canvas selection, else the whole note). Re-invoking while a
+     * request is in flight is a no-op; otherwise it re-runs the critique.
+     */
+    fun requestCompositionCritique() {
+        val existing = _critiqueState.value
+        if (existing?.loading == true) return
+        val scope = currentPaletteScope()
+        _critiqueState.value = CritiqueUiState(
+            isOpen = true,
+            scope = scope,
+            loading = true,
+        )
+        critiqueJob?.cancel()
+        critiqueJob = viewModelScope.launch {
+            try {
+                val modelId = _aiSheetState.value.activeModelId
+                    .ifEmpty { preferencesManager.defaultModel.first() }
+                val creds = preferencesManager.credentialsFor(modelId)
+                val request = AskRequest(
+                    note = _note.value,
+                    allItems = items.toList(),
+                    selection = scope.ifEmpty { null },
+                    userPrompt = "",
+                    modelId = modelId,
+                    baseUrl = creds.baseUrl,
+                    apiKey = creds.apiKey,
+                    mode = AskMode.CRITIQUE,
+                    layers = _layers.value,
+                    isIcon = _note.value.isIcon,
+                )
+                aiService.ask(request).collect { chunk ->
+                    when (chunk) {
+                        is AiChunk.CritiqueResult ->
+                            _critiqueState.update {
+                                it?.copy(
+                                    critique = chunk.critique,
+                                    idMap = chunk.idMap,
+                                    layerMap = chunk.layerMap,
+                                    loading = false,
+                                    error = null,
+                                )
+                            }
+                        is AiChunk.Error ->
+                            _critiqueState.update { it?.copy(loading = false, error = chunk.message) }
+                        else -> { /* deltas / completes ignored — critique is terminal */ }
+                    }
+                }
+                _critiqueState.update { if (it?.loading == true) it.copy(loading = false) else it }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _critiqueState.update {
+                    it?.copy(loading = false, error = t.message ?: "Critique request failed")
+                }
+            } finally {
+                critiqueJob = null
+            }
+        }
+    }
+
+    /**
+     * Stage the [index]th suggestion's optional fix as a previewable
+     * [PendingEdit]. The ops reference items by short id, so they're resolved
+     * through the critique's captured short-id ↔ uuid maps and run through the
+     * shared [EditPreviewController.simulate] (which drops locked-layer items
+     * and no-ops). Surfaces a friendly note when nothing previewable remains.
+     */
+    fun previewCritiqueFix(index: Int) {
+        val state = _critiqueState.value ?: return
+        val suggestion = state.critique?.suggestions?.getOrNull(index) ?: return
+        if (suggestion.ops.isEmpty()) return
+        val description = "Critique: ${suggestion.title}"
+        val simulation = EditPreviewController.simulate(
+            currentItems = items.toList(),
+            doc = EditOpsDoc(EditOpsDoc.SCHEMA, description, suggestion.ops),
+            idMap = state.idMap,
+            layerMap = state.layerMap,
+            layers = _layers.value,
+            newItemNoteId = _note.value.id,
+        )
+        if (simulation.isEmpty) {
+            _critiqueState.update {
+                it?.copy(error = "Nothing left to change for “${suggestion.title}”.")
+            }
+            return
+        }
+        _pendingEdit.value = PendingEdit(
+            description = description,
+            doc = EditOpsDoc(EditOpsDoc.SCHEMA, description, suggestion.ops),
+            simulation = simulation,
+        )
+        _critiqueState.update { it?.copy(error = null) }
+    }
+
+    /** Close the critique panel and cancel any in-flight critique request. */
+    fun dismissCritique() {
+        critiqueJob?.cancel()
+        critiqueJob = null
+        _critiqueState.value = null
+    }
 
     /** Compose `OutlinedTextField` callback. */
     fun onAiInputChanged(text: String) {
@@ -4180,6 +4298,9 @@ class NoteEditorViewModel @Inject constructor(
                         // Palette results never flow through `runStream` — the
                         // palette panel collects `SUGGEST_PALETTE` directly.
                         is AiChunk.PaletteResult -> turn
+                        // Likewise critique results — the critique panel collects
+                        // `CRITIQUE` directly, never through a conversation turn.
+                        is AiChunk.CritiqueResult -> turn
                     }
                 }
             }

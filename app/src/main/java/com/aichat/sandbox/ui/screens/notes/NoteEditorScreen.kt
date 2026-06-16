@@ -110,6 +110,7 @@ fun NoteEditorScreen(
     val nodeEditTarget by viewModel.nodeEditTarget.collectAsState()
     val aiSheetState by viewModel.aiSheetState.collectAsState()
     val paletteState by viewModel.paletteState.collectAsState()
+    val critiqueState by viewModel.critiqueState.collectAsState()
     val availableModels by viewModel.availableModels.collectAsState()
     val chats by viewModel.chats.collectAsState()
     val sendToChatMode by viewModel.sendToChatMode.collectAsState()
@@ -1277,6 +1278,10 @@ fun NoteEditorScreen(
             onPaletteAi = viewModel::suggestPaletteWithAi,
             onPalettePreviewRecolor = viewModel::previewPaletteRecolor,
             onPaletteClose = viewModel::dismissPalette,
+            critiqueState = critiqueState,
+            onRequestCritique = viewModel::requestCompositionCritique,
+            onPreviewCritiqueFix = viewModel::previewCritiqueFix,
+            onCritiqueClose = viewModel::dismissCritique,
         )
       }
     }

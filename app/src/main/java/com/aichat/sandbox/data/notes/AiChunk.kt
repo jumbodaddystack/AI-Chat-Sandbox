@@ -48,4 +48,19 @@ sealed interface AiChunk {
         val idMap: Map<String, String>,
         val usage: Usage? = null,
     ) : AiChunk
+
+    /**
+     * Phase 3 — terminal event emitted by `CRITIQUE` mode. Carries the validated
+     * [critique] (summary + suggestions, each with an optional safe edit-op
+     * payload) plus the short-id → on-disk-UUID [idMap] and short-layer-id →
+     * UUID [layerMap] so the applier can resolve a suggestion's ops back to live
+     * items for a previewable fix. No canvas mutation is implied — the
+     * suggestions are surfaced as advisory cards.
+     */
+    data class CritiqueResult(
+        val critique: CompositionCritique,
+        val idMap: Map<String, String>,
+        val layerMap: Map<String, String>,
+        val usage: Usage? = null,
+    ) : AiChunk
 }
