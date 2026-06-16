@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **Phases 1–5 implemented and verified as of 2026-06-16**.
+Status: **Phases 1–6 implemented and verified as of 2026-06-16**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -41,10 +41,17 @@ sessions.
   experimental ink engine (`inkAuthoring`); when it's off the controls render
   disabled under a line of copy explaining how to turn it on. The locked-layer +
   group-expansion policy was extracted into the pure, testable `SmartSelect`.
-- **Draw-with-me tutor + replay (N4 / idea #7)** exists as `startDrawWithMe`,
-  `buildReplayTimeline`, `TutorGuide`, and `TutorSession`. It is also gated behind
-  `inkAuthoring` and lacks a start UI, tutor controls, replay playhead UI, and
-  export UX.
+- **Draw-with-me tutor + replay (N4 / idea #7)** is now productized (Phase 6).
+  The headless paths (`startDrawWithMe`, `buildReplayTimeline`, `TutorGuide`,
+  `TutorSession`, `tutorHiddenIds`) are fronted by a "Draw with me" panel in the
+  AI sheet (a prompt + example subjects that route through the unchanged GENERATE
+  → staged-preview → guide-layer path, plus a "Replay drawing" launcher), an
+  on-canvas `TutorControlsBanner` (Back / Skip / Redo / Next / End over the pure
+  `TutorSession`), and an interactive `ReplayControlsBanner` playhead (play/pause
+  + scrub) that reveals marks in draw order via `ReplayTimeline.hiddenItemIdsAt`.
+  It stays gated behind the experimental ink engine (`inkAuthoring`): the launch
+  controls render disabled under a line of copy when it's off. Video/GIF export
+  remains the deferred device-only path.
 
 ### Still missing or only partially covered
 
@@ -431,24 +438,80 @@ construction with Next/Back/Skip/Redo controls.
 
 ### Tasks
 
-- [ ] Decide product gating: experimental-only behind `inkAuthoring`, or split a
+- [x] Decide product gating: experimental-only behind `inkAuthoring`, or split a
   non-ink guide-layer MVP from ink replay/export work.
-- [ ] Add a “Draw with me” entry point in the AI sheet or art-assist menu.
-- [ ] Wire prompt submission to `startDrawWithMe(prompt)`.
-- [ ] Add tutor controls bound to `tutorNext`, `tutorBack`, `tutorSkip`,
+  - Decision: **experimental-only**, matching Phase 5. The tutor (guide-layer
+    reveal) and replay both stay gated behind the experimental ink engine
+    (`inkAuthoring`, default-off), honouring principle 4. Rather than building a
+    separate non-ink MVP, the "Draw with me" panel is *surfaced* for every note
+    but its launch controls (Start / Replay drawing) render disabled, under a
+    line of copy, when ink is off — discoverable without flipping the default.
+- [x] Add a “Draw with me” entry point in the AI sheet or art-assist menu.
+  - A "Draw with me" `AssistChip` in `AiSideSheet`'s `ScopeAndCannedPromptRow`
+    (alongside "Palette help", "Critique", "Brush designer"), available for both
+    notes and icons and disabled while the panel is already open. Opens
+    `DrawWithMePanel`.
+- [x] Wire prompt submission to `startDrawWithMe(prompt)`.
+  - `DrawWithMePanel` has a prompt field + example subjects (`a fox`, `a simple
+    house`, …). `NoteEditorViewModel.submitDrawWithMe()` validates the ink gate +
+    non-blank prompt and hands off to the existing `startDrawWithMe(prompt)`,
+    which routes through the unchanged GENERATE → staged `PendingEdit` →
+    `acceptTutorEdit` (guide-layer reparenting) path. The launcher closes on
+    submit; progress lives in the conversation turn + on-canvas diff preview.
+- [x] Add tutor controls bound to `tutorNext`, `tutorBack`, `tutorSkip`,
   `tutorRedo`, and `endTutor`.
-- [ ] Ensure `tutorHiddenIds` is observed by the canvas so unrevealed guide items
+  - `TutorControlsBanner` (a canvas overlay, not buried in the AI sheet, so it
+    survives the sheet being closed while tracing) shows the current step
+    instruction, a progress bar (`TutorSession.progress`), and Back / Skip /
+    Redo / Next / End buttons wired to `tutorBack` / `tutorSkip` / `tutorRedo` /
+    `tutorNext` / `endTutor`. Each button enables/disables off the pure
+    `TutorSession` state (`cursor`, `isComplete`, `currentStep`).
+- [x] Ensure `tutorHiddenIds` is observed by the canvas so unrevealed guide items
   stay hidden.
-- [ ] Add a replay playhead UI for `buildReplayTimeline()`.
-- [ ] Defer video/GIF export until replay playback is shippable.
-- [ ] Add tests for guide-layer creation, accept flow, step transitions, and
+  - Already wired: `NoteEditorScreen` collects `viewModel.tutorHiddenIds` and
+    passes it to `DrawingSurfaceView`, which suppresses those ids during
+    rasterization (`DrawingSurface.setTutorHidden`). Phase 6 verified this and
+    additionally **unions** the replay playhead's hidden ids into the same canvas
+    channel so the two N4 reveal surfaces share one suppression path.
+- [x] Add a replay playhead UI for `buildReplayTimeline()`.
+  - A new `ReplayTimeline.hiddenItemIdsAt(positionMs)` exposes the not-yet-drawn
+    ids for a given playhead position. `NoteEditorViewModel` adds a `replayState`
+    (`ReplayUiState`) + `replayHiddenIds` flow driven by `openReplay` /
+    `seekReplay` / `setReplayPlaying` / `closeReplay` (a wall-clock play loop
+    reveals marks in draw order). `ReplayControlsBanner` is the play/pause +
+    scrub overlay. Starting replay ends any live tutor session so the two reveal
+    channels don't fight.
+- [x] Defer video/GIF export until replay playback is shippable.
+  - Intentionally deferred. Replay is interactive on-canvas playback only;
+    partial-stroke clipping (`ReplayTimeline.itemsAt`) and frame encoding stay
+    the device-only export path, untouched here.
+- [x] Add tests for guide-layer creation, accept flow, step transitions, and
   hidden-item filtering.
+  - Guide-layer creation, the step / skip / back / redo state machine, and
+    session-level hidden-item filtering are covered by the existing
+    `TutorGuideTest` (ghosted/editable/on-top guide layer, `assignToGuide`
+    reparenting, `planSteps` ordering + clutter cap, and `TutorSession`
+    transitions incl. `hiddenItemIds`). The accept flow's pure pieces
+    (reparent + `planSteps` + canonical payload) are covered there and in
+    `ReplayTutorParityTest`. Phase 6 adds replay-playhead reveal coverage to
+    `ReplayTimelineTest` (`hiddenItemIdsAt`: only the first mark at the start,
+    draw-order reveal, and an empty hidden set at the end).
 
 ### Acceptance criteria
 
-- Generated tutor geometry is previewed before it becomes a guide layer.
-- Guide strokes are editable and visually distinct from user strokes.
-- Tutor controls are recoverable: Back/Skip/Redo/End never corrupt the note.
+- [x] Generated tutor geometry is previewed before it becomes a guide layer.
+  - `startDrawWithMe` stages the authored construction strokes as a `PendingEdit`
+    that renders through the shared `AiEditDiffOverlay` + banner; only an explicit
+    Accept runs `acceptTutorEdit`, which reparents them onto the guide layer.
+- [x] Guide strokes are editable and visually distinct from user strokes.
+  - `TutorGuide.buildGuideLayer` is a ghosted (45% opacity) but unlocked + visible
+    layer on top; the reparented strokes stay canonical `StrokeCodec` payloads, so
+    they read as a trace-over guide yet erase / edit like any other layer.
+- [x] Tutor controls are recoverable: Back/Skip/Redo/End never corrupt the note.
+  - Every control routes through the immutable `TutorSession` (each transition
+    returns a new value), so they only change *what is revealed*, never the
+    geometry; `endTutor` just clears the session and leaves the guide layer and
+    whatever the user traced intact on the note.
 
 ---
 

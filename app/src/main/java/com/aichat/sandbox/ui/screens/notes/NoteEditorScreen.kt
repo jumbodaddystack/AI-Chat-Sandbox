@@ -40,6 +40,8 @@ import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -87,6 +89,7 @@ import com.aichat.sandbox.ui.components.notes.ViewportController
 import com.aichat.sandbox.ui.components.notes.ZoomChrome
 import com.aichat.sandbox.ui.screens.notebooks.PageThumbnailRail
 import com.aichat.sandbox.data.notes.FrameThumbnailRenderer
+import com.aichat.sandbox.data.notes.TutorSession
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -120,8 +123,14 @@ fun NoteEditorScreen(
     val snapMask by viewModel.snapMask.collectAsState()
     val layers by viewModel.layers.collectAsState()
     val activeLayerId by viewModel.activeLayerId.collectAsState()
-    // Phase I8 — tutor "draw with me": guide-layer items not yet revealed.
+    // Phase I8 / Phase 6 — tutor "draw with me": guide-layer items not yet
+    // revealed by the current step, plus the active stepped session.
     val tutorHiddenIds by viewModel.tutorHiddenIds.collectAsState()
+    val tutorSession by viewModel.tutorSession.collectAsState()
+    val drawWithMeState by viewModel.drawWithMeState.collectAsState()
+    // Phase 6 — replay playhead: the launcher state and the ids it suppresses.
+    val replayState by viewModel.replayState.collectAsState()
+    val replayHiddenIds by viewModel.replayHiddenIds.collectAsState()
     val layersPanelOpen by viewModel.layersPanelOpen.collectAsState()
     val brushPresets by viewModel.brushPresetList.collectAsState()
     val activeBrushPreset by viewModel.activeBrushPreset.collectAsState()
@@ -634,7 +643,14 @@ fun NoteEditorScreen(
                     recordingStartedAt = recordingStartedAt,
                     fingerInkEnabled = fingerDrawing,
                     inkAuthoringEnabled = inkAuthoring,
-                    tutorHiddenIds = tutorHiddenIds,
+                    // Phase 6 — the tutor's unrevealed steps and the replay
+                    // playhead's not-yet-drawn marks share the canvas's hidden
+                    // channel. They're never both active, but union defensively.
+                    tutorHiddenIds = if (replayHiddenIds.isEmpty()) {
+                        tutorHiddenIds
+                    } else {
+                        tutorHiddenIds + replayHiddenIds
+                    },
                     // Icons are a bounded canvas: clip ink to the artboard.
                     artboardClipBounds = if (note.isIcon) {
                         viewModel.currentFrameBounds()
@@ -1237,6 +1253,31 @@ fun NoteEditorScreen(
                 modifier = Modifier.padding(end = aiDockPad),
             )
         }
+        // Phase 6 (N4) — stepped tutor controls. A canvas overlay (not in the AI
+        // sheet) so the user can keep tracing the ghost guide with the sheet
+        // closed. Only one of these N4 surfaces is active at a time; the tutor
+        // banner yields to the staged-edit banner while a generation is pending.
+        if (pendingEdit == null && !presenting) tutorSession?.let { session ->
+            TutorControlsBanner(
+                session = session,
+                onNext = viewModel::tutorNext,
+                onBack = viewModel::tutorBack,
+                onSkip = viewModel::tutorSkip,
+                onRedo = { viewModel.tutorRedo() },
+                onEnd = viewModel::endTutor,
+                modifier = Modifier.padding(end = aiDockPad),
+            )
+        }
+        // Phase 6 (N4) — interactive replay playhead overlay.
+        if (!presenting) replayState?.let { replay ->
+            ReplayControlsBanner(
+                state = replay,
+                onTogglePlay = { viewModel.setReplayPlaying(!replay.playing) },
+                onSeek = viewModel::seekReplay,
+                onClose = viewModel::closeReplay,
+                modifier = Modifier.padding(end = aiDockPad),
+            )
+        }
         AiSideSheet(
             modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars),
             state = aiSheetState,
@@ -1298,6 +1339,13 @@ fun NoteEditorScreen(
             onSaveBrush = viewModel::saveBrushDesign,
             onClearBrushDesign = viewModel::clearBrushDesign,
             onBrushDesignerClose = viewModel::dismissBrushDesigner,
+            drawWithMeState = drawWithMeState,
+            inkAuthoringEnabled = inkAuthoring,
+            onOpenDrawWithMe = viewModel::openDrawWithMe,
+            onDrawWithMePromptChanged = viewModel::setDrawWithMePrompt,
+            onStartDrawWithMe = viewModel::submitDrawWithMe,
+            onOpenReplay = viewModel::openReplay,
+            onDrawWithMeClose = viewModel::dismissDrawWithMe,
         )
       }
     }
@@ -1701,6 +1749,152 @@ private fun DiffLegendItem(color: Color, label: String) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSecondaryContainer,
         )
+    }
+}
+
+/**
+ * Phase 6 (N4 / idea #7) — stepped "draw with me" tutor controls, pinned above
+ * the canvas so the ghost guide can be walked one beat at a time while the user
+ * traces. Back / Skip / Next / Redo drive the pure [TutorSession] state machine;
+ * Done ends the walkthrough but leaves the (now editable) guide strokes on the
+ * note. The reveal itself happens on the canvas via the suppressed-id channel.
+ */
+@Composable
+private fun TutorControlsBanner(
+    session: TutorSession,
+    onNext: () -> Unit,
+    onBack: () -> Unit,
+    onSkip: () -> Unit,
+    onRedo: () -> Unit,
+    onEnd: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                val total = session.size
+                val shown = (session.cursor + 1).coerceIn(0, total)
+                Text(
+                    text = "Draw with me · ${session.currentStep?.instruction ?: "Ready"}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (total == 0) {
+                        "No guide strokes to trace."
+                    } else if (session.isComplete) {
+                        "Step $shown of $total · done — trace over the ghost guide."
+                    } else {
+                        "Step $shown of $total · trace, then reveal the next mark."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    progress = { session.progress },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onBack, enabled = session.cursor >= 0) { Text("Back") }
+                    TextButton(onClick = onSkip, enabled = !session.isComplete) { Text("Skip") }
+                    TextButton(onClick = onRedo, enabled = session.currentStep != null) { Text("Redo") }
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (session.isComplete) {
+                        Button(onClick = onEnd) { Text("Done") }
+                    } else {
+                        TextButton(onClick = onEnd) { Text("End") }
+                        Button(onClick = onNext) { Text("Next") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Phase 6 (N4 / idea #7, sub-phase a) — interactive replay playhead, pinned
+ * above the canvas. Play/pause animates the note's marks appearing in draw
+ * order; the slider scrubs to any point. The reveal rides the same suppressed-id
+ * channel as the tutor. Video/GIF export is intentionally out of scope here.
+ */
+@Composable
+private fun ReplayControlsBanner(
+    state: ReplayUiState,
+    onTogglePlay: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Replay",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Close replay",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+                if (state.isEmpty) {
+                    Text(
+                        text = "Nothing to replay yet — draw a few strokes first.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onTogglePlay) {
+                            Icon(
+                                imageVector = if (state.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                contentDescription = if (state.playing) "Pause replay" else "Play replay",
+                            )
+                        }
+                        Slider(
+                            value = state.positionMs.toFloat(),
+                            onValueChange = { onSeek(it.toLong()) },
+                            valueRange = 0f..state.durationMs.toFloat().coerceAtLeast(1f),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Text(
+                        text = "${state.positionMs / 1000f}s of ${state.durationMs / 1000f}s",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+            }
+        }
     }
 }
 
