@@ -43,6 +43,10 @@ class NoteAiService @Inject constructor(
     private val chatStreamer: ChatStreamer,
     private val ocr: HandwritingRecognizer,
     private val imageRenderer: NoteImageRenderer = NoteRasterizerImageRenderer,
+    // Debug capture of each exchange (prompt + raw reply + outcome). A no-op
+    // unless the "Capture AI debug log" setting is on; default instance keeps
+    // existing unit-test constructors working without wiring it.
+    private val aiDebugLog: AiDebugLog = AiDebugLog(),
 ) {
 
     fun ask(request: AskRequest): Flow<AiChunk> = flow {
@@ -115,7 +119,11 @@ class NoteAiService @Inject constructor(
                 is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
             }
         }
-        if (errored) return
+        val mode = if (request.isIcon) "ICON_EDIT" else "EDIT"
+        if (errored) {
+            aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "stream error")
+            return
+        }
         val parseResult = EditOpsParser.parse(
             raw = buffer.toString(),
             knownIds = serialized.idMap.keys,
@@ -123,6 +131,14 @@ class NoteAiService @Inject constructor(
         )
         parseResult.fold(
             onSuccess = { doc ->
+                aiDebugLog.record(
+                    mode = mode,
+                    modelId = request.modelId,
+                    request = serialized.json,
+                    rawReply = buffer.toString(),
+                    outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
+                    rejections = doc.rejected.map { it.reason },
+                )
                 emit(AiChunk.EditPreview(
                     doc = doc,
                     idMap = serialized.idMap,
@@ -132,6 +148,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "edit-ops parse failed: ${t.message}")
+                aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -213,9 +230,13 @@ class NoteAiService @Inject constructor(
                 is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
             }
         }
-        if (errored) return
+        if (errored) {
+            aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            return
+        }
         PaletteParser.parse(buffer.toString(), knownIds = serialized.idMap.keys).fold(
             onSuccess = { suggestion ->
+                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "palette parsed")
                 emit(AiChunk.PaletteResult(
                     suggestion = suggestion,
                     idMap = serialized.idMap,
@@ -224,6 +245,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "palette parse failed: ${t.message}")
+                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -335,13 +357,17 @@ class NoteAiService @Inject constructor(
                 is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
             }
         }
-        if (errored) return
+        if (errored) {
+            aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            return
+        }
         CritiqueParser.parse(
             raw = buffer.toString(),
             knownIds = serialized.idMap.keys,
             knownLayers = serialized.layerMap.keys,
         ).fold(
             onSuccess = { critique ->
+                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "critique parsed")
                 emit(AiChunk.CritiqueResult(
                     critique = critique,
                     idMap = serialized.idMap,
@@ -351,6 +377,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "critique parse failed: ${t.message}")
+                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -441,10 +468,22 @@ class NoteAiService @Inject constructor(
                 is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
             }
         }
-        if (errored) return
+        val mode = if (refining) "REFINE" else "GENERATE"
+        if (errored) {
+            aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "stream error")
+            return
+        }
         EditOpsParser.parse(raw = buffer.toString(), knownIds = emptySet(), knownLayers = emptySet())
             .fold(
                 onSuccess = { doc ->
+                    aiDebugLog.record(
+                        mode = mode,
+                        modelId = request.modelId,
+                        request = systemMessage,
+                        rawReply = buffer.toString(),
+                        outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
+                        rejections = doc.rejected.map { it.reason },
+                    )
                     emit(AiChunk.EditPreview(
                         doc = doc,
                         idMap = emptyMap(),
@@ -454,6 +493,7 @@ class NoteAiService @Inject constructor(
                 },
                 onFailure = { t ->
                     Log.w(TAG, "icon-generate parse failed: ${t.message}")
+                    aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "parse failed: ${t.message}")
                     emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
                 },
             )
@@ -501,11 +541,19 @@ class NoteAiService @Inject constructor(
                 is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
             }
         }
-        if (errored) return
+        val brushReq = buildDesignBrushPromptBody(request.userPrompt)
+        if (errored) {
+            aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "stream error")
+            return
+        }
         BrushSpecParser.parse(buffer.toString()).fold(
-            onSuccess = { spec -> emit(AiChunk.BrushDesign(spec = spec, usage = lastUsage)) },
+            onSuccess = { spec ->
+                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "brush spec parsed")
+                emit(AiChunk.BrushDesign(spec = spec, usage = lastUsage))
+            },
             onFailure = { t ->
                 Log.w(TAG, "brush-spec parse failed: ${t.message}")
+                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "parse failed: ${t.message}")
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )

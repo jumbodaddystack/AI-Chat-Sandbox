@@ -12,7 +12,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -135,6 +137,12 @@ fun NoteEditorScreen(
     val brushPresets by viewModel.brushPresetList.collectAsState()
     val activeBrushPreset by viewModel.activeBrushPreset.collectAsState()
     val pendingEdit by viewModel.pendingEdit.collectAsState()
+    // Developer: when "Capture AI debug log" is on, surface the most recent raw
+    // model reply inline on the staged-edit banner so a failed/partial edit can
+    // be inspected without leaving the canvas.
+    val aiDebugLogViewModel: AiDebugLogViewModel = hiltViewModel()
+    val aiDebugEnabled by aiDebugLogViewModel.enabled.collectAsState()
+    val aiDebugTraces by aiDebugLogViewModel.traces.collectAsState()
     val frames by viewModel.frames.collectAsState()
     val currentFrameId by viewModel.currentFrameId.collectAsState()
     val frameNavigatorOpen by viewModel.frameNavigatorOpen.collectAsState()
@@ -1249,6 +1257,8 @@ fun NoteEditorScreen(
                 pending = pending,
                 onAccept = viewModel::acceptPendingEdit,
                 onReject = viewModel::rejectPendingEdit,
+                // Inspect the raw model reply inline when capture is enabled.
+                debugRawReply = if (aiDebugEnabled) aiDebugTraces.firstOrNull()?.rawReply else null,
                 // Keep the banner left of the docked AI rail.
                 modifier = Modifier.padding(end = aiDockPad),
             )
@@ -1672,6 +1682,7 @@ private fun AiEditPreviewBanner(
     onAccept: () -> Unit,
     onReject: () -> Unit,
     modifier: Modifier = Modifier,
+    debugRawReply: String? = null,
 ) {
     val sim = pending.simulation
     Box(
@@ -1723,6 +1734,36 @@ private fun AiEditPreviewBanner(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
+                }
+                // Developer: inline raw model reply (capture toggle on). Lets a
+                // failed/partial edit be inspected without leaving the canvas.
+                if (debugRawReply != null) {
+                    var showRaw by remember(pending) { mutableStateOf(false) }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    TextButton(
+                        onClick = { showRaw = !showRaw },
+                        contentPadding = PaddingValues(0.dp),
+                    ) {
+                        Text(if (showRaw) "Hide raw response" else "Show raw response")
+                    }
+                    if (showRaw) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = debugRawReply.ifBlank { "(empty reply)" },
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .heightIn(max = 200.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(8.dp),
+                            )
+                        }
+                    }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -4,6 +4,7 @@ import android.util.Log
 import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.data.model.MessageRole
+import com.aichat.sandbox.data.notes.AiDebugLog
 import com.aichat.sandbox.data.remote.ChatStreamer
 import com.aichat.sandbox.data.remote.StreamEvent
 import kotlinx.coroutines.flow.Flow
@@ -84,6 +85,7 @@ data class VectorTuneupAiResult(
 @Singleton
 class VectorTuneupAiService @Inject constructor(
     private val chatStreamer: ChatStreamer,
+    private val aiDebugLog: AiDebugLog = AiDebugLog(),
 ) {
 
     fun tuneUp(request: VectorTuneupAiRequest): Flow<VectorTuneupAiChunk> = flow {
@@ -118,13 +120,17 @@ class VectorTuneupAiService @Inject constructor(
                 is StreamEvent.ToolCallDelta -> Unit // impossible: we send no tools.
             }
         }
-        if (errored) return@flow
+        if (errored) {
+            aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "stream error")
+            return@flow
+        }
 
         val knownPathIds = summary.includedPathIds.toSet()
         val knownColors = request.metrics.colorCounts.keys
         val plan = VectorEditPlanParser.parse(buffer.toString(), knownPathIds, knownColors)
             .getOrElse { t ->
                 logWarn("tune-up plan parse failed: ${t.message}")
+                aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "parse failed: ${t.message}")
                 emit(VectorTuneupAiChunk.Error(PARSE_FAILED_MESSAGE))
                 return@flow
             }
@@ -133,10 +139,12 @@ class VectorTuneupAiService @Inject constructor(
             VectorEditPlanApplier.apply(request.document, request.xml, plan)
         }.getOrElse { t ->
             logWarn("tune-up plan apply failed", t)
+            aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "apply failed: ${t.message}")
             emit(VectorTuneupAiChunk.Error(APPLY_FAILED_MESSAGE))
             return@flow
         }
 
+        aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "plan applied")
         emit(
             VectorTuneupAiChunk.Complete(
                 VectorTuneupAiResult(
