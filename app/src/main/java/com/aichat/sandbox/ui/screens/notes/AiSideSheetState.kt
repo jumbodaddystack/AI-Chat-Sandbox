@@ -128,6 +128,31 @@ data class CritiqueUiState(
 )
 
 /**
+ * Phase 7 — state for the named-style **restyle** panel hosted inside the AI
+ * side sheet. Opened from the "Restyle" chip; [scope] freezes the items the
+ * restyle applies to (the sheet's selection scope or the whole note) so
+ * background selection changes don't drift it.
+ *
+ * Tapping a preset chip fires a model-backed restyle whose result stages as a
+ * normal previewable `PendingEdit` on the canvas (accept/reject in the banner) —
+ * the panel itself never mutates the canvas. [activePresetId] is the preset
+ * currently in flight (drives the per-chip spinner); [loading] gates re-taps and
+ * [error] surfaces a request failure or a "nothing changed" note.
+ *
+ * Distinct from the local `StyleTransfer` clipboard (copy the exact style of one
+ * item onto another) — this restyles into a *named AI look*, and the panel's
+ * copy says so.
+ */
+data class RestyleUiState(
+    val isOpen: Boolean = false,
+    val scope: List<NoteItem> = emptyList(),
+    /** Id of the preset whose request is in flight, or null when idle. */
+    val activePresetId: String? = null,
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
+/**
  * Phase 4 (N1) — state for the AI brush designer panel hosted inside the AI side
  * sheet. Opened from the "Brush designer" chip. The flow is deliberately
  * **preview-then-save**: the user types a prompt (or taps an example), the model

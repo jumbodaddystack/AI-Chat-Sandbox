@@ -117,6 +117,7 @@ fun NoteEditorScreen(
     val paletteState by viewModel.paletteState.collectAsState()
     val critiqueState by viewModel.critiqueState.collectAsState()
     val brushDesignState by viewModel.brushDesignState.collectAsState()
+    val restyleState by viewModel.restyleState.collectAsState()
     val availableModels by viewModel.availableModels.collectAsState()
     val chats by viewModel.chats.collectAsState()
     val sendToChatMode by viewModel.sendToChatMode.collectAsState()
@@ -1349,6 +1350,10 @@ fun NoteEditorScreen(
             onSaveBrush = viewModel::saveBrushDesign,
             onClearBrushDesign = viewModel::clearBrushDesign,
             onBrushDesignerClose = viewModel::dismissBrushDesigner,
+            restyleState = restyleState,
+            onOpenRestyle = viewModel::openRestyle,
+            onApplyStylePreset = viewModel::applyStylePreset,
+            onRestyleClose = viewModel::dismissRestyle,
             drawWithMeState = drawWithMeState,
             inkAuthoringEnabled = inkAuthoring,
             onOpenDrawWithMe = viewModel::openDrawWithMe,

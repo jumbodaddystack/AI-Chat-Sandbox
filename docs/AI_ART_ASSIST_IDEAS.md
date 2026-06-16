@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **Phases 1–6 implemented and verified as of 2026-06-16**.
+Status: **Phases 1–7 implemented and verified as of 2026-06-16**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -68,10 +68,18 @@ sessions.
   `ColorHarmony`, optionally refined by the model through `AskMode.SUGGEST_PALETTE`
   / `PaletteParser`) and stages a previewable `recolor` batch through the shared
   `PendingEdit` surface via `PaletteRecolor`.
-- **Named style preset restyling** is partial. Local `StyleTransfer` copies style
-  from one item to another, and GENERATE can use style-reference icons when
-  authoring new icons. There is no user-facing “restyle this selection as flat /
-  line-art / isometric” flow.
+- **Named style preset restyling** shipped in Phase 7. A "Restyle" panel in the
+  AI sheet offers a curated catalog of named looks (`StylePresetCatalog`: Flat
+  icon / Line art / Isometric / Sticker); tapping one routes through a new
+  `AskMode.RESTYLE` (selection-scoped EDIT) whose reply is validated by
+  `RestyleParser` down to the non-additive, non-moving op subset
+  (`StylePreset.isRestyleOp`: `recolor` / `restyle` / `smooth` / `simplify` /
+  `replace_with_shape`) and staged through the shared `PendingEdit` /
+  `AiEditDiffOverlay` accept/reject surface. The local `StyleTransfer` clipboard
+  (copy the exact style of one item onto another) is kept separate, and the panel
+  copy spells out the difference. (Previously: local `StyleTransfer` copied style
+  and GENERATE used style-reference icons, but there was no user-facing
+  "restyle this selection as flat / line-art / isometric" flow.)
 - **Prompt-to-vector scene generation** is partial. The app can generate a single
   icon/vector from a prompt, but not a small multi-object scene with grouped,
   relatively placed elements and a layout plan.
@@ -525,22 +533,64 @@ copy local style or generate new icons from references.
 
 ### Tasks
 
-- [ ] Define a small curated preset catalog with prompt text and constraints for
+- [x] Define a small curated preset catalog with prompt text and constraints for
   each style.
-- [ ] Add style preset chips to the AI sheet, selection toolbar, or art-assist
+  - `StylePresetCatalog` (`data/notes/StylePreset.kt`) holds the four MVP looks
+    (Flat icon / Line art / Isometric / Sticker). Each `StylePreset` carries an
+    `id`, `displayName`, UI `tagline`, a plain-language `promptText`, and a list
+    of curated `constraints`. `buildInstruction()` composes those into the
+    user-message body, closing with two fixed guardrails
+    (`StylePreset.SUBJECT_GUARD` / `NO_ADD_GUARD`).
+- [x] Add style preset chips to the AI sheet, selection toolbar, or art-assist
   menu.
-- [ ] Route presets through EDIT mode with selection scope and `restyle`,
+  - A "Restyle" `AssistChip` in `AiSideSheet`'s `ScopeAndCannedPromptRow`
+    (alongside Palette help / Critique / Brush designer / Draw with me), available
+    for both notes and icons and disabled while the panel is open. Opens
+    `RestylePanel`, which renders one `StylePresetCard` per catalog preset with an
+    "Apply" action (a spinner marks the preset in flight).
+- [x] Route presets through EDIT mode with selection scope and `restyle`,
   `recolor`, `smooth`, `simplify`, and `replace_with_shape` ops allowed.
-- [ ] Keep `StyleTransfer` as a separate local “copy style from selection” tool;
+  - New `AskMode.RESTYLE` + `NoteAiService.collectRestyle` serialize the
+    selection-scoped items via `VectorCanvasJson`, attach the rasterized preview
+    for vision models, and emit a standard `AiChunk.EditPreview`.
+    `NoteEditorViewModel.applyStylePreset` fires the request and stages the result
+    as a `PendingEdit` through `EditPreviewController.simulate`, so it previews
+    through the same `AiEditDiffOverlay` + banner as every other AI edit.
+- [x] Keep `StyleTransfer` as a separate local “copy style from selection” tool;
   do not conflate it with named AI presets.
-- [ ] Add validation to discourage adding new subject matter during restyle.
-- [ ] Add tests for preset prompt construction and valid/invalid restyle docs.
+  - `StyleTransfer` / `StyleClipboard` are untouched. The restyle path never
+    references them, and `RestylePanel` carries a footnote distinguishing the
+    AI named-look restyle from "copy/paste the exact style of one item onto
+    another".
+- [x] Add validation to discourage adding new subject matter during restyle.
+  - `RestyleParser.parse` runs the reply through `EditOpsParser` (dropping
+    invented / locked-layer ids) and then keeps only `StylePreset.isRestyleOp`
+    survivors — the non-additive, non-moving subset. `add_path` / `add_shape`
+    (new subject matter), `transform` (moving/scaling), `delete`, `group`,
+    `set_layer`, and `merge_paths` are moved to `rejected` and never applied.
+    The `RESTYLE` system message pins the same rules as defence in depth.
+- [x] Add tests for preset prompt construction and valid/invalid restyle docs.
+  - `StylePresetTest` (catalog shape + unique ids, `byId`, `buildInstruction`
+    weaves name/description/every constraint + the subject guardrails,
+    `isRestyleOp` subset) and `RestyleParserTest` (keeps the five safe ops, drops
+    additive/destructive/moving/structural ops into `rejected`, drops unknown-id
+    ops, fenced + bare JSON, empty-ops success, all-unsafe → empty success,
+    non-JSON failure, garbage no-throw). All green.
 
 ### Acceptance criteria
 
-- Existing geometry remains recognizably the same subject.
-- Presets are previewable and rejectable.
-- Style-copy and AI named presets are clearly different in UI copy.
+- [x] Existing geometry remains recognizably the same subject.
+  - The op whitelist excludes every additive op and `transform`, so a restyle
+    only changes colour / width / opacity / smoothing or cleans a wobbly stroke
+    into a crisp shape — the geometry and subject stay put. The shared simulator
+    drops locked-layer items and no-op restyles as a backstop.
+- [x] Presets are previewable and rejectable.
+  - Applying a preset stages a `PendingEdit` through the shared diff overlay +
+    banner; nothing lands until an explicit Accept on the canvas.
+- [x] Style-copy and AI named presets are clearly different in UI copy.
+  - The restyle panel header reads "Restyle into a look" and a footnote points
+    users at copy/paste style for exact style transfer, keeping the two tools
+    distinct.
 
 ---
 
