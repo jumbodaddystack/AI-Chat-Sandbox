@@ -225,6 +225,57 @@ class EditOpsParserTest {
     }
 
     @Test
+    fun singularIdAcceptedForListOps() {
+        // Models routinely target a single stroke with the singular `id` on
+        // ops that nominally take a list (smooth/simplify/delete/…). It must be
+        // honoured, not rejected as "no valid ids".
+        val raw = """
+            { "summary": "", "ops": [
+              { "op": "smooth", "id": "s_005", "amount": 0.5 },
+              { "op": "delete", "id": "s_007" }
+            ] }
+        """.trimIndent()
+        val doc = EditOpsParser.parse(raw, knownIds = setOf("s_005", "s_007")).getOrThrow()
+        assertEquals(2, doc.ops.size)
+        assertTrue(doc.rejected.isEmpty())
+        assertEquals(listOf("s_005"), (doc.ops[0] as EditOp.Smooth).ids)
+        assertEquals(listOf("s_007"), (doc.ops[1] as EditOp.Delete).ids)
+    }
+
+    @Test
+    fun idsAcceptedAsCommaSeparatedString() {
+        // A drifting model sometimes emits `ids` as a single string rather than
+        // a JSON array. Split on commas and de-dupe.
+        val raw = """
+            { "summary": "", "ops": [
+              { "op": "delete", "ids": "s_1, s_2 , s_1" }
+            ] }
+        """.trimIndent()
+        val doc = EditOpsParser.parse(raw, knownIds = setOf("s_1", "s_2")).getOrThrow()
+        assertEquals(listOf("s_1", "s_2"), (doc.ops.single() as EditOp.Delete).ids)
+    }
+
+    @Test
+    fun noneColorTreatedAsTransparentNotRejected() {
+        // SVG paint keywords ("none"/"transparent") mean *no paint* — the model
+        // uses them for outline-only redraws. They map onto the canvas's ARGB-0
+        // "no fill" sentinel instead of rejecting the op as malformed hex.
+        val raw = """
+            { "summary": "", "ops": [
+              { "op": "add_path", "anchors": [[0,0],[10,0],[10,10]],
+                "closed": true, "color": "#000000", "fill": "none" },
+              { "op": "recolor", "ids": ["s_1"], "color": "transparent" }
+            ] }
+        """.trimIndent()
+        val doc = EditOpsParser.parse(raw, knownIds = setOf("s_1")).getOrThrow()
+        assertTrue(doc.rejected.isEmpty())
+        assertEquals(2, doc.ops.size)
+        val addPath = doc.ops[0] as EditOp.AddPath
+        assertEquals(0, addPath.fillArgb)
+        assertEquals(0, (doc.ops[1] as EditOp.Recolor).colorArgb)
+    }
+
+    @Test
     fun unknownLayerOnSetLayerRejected() {
         val raw = """
             { "summary": "", "ops": [
