@@ -458,6 +458,67 @@ class EditPreviewControllerTest {
         assertEquals(40f, maxOf(b0[3], b1[3]), 1e-2f)
     }
 
+    @Test
+    fun sceneGroupLabelsAssignSharedGroupIdsPerObject() {
+        // Phase 8 — two objects ("tent" = 2 parts, "moon" = 1 part) plus one
+        // ungrouped shape. Same label → same groupId; different labels differ;
+        // no label → null groupId.
+        val doc = EditOpsDoc(1, "campsite", listOf(
+            EditOp.AddShape(EditOp.ShapeSpec.Rect(0f, 0f, 10f, 10f), null, null, null, group = "tent"),
+            EditOp.AddShape(EditOp.ShapeSpec.Line(0f, 0f, 10f, 0f), null, null, null, group = "tent"),
+            EditOp.AddShape(EditOp.ShapeSpec.Ellipse(50f, 5f, 4f, 4f), null, null, null, group = "moon"),
+            EditOp.AddShape(EditOp.ShapeSpec.Rect(0f, 20f, 100f, 22f), null, null, null, group = null),
+        ))
+        val sim = EditPreviewController.simulate(
+            currentItems = emptyList(),
+            doc = doc,
+            idMap = emptyMap(),
+            layerMap = emptyMap(),
+            layers = emptyList(),
+            newItemNoteId = "n1",
+        )
+        assertEquals(4, sim.added.size)
+        val tentA = sim.added[0].groupId
+        val tentB = sim.added[1].groupId
+        val moon = sim.added[2].groupId
+        val ungrouped = sim.added[3].groupId
+        assertNotNull(tentA)
+        assertEquals(tentA, tentB) // same object → one shared groupId
+        assertNotNull(moon)
+        assertTrue(moon != tentA) // different object → different groupId
+        assertNull(ungrouped) // no label → ungrouped
+    }
+
+    @Test
+    fun sceneGroupsSurviveAuthoredFitPlacement() {
+        // The shared groupId set before placement must survive the fit transform,
+        // and the grouped scene must land inside the target rect (bounded).
+        val doc = EditOpsDoc(1, "scene", listOf(
+            EditOp.AddShape(EditOp.ShapeSpec.Rect(0f, 0f, 10f, 10f), null, null, null, group = "a"),
+            EditOp.AddShape(EditOp.ShapeSpec.Rect(10f, 10f, 20f, 20f), null, null, null, group = "a"),
+        ))
+        val sim = EditPreviewController.simulate(
+            currentItems = emptyList(),
+            doc = doc,
+            idMap = emptyMap(),
+            layerMap = emptyMap(),
+            layers = emptyList(),
+            newItemNoteId = "n1",
+            authoredFit = floatArrayOf(100f, 100f, 140f, 140f),
+        )
+        assertEquals(2, sim.added.size)
+        // Same object → still one shared groupId after the fit.
+        assertNotNull(sim.added[0].groupId)
+        assertEquals(sim.added[0].groupId, sim.added[1].groupId)
+        // Both parts land inside the 40×40 target box (bounded, on-canvas).
+        val b0 = ShapeCodec.boundsOf(ShapeCodec.decode(sim.added[0].payload).shape)!!
+        val b1 = ShapeCodec.boundsOf(ShapeCodec.decode(sim.added[1].payload).shape)!!
+        assertEquals(100f, minOf(b0[0], b1[0]), 1e-2f)
+        assertEquals(100f, minOf(b0[1], b1[1]), 1e-2f)
+        assertEquals(140f, maxOf(b0[2], b1[2]), 1e-2f)
+        assertEquals(140f, maxOf(b0[3], b1[3]), 1e-2f)
+    }
+
     private fun pathItem(x: Float, colorArgb: Int = 0xFF000000.toInt()): NoteItem {
         val payload = com.aichat.sandbox.ui.components.notes.PathCodec.PathPayload(
             anchors = listOf(

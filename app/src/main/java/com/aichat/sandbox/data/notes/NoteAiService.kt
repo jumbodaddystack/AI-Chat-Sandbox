@@ -574,23 +574,35 @@ class NoteAiService @Inject constructor(
         // back to text-only authoring when the model can't see images.
         val refineItems = request.selection?.takeIf { request.refine && it.isNotEmpty() }
         val refining = refineItems != null
-        val systemMessage = if (refining) EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE
-            else EditOpsParser.buildIconGenerateSystemMessage(request.styleReferences)
+        // Phase 8 — a scene generates several grouped objects (never a refine).
+        val scene = request.scene && !refining
+        val systemMessage = when {
+            refining -> EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE
+            scene -> EditOpsParser.SCENE_GENERATE_SYSTEM_MESSAGE
+            else -> EditOpsParser.buildIconGenerateSystemMessage(request.styleReferences)
+        }
         val userMessage = if (refining && supportsVision) {
             buildRefineVisionMessage(request, refineItems!!) ?: return emit(AiChunk.Error(RENDER_FAILED_MESSAGE))
         } else {
             Message(
                 chatId = SYNTHETIC_CHAT_ID,
                 role = MessageRole.USER.value,
-                content = if (refining) buildRefinePromptBody(request.userPrompt)
-                    else buildGeneratePromptBody(request.userPrompt),
+                content = when {
+                    refining -> buildRefinePromptBody(request.userPrompt)
+                    scene -> buildScenePromptBody(request.userPrompt, request.sceneComplexity)
+                    else -> buildGeneratePromptBody(request.userPrompt)
+                },
                 contentType = "text",
                 metadata = null,
             )
         }
         val chat = Chat(
             id = SYNTHETIC_CHAT_ID,
-            title = if (refining) "Icon Refine" else "Icon Generate",
+            title = when {
+                refining -> "Icon Refine"
+                scene -> "Scene Generate"
+                else -> "Icon Generate"
+            },
             model = request.modelId,
             systemMessage = systemMessage,
         )
@@ -614,14 +626,25 @@ class NoteAiService @Inject constructor(
                 is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
             }
         }
-        val mode = if (refining) "REFINE" else "GENERATE"
+        val mode = when {
+            refining -> "REFINE"
+            scene -> "SCENE"
+            else -> "GENERATE"
+        }
         if (errored) {
             aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "stream error")
             return
         }
         EditOpsParser.parse(raw = buffer.toString(), knownIds = emptySet(), knownLayers = emptySet())
             .fold(
-                onSuccess = { doc ->
+                onSuccess = { parsed ->
+                    // Phase 8 — bound a scene's object count so a runaway reply
+                    // stays compact (extras land in `rejected`, not on canvas).
+                    val doc = if (scene) {
+                        SceneGen.capSceneAddOps(parsed, request.sceneComplexity.maxObjects)
+                    } else {
+                        parsed
+                    }
                     aiDebugLog.record(
                         mode = mode,
                         modelId = request.modelId,
@@ -729,6 +752,26 @@ class NoteAiService @Inject constructor(
         append("×")
         append(ICON_ARTBOARD_WORLD.toInt())
         append(" units, top-left at (0,0). Author the geometry with add_path / add_shape ops.")
+    }
+
+    /**
+     * Phase 8 — build the scene-generation prompt body. Exposed `internal` so a
+     * unit test can pin the wire format. States the square artboard edge (so the
+     * model's coordinates land inside it before the editor's fit), the object
+     * cap, and the complexity hint.
+     */
+    internal fun buildScenePromptBody(userPrompt: String, complexity: SceneComplexity): String = buildString {
+        append(userPrompt)
+        append("\n\n")
+        append("Design this as a small editable scene on a square artboard, ")
+        append(SceneGen.SCENE_ARTBOARD_WORLD.toInt())
+        append("×")
+        append(SceneGen.SCENE_ARTBOARD_WORLD.toInt())
+        append(" units, top-left at (0,0). Use at most ")
+        append(complexity.maxObjects)
+        append(" objects, each authored with add_path / add_shape ops and tagged ")
+        append("with a \"group\" label. ")
+        append(complexity.promptHint)
     }
 
     /**

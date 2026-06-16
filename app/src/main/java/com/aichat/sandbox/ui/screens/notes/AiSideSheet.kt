@@ -69,6 +69,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.aichat.sandbox.data.notes.PaletteScheme
 import com.aichat.sandbox.data.notes.PaletteSource
+import com.aichat.sandbox.data.notes.SceneComplexity
+import com.aichat.sandbox.data.notes.ScenePlacement
 import com.aichat.sandbox.data.notes.StylePreset
 import com.aichat.sandbox.data.notes.StylePresetCatalog
 import com.aichat.sandbox.ui.components.ModelSelector
@@ -136,6 +138,13 @@ fun AiSideSheet(
     onStartDrawWithMe: () -> Unit,
     onOpenReplay: () -> Unit,
     onDrawWithMeClose: () -> Unit,
+    sceneState: SceneUiState?,
+    onOpenScene: () -> Unit,
+    onScenePromptChanged: (String) -> Unit,
+    onScenePlacementChanged: (ScenePlacement) -> Unit,
+    onSceneComplexityChanged: (SceneComplexity) -> Unit,
+    onGenerateScene: () -> Unit,
+    onSceneClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
@@ -226,6 +235,13 @@ fun AiSideSheet(
                     onStartDrawWithMe = onStartDrawWithMe,
                     onOpenReplay = onOpenReplay,
                     onDrawWithMeClose = onDrawWithMeClose,
+                    sceneState = sceneState,
+                    onOpenScene = onOpenScene,
+                    onScenePromptChanged = onScenePromptChanged,
+                    onScenePlacementChanged = onScenePlacementChanged,
+                    onSceneComplexityChanged = onSceneComplexityChanged,
+                    onGenerateScene = onGenerateScene,
+                    onSceneClose = onSceneClose,
                 )
             }
         }
@@ -279,6 +295,13 @@ private fun SheetContent(
     onStartDrawWithMe: () -> Unit,
     onOpenReplay: () -> Unit,
     onDrawWithMeClose: () -> Unit,
+    sceneState: SceneUiState?,
+    onOpenScene: () -> Unit,
+    onScenePromptChanged: (String) -> Unit,
+    onScenePlacementChanged: (ScenePlacement) -> Unit,
+    onSceneComplexityChanged: (SceneComplexity) -> Unit,
+    onGenerateScene: () -> Unit,
+    onSceneClose: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SheetHeader(
@@ -360,6 +383,19 @@ private fun SheetContent(
             )
             HorizontalDivider()
         }
+        // Phase 8 — "Make a scene" launcher sits alongside the other art-assist
+        // panels, above the scope row, when open.
+        if (sceneState?.isOpen == true) {
+            ScenePanel(
+                state = sceneState,
+                onPromptChanged = onScenePromptChanged,
+                onPlacementChanged = onScenePlacementChanged,
+                onComplexityChanged = onSceneComplexityChanged,
+                onGenerate = onGenerateScene,
+                onClose = onSceneClose,
+            )
+            HorizontalDivider()
+        }
         ScopeAndCannedPromptRow(
             scopeLabel = state.scopeLabel,
             hasSelection = state.pendingSelection != null,
@@ -372,6 +408,7 @@ private fun SheetContent(
             brushDesignerOpen = brushDesignState?.isOpen == true,
             restyleOpen = restyleState?.isOpen == true,
             drawWithMeOpen = drawWithMeState?.isOpen == true,
+            sceneOpen = sceneState?.isOpen == true,
             onCannedPrompt = onCannedPrompt,
             onIconQuickAction = onIconQuickAction,
             onClearScope = onClearScope,
@@ -381,6 +418,7 @@ private fun SheetContent(
             onOpenBrushDesigner = onOpenBrushDesigner,
             onOpenRestyle = onOpenRestyle,
             onOpenDrawWithMe = onOpenDrawWithMe,
+            onOpenScene = onOpenScene,
         )
         SheetFooter(
             inputText = state.inputText,
@@ -778,6 +816,7 @@ private fun ScopeAndCannedPromptRow(
     brushDesignerOpen: Boolean,
     restyleOpen: Boolean,
     drawWithMeOpen: Boolean,
+    sceneOpen: Boolean,
     onCannedPrompt: (CannedPrompt) -> Unit,
     onIconQuickAction: (IconQuickAction) -> Unit,
     onClearScope: () -> Unit,
@@ -787,6 +826,7 @@ private fun ScopeAndCannedPromptRow(
     onOpenBrushDesigner: () -> Unit,
     onOpenRestyle: () -> Unit,
     onOpenDrawWithMe: () -> Unit,
+    onOpenScene: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -894,6 +934,17 @@ private fun ScopeAndCannedPromptRow(
                     onClick = onOpenDrawWithMe,
                     enabled = !drawWithMeOpen,
                     label = { Text("Draw with me") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+            // Phase 8 — prompt-to-vector scene generation. Available for both
+            // notes and icons; the result stages as a normal previewable edit.
+            // Disabled while the panel is already open.
+            item(key = "make_scene") {
+                AssistChip(
+                    onClick = onOpenScene,
+                    enabled = !sceneOpen,
+                    label = { Text("Make a scene") },
                     colors = AssistChipDefaults.assistChipColors(),
                 )
             }
@@ -1625,6 +1676,126 @@ private val DRAW_WITH_ME_EXAMPLES = listOf(
     "a simple house",
     "a coffee cup",
     "a smiling face",
+)
+
+/**
+ * Phase 8 — "Make a scene" launcher. The user describes a small scene, picks
+ * where it lands (visible area / frame / fit content) and how busy it should be
+ * (simple / detailed), and taps Generate. The request routes through the
+ * scene-flagged GENERATE pipeline, so the multi-object grouped result previews
+ * as a normal staged edit on the canvas (accept/reject in the banner) — the
+ * panel itself never mutates the canvas. Scenes stay editable vectors, not
+ * raster images.
+ */
+@Composable
+private fun ScenePanel(
+    state: SceneUiState,
+    onPromptChanged: (String) -> Unit,
+    onPlacementChanged: (ScenePlacement) -> Unit,
+    onComplexityChanged: (SceneComplexity) -> Unit,
+    onGenerate: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Make a scene",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close scene panel",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Text(
+            text = "Describe a small scene. The AI draws it as several grouped, editable " +
+                "vector objects you preview on the canvas before keeping.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = state.prompt,
+            onValueChange = onPromptChanged,
+            placeholder = { Text("e.g. a small campsite at night") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            maxLines = 2,
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        // Example scenes — one tap fills the field (doesn't fire).
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(SCENE_EXAMPLES, key = { it }) { example ->
+                AssistChip(
+                    onClick = { onPromptChanged(example) },
+                    label = { Text(example) },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Place in",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(ScenePlacement.entries.toList(), key = { it.name }) { placement ->
+                FilterChip(
+                    selected = state.placement == placement,
+                    onClick = { onPlacementChanged(placement) },
+                    label = { Text(placement.label, style = MaterialTheme.typography.labelMedium) },
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Detail",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SceneComplexity.entries.forEach { complexity ->
+                FilterChip(
+                    selected = state.complexity == complexity,
+                    onClick = { onComplexityChanged(complexity) },
+                    label = { Text(complexity.label, style = MaterialTheme.typography.labelMedium) },
+                )
+            }
+        }
+        state.error?.let { err ->
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = err,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Button(
+            onClick = onGenerate,
+            enabled = state.prompt.isNotBlank(),
+        ) { Text("Generate scene") }
+    }
+}
+
+/** Example scenes surfaced as one-tap chips in the scene launcher (Phase 8). */
+private val SCENE_EXAMPLES = listOf(
+    "a small campsite at night",
+    "a sunny park bench",
+    "a city skyline",
+    "a bowl of fruit",
 )
 
 @Composable

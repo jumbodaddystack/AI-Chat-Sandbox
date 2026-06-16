@@ -99,6 +99,11 @@ sealed interface EditOp {
      *
      * Authoring ops carry no [ids]; the applier inserts them into [ids]-free
      * `added` output. Empty subpaths are rejected by the parser.
+     *
+     * Phase 8 (scene generation) — [group] is an optional model-supplied label
+     * (`"group": "tent"`). When several authoring ops share the same label the
+     * applier stamps them with one shared [NoteItem.groupId] so the scene's
+     * parts select / move together. Null = ungrouped (the single-icon path).
      */
     data class AddPath(
         val subpaths: List<SubpathSpec>,
@@ -106,6 +111,7 @@ sealed interface EditOp {
         val fillArgb: Int?,
         val width: Float?,
         val evenOdd: Boolean = false,
+        val group: String? = null,
     ) : EditOp {
         override val ids: List<String> get() = emptyList()
     }
@@ -123,6 +129,8 @@ sealed interface EditOp {
         val colorArgb: Int?,
         val fillArgb: Int?,
         val width: Float?,
+        /** Phase 8 — optional scene group label; see [AddPath.group]. */
+        val group: String? = null,
     ) : EditOp {
         override val ids: List<String> get() = emptyList()
     }
@@ -139,10 +147,12 @@ sealed interface EditOp {
     ) : EditOp
 
     /**
-     * `{ "op": "group", "ids": [...] }` — placeholder for Phase 8 frame
-     * grouping. Parsed today, rejected by the applier with a friendly
-     * "grouping isn't supported yet" until 8.1 lands. Kept in the protocol so
-     * the model doesn't have to relearn it when Phase 8 ships.
+     * `{ "op": "group", "ids": [...] }` — group *existing* items by id. Still
+     * rejected by the applier (regrouping already-placed geometry is a future
+     * item). Phase 8 scene generation groups *authored* geometry instead, via
+     * the per-op [AddPath.group] / [AddShape.group] label, which the applier
+     * resolves to a shared [NoteItem.groupId] — so the model never needs the
+     * id-referencing `group` op for a freshly generated scene.
      */
     data class Group(
         override val ids: List<String>,

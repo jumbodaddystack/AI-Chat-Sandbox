@@ -32,6 +32,9 @@ import com.aichat.sandbox.data.notes.BrushSpec
 import com.aichat.sandbox.data.notes.CannedEditAction
 import com.aichat.sandbox.data.notes.EditOp
 import com.aichat.sandbox.data.notes.EditOpsDoc
+import com.aichat.sandbox.data.notes.SceneComplexity
+import com.aichat.sandbox.data.notes.SceneGen
+import com.aichat.sandbox.data.notes.ScenePlacement
 import com.aichat.sandbox.data.notes.HandwritingOcr
 import com.aichat.sandbox.data.notes.aiRecolorPrompt
 import com.aichat.sandbox.data.notes.HandwritingOcr.OcrModelState
@@ -379,6 +382,25 @@ class NoteEditorViewModel @Inject constructor(
     private val _restyleState = MutableStateFlow<RestyleUiState?>(null)
     val restyleState: StateFlow<RestyleUiState?> = _restyleState.asStateFlow()
     private var restyleJob: Job? = null
+
+    // Phase 8 — prompt-to-vector scene launcher. Configures a scene generation
+    // (prompt + placement target + complexity) that routes through the
+    // scene-flagged GENERATE path and stages a grouped multi-object result as a
+    // previewable PendingEdit.
+    private val _sceneState = MutableStateFlow<SceneUiState?>(null)
+    val sceneState: StateFlow<SceneUiState?> = _sceneState.asStateFlow()
+
+    // Phase 8 — latest visible world rect `[minX, minY, maxX, maxY]` pushed from
+    // the editor screen (which owns the ViewportController + canvas px size), so
+    // scene placement can target the "Visible area" without the VM knowing
+    // screen geometry. Null until the screen reports one.
+    private var visibleWorldRect: FloatArray? = null
+
+    /** Screen → VM bridge: stash the live visible world rect for scene placement. */
+    fun setVisibleWorldRect(minX: Float, minY: Float, maxX: Float, maxY: Float) {
+        if (maxX <= minX || maxY <= minY) return
+        visibleWorldRect = floatArrayOf(minX, minY, maxX, maxY)
+    }
 
     /**
      * Models offered by the in-sheet model picker (sub-phase 2.8). Mirrors
@@ -4365,6 +4387,9 @@ class NoteEditorViewModel @Inject constructor(
         selection: List<NoteItem>? = null,
         generate: Boolean = false,
         refine: Boolean = false,
+        scene: Boolean = false,
+        sceneComplexity: SceneComplexity = SceneComplexity.DEFAULT,
+        sceneFit: FloatArray? = null,
     ) {
         val snapshot = _aiSheetState.value
         if (snapshot.isStreaming) return
@@ -4398,6 +4423,9 @@ class NoteEditorViewModel @Inject constructor(
                 editDescription = description,
                 generate = generate,
                 refine = refine,
+                scene = scene,
+                sceneComplexity = sceneComplexity,
+                sceneFit = sceneFit,
             )
         }
     }
@@ -4416,6 +4444,90 @@ class NoteEditorViewModel @Inject constructor(
             generate = true,
         )
     }
+
+    // ── Prompt-to-vector scene generation (Phase 8) ──────────────────────────
+
+    /** Open the "Make a scene" launcher panel with default placement / density. */
+    fun openScene() {
+        _sceneState.value = SceneUiState(isOpen = true)
+    }
+
+    /** Update the scene prompt (clearing any stale validation error). */
+    fun setScenePrompt(text: String) {
+        _sceneState.update { it?.copy(prompt = text, error = null) }
+    }
+
+    /** Choose where the generated scene lands (viewport / frame / content). */
+    fun setScenePlacement(placement: ScenePlacement) {
+        _sceneState.update { it?.copy(placement = placement) }
+    }
+
+    /** Choose the scene density (simple / detailed). */
+    fun setSceneComplexity(complexity: SceneComplexity) {
+        _sceneState.update { it?.copy(complexity = complexity) }
+    }
+
+    /**
+     * Phase 8 — fire a scene generation from the launcher. Validates a non-blank
+     * prompt, resolves the placement rect (so the grouped result is bounded and
+     * lands on-canvas), then routes through the scene-flagged GENERATE → staged
+     * `PendingEdit` pipeline and closes the launcher. Progress lives in the
+     * conversation turn + the on-canvas diff preview (mirroring "Draw with me").
+     */
+    fun submitScene() {
+        val state = _sceneState.value ?: return
+        if (_aiSheetState.value.isStreaming) return
+        val prompt = state.prompt.trim()
+        if (prompt.isBlank()) {
+            _sceneState.update { it?.copy(error = "Describe the scene you'd like to generate first.") }
+            return
+        }
+        val fit = sceneFitTarget(state.placement)
+        submitAiEdit(
+            description = "AI Scene",
+            userPrompt = prompt,
+            selection = null,
+            generate = true,
+            scene = true,
+            sceneComplexity = state.complexity,
+            sceneFit = fit,
+        )
+        _sceneState.value = null
+    }
+
+    /** Close the scene launcher without generating anything. */
+    fun dismissScene() {
+        _sceneState.value = null
+    }
+
+    /**
+     * Phase 8 — resolve a [ScenePlacement] to an inset world-space target rect
+     * the authored scene is fit into. Each choice falls back through the others
+     * (and finally to a default box around the origin) so a scene is always
+     * given a bounded, on-canvas home even on an empty note with no viewport
+     * reported yet.
+     */
+    private fun sceneFitTarget(placement: ScenePlacement): FloatArray? {
+        val frame = currentFrameBounds()
+        val content = NoteRasterizer.computeBounds(items.toList())
+        val viewport = visibleWorldRect
+        val primary = when (placement) {
+            ScenePlacement.FRAME -> frame ?: viewport ?: content
+            ScenePlacement.CONTENT -> content ?: frame ?: viewport
+            ScenePlacement.VIEWPORT -> viewport ?: frame ?: content
+        }
+        val rect = primary ?: defaultSceneRect()
+        return SceneGen.insetRect(rect)
+    }
+
+    /**
+     * Fallback scene target when nothing else is known: a square box of the
+     * scene artboard size anchored at the origin. Keeps generation usable on a
+     * brand-new blank note before any viewport / frame has been reported.
+     */
+    private fun defaultSceneRect(): FloatArray = floatArrayOf(
+        0f, 0f, SceneGen.SCENE_ARTBOARD_WORLD, SceneGen.SCENE_ARTBOARD_WORLD,
+    )
 
     /**
      * Phase 17.5 #2 — "Make real" / annotate-and-iterate refine. Rasterizes
@@ -4642,19 +4754,27 @@ class NoteEditorViewModel @Inject constructor(
         editDescription: String = "AI edit",
         generate: Boolean = false,
         refine: Boolean = false,
+        scene: Boolean = false,
+        sceneComplexity: SceneComplexity = SceneComplexity.DEFAULT,
+        sceneFit: FloatArray? = null,
     ) {
         val modelId = _aiSheetState.value.activeModelId
             .ifEmpty { preferencesManager.defaultModel.first() }
         val creds = preferencesManager.credentialsFor(modelId)
-        // 17.5 #1: from-scratch generation pulls gallery style references.
+        // 17.5 #1: from-scratch generation pulls gallery style references (but a
+        // multi-object scene doesn't — it has its own scene system message).
         // 17.5 #2: placement of a refine's cleaned vector. An icon is a
         // *clipped* artboard — "beside the sketch" lands off-canvas and
         // invisible — so we fit the result onto the sketch's own footprint and
         // replace it (Undo restores the sketch to compare). A regular note has
         // an infinite canvas, so the side-by-side comparison still works.
-        val styleReferences = if (generate && !refine) loadStyleReferenceIcons() else emptyList()
+        val styleReferences = if (generate && !refine && !scene) loadStyleReferenceIcons() else emptyList()
         val isIcon = _note.value.isIcon
+        // Phase 8 — a scene always fits into the chosen placement rect so its
+        // grouped geometry is bounded and lands on-canvas; otherwise fall back
+        // to the refine placement logic.
         val authoredFit = when {
+            scene -> sceneFit
             !refine -> null
             isIcon -> refineInPlaceTarget(selection)
             else -> refinePlacementTarget(selection)
@@ -4678,6 +4798,8 @@ class NoteEditorViewModel @Inject constructor(
             generate = generate,
             styleReferences = styleReferences,
             refine = refine,
+            scene = scene,
+            sceneComplexity = sceneComplexity,
         )
         try {
             aiService.ask(request).collect { chunk ->

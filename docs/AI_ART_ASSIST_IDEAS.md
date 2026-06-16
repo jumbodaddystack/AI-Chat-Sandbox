@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **Phases 1–7 implemented and verified as of 2026-06-16**.
+Status: **Phases 1–8 implemented and verified as of 2026-06-16**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -80,9 +80,18 @@ sessions.
   copy spells out the difference. (Previously: local `StyleTransfer` copied style
   and GENERATE used style-reference icons, but there was no user-facing
   "restyle this selection as flat / line-art / isometric" flow.)
-- **Prompt-to-vector scene generation** is partial. The app can generate a single
-  icon/vector from a prompt, but not a small multi-object scene with grouped,
-  relatively placed elements and a layout plan.
+- **Prompt-to-vector scene generation** shipped in Phase 8. A "Make a scene"
+  panel in the AI sheet broadens the single-icon GENERATE path into a compact,
+  editable multi-object scene: a prompt routes through the scene-flagged GENERATE
+  path (`AskRequest.scene` + `EditOpsParser.SCENE_GENERATE_SYSTEM_MESSAGE`), the
+  model authors several grouped `add_path` / `add_shape` objects (each op tagged
+  with a `"group"` label), and `EditPreviewController` stamps a shared
+  `NoteItem.groupId` per object so the scene's parts select/move together. The
+  whole group is *fit* into a chosen placement rect (visible area / frame / fit
+  content) so it always lands on-canvas, the object count is capped per
+  complexity (`SceneGen.capSceneAddOps`), and the result stages through the
+  shared `PendingEdit` / `AiEditDiffOverlay` accept/reject surface — it stays an
+  editable vector, never a raster.
 - **Conversational editing context** remains limited. The AI sheet presents a
   conversation and lets the user re-scope subsequent turns, but edit requests are
   still effectively one-shot unless explicit history packing is added.
@@ -605,21 +614,68 @@ lands inside the current viewport or selected frame.
 
 ### Tasks
 
-- [ ] Add a `generateScene` request variant or prompt flag over existing EDIT +
+- [x] Add a `generateScene` request variant or prompt flag over existing EDIT +
   `generate=true` plumbing.
-- [ ] Extend generation prompt constraints for multi-object layout, grouping,
+  - A scene is an EDIT + `generate=true` request with the new `AskRequest.scene`
+    flag (+ `sceneComplexity`). `NoteAiService.collectGenerate` branches on it
+    (never combined with `refine`): scene → `SCENE_GENERATE_SYSTEM_MESSAGE` +
+    `buildScenePromptBody`. The ViewModel's `submitScene()` routes through the
+    existing `submitAiEdit(... generate = true, scene = true, sceneFit = …)` →
+    `runStream` → staged-`PendingEdit` path, so the whole preview/diff/accept
+    pipeline is reused unchanged.
+- [x] Extend generation prompt constraints for multi-object layout, grouping,
   relative placement, and layer names.
-- [ ] Ensure generated object ids map cleanly to groups/layers in the edit-op
+  - `EditOpsParser.SCENE_GENERATE_SYSTEM_MESSAGE` asks for a small set of
+    distinct objects with believable relative placement on a square artboard,
+    and requires **every** authoring op to carry a `"group"` label naming the
+    object it belongs to (parts of one object share a group; "layer" is accepted
+    as an alias). `buildScenePromptBody` states the artboard size, the per-
+    complexity object cap, and the simple/detailed hint.
+- [x] Ensure generated object ids map cleanly to groups/layers in the edit-op
   parser and preview simulation.
-- [ ] Add placement UI: current viewport, selected frame, or icon bounds.
-- [ ] Add optional “simple / detailed” complexity chips.
-- [ ] Add tests for grouped add ops, placement transforms, and scene-size limits.
+  - `EditOp.AddPath` / `EditOp.AddShape` gained an optional `group` field;
+    `EditOpsParser.parseGroupLabel` reads `"group"`/`"layer"`. In
+    `EditPreviewController.simulate`, each distinct authored group label is
+    mapped to one shared `NoteItem.groupId` (a generated UUID) and stamped on the
+    object's parts *before* placement, so they survive the fit transform and
+    select/move together on the flat-group model (per the product decision —
+    real named-layer creation inside a staged edit is out of scope).
+- [x] Add placement UI: current viewport, selected frame, or icon bounds.
+  - A `ScenePlacement` enum (Visible area / Frame / Fit content) with chips in
+    `ScenePanel`. `NoteEditorViewModel.sceneFitTarget` resolves the choice to an
+    inset world rect (each choice falling back through the others, then a default
+    box), passed as `authoredFit` so the whole scene is uniformly fit into it.
+    The screen reports the live visible world rect via a new
+    `setVisibleWorldRect` bridge (the VM doesn't own the `ViewportController`).
+- [x] Add optional “simple / detailed” complexity chips.
+  - A `SceneComplexity` enum (SIMPLE = ≤6 objects, DETAILED = ≤12) with chips in
+    `ScenePanel`; it drives both a one-line prompt hint and the per-request
+    object cap.
+- [x] Add tests for grouped add ops, placement transforms, and scene-size limits.
+  - `SceneGenTest` (cap trims excess adds into `rejected`, ignores non-add ops,
+    no-op fast path, inset maths, complexity bounds); `EditOpsParserTest`
+    (group/layer label parsing, blank→ungrouped, scene system message shape);
+    `EditPreviewControllerTest` (shared groupId per object, ungrouped→null, and
+    groups surviving `authoredFit` placement while landing inside the target
+    rect); `NoteAiServiceTest` (scene mode uses the scene system message + scene
+    prompt body and caps objects). All green.
 
 ### Acceptance criteria
 
-- Scenes remain editable vectors, not raster images.
-- Generated geometry is bounded and does not appear far off-canvas.
-- The preview clearly shows all added elements before acceptance.
+- [x] Scenes remain editable vectors, not raster images.
+  - The model authors `add_path` / `add_shape` ops only; they become normal
+    `kind=path` / `kind=shape` `NoteItem`s through the same builders as single-
+    icon generation — there is no raster output anywhere in the scene path.
+- [x] Generated geometry is bounded and does not appear far off-canvas.
+  - A scene always passes an `authoredFit` target (the inset placement rect), so
+    `EditPreviewController.placeAuthored` uniformly scales/centres the union of
+    all objects into it regardless of the model's raw coordinates; the per-
+    complexity object cap keeps the scene compact.
+- [x] The preview clearly shows all added elements before acceptance.
+  - The grouped result stages as a `PendingEdit` and renders through the shared
+    `AiEditDiffOverlay` + banner (every object in the green "added" bucket);
+    nothing lands until an explicit Accept on the canvas, after which the whole
+    scene is auto-selected.
 
 ---
 

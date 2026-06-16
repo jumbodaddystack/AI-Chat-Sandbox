@@ -6,6 +6,8 @@ import com.aichat.sandbox.data.notes.CompositionCritique
 import com.aichat.sandbox.data.notes.PaletteScheme
 import com.aichat.sandbox.data.notes.PaletteSource
 import com.aichat.sandbox.data.notes.PaletteSuggestion
+import com.aichat.sandbox.data.notes.SceneComplexity
+import com.aichat.sandbox.data.notes.ScenePlacement
 
 /**
  * In-memory state for the editor's AI side sheet (sub-phase 2.6 of
@@ -198,6 +200,24 @@ data class BrushDesignUiState(
 data class DrawWithMeUiState(
     val isOpen: Boolean = false,
     val prompt: String = "",
+    val error: String? = null,
+)
+
+/**
+ * Phase 8 — state for the prompt-to-vector **scene** launcher panel hosted
+ * inside the AI side sheet. Opened from the "Make a scene" chip. The panel only
+ * *configures and starts* a scene generation: the user describes the scene,
+ * picks a [placement] target and a [complexity], and the request routes through
+ * the unchanged GENERATE → staged-preview pipeline (scene-flagged) so the
+ * multi-object result previews as a normal staged edit before it lands. Progress
+ * lives in the conversation turn + the on-canvas diff, so the launcher closes on
+ * submit (mirroring "Draw with me").
+ */
+data class SceneUiState(
+    val isOpen: Boolean = false,
+    val prompt: String = "",
+    val placement: ScenePlacement = ScenePlacement.DEFAULT,
+    val complexity: SceneComplexity = SceneComplexity.DEFAULT,
     val error: String? = null,
 )
 

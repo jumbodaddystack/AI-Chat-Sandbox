@@ -438,6 +438,44 @@ class NoteAiServiceTest {
 
     // ---- helpers ----
 
+    @Test
+    fun sceneModeUsesSceneSystemMessageAndCapsObjects() = runTest {
+        // The model returns more objects than the SIMPLE cap allows; the service
+        // must use the scene system message + scene prompt body and trim the
+        // extras into `rejected` so the staged scene stays compact.
+        val tooMany = buildString {
+            append("```edit-ops\n{ \"schema\": 1, \"summary\": \"campsite\", \"ops\": [")
+            for (i in 0 until 9) {
+                if (i > 0) append(",")
+                append("{ \"op\": \"add_shape\", \"group\": \"o$i\", \"shape\": ")
+                append("{ \"type\": \"rect\", \"x0\": $i, \"y0\": 0, \"x1\": ${i + 1}, \"y1\": 1 } }")
+            }
+            append("] }\n```")
+        }
+        val streamer = RecordingChatStreamer(flow = flowOf(StreamEvent.Delta(tooMany), StreamEvent.Complete(null)))
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer("unused"),
+            imageRenderer = FakeImageRenderer(ByteArray(4)),
+        )
+        val request = visionRequest(strokes = listOf(strokeItem())).copy(
+            userPrompt = "a small campsite at night",
+            mode = AskMode.EDIT,
+            generate = true,
+            scene = true,
+            sceneComplexity = SceneComplexity.SIMPLE,
+        )
+        val chunks = service.ask(request).toList()
+        val preview = chunks.filterIsInstance<AiChunk.EditPreview>().single()
+        // SIMPLE caps at 6 objects; the other 3 are rejected, not applied.
+        assertEquals(SceneComplexity.SIMPLE.maxObjects, preview.doc.ops.size)
+        assertTrue(preview.doc.rejected.size >= 3)
+        // Scene system message + scene prompt body were used.
+        assertEquals(EditOpsParser.SCENE_GENERATE_SYSTEM_MESSAGE, streamer.lastChat?.systemMessage)
+        assertTrue(streamer.lastMessages.single().content.contains("a small campsite at night"))
+        assertTrue(streamer.lastMessages.single().content.contains("scene"))
+    }
+
     private fun visionRequest(strokes: List<NoteItem>): AskRequest = AskRequest(
         note = sampleNote(),
         allItems = strokes,

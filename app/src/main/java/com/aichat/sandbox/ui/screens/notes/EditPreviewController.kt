@@ -100,6 +100,16 @@ object EditPreviewController {
         // 17.5 #1 — context for items the model authors from scratch.
         val authorNoteId = newItemNoteId ?: currentItems.firstOrNull()?.noteId ?: ""
         var nextAuthoredZ = (currentItems.maxOfOrNull { it.zIndex } ?: -1) + 1
+        // Phase 8 — scene group label → one shared groupId, so every authoring
+        // op carrying the same `"group"` is stamped with the same
+        // [NoteItem.groupId] and the scene's parts select / move together.
+        val authoredGroupIds = HashMap<String, String>()
+        fun groupTag(item: NoteItem, label: String?): NoteItem {
+            val key = label?.trim().orEmpty()
+            if (key.isEmpty()) return item
+            val gid = authoredGroupIds.getOrPut(key) { java.util.UUID.randomUUID().toString() }
+            return item.copy(groupId = gid)
+        }
 
         fun fetch(shortId: String): NoteItem? {
             val item = working[shortId] ?: byShortId[shortId] ?: return null
@@ -263,10 +273,10 @@ object EditPreviewController {
                         continue
                     }
                     nextAuthoredZ++
-                    authored += item
+                    authored += groupTag(item, op.group)
                 }
                 is EditOp.AddShape -> {
-                    authored += buildAddedShape(op, authorNoteId, nextAuthoredZ)
+                    authored += groupTag(buildAddedShape(op, authorNoteId, nextAuthoredZ), op.group)
                     nextAuthoredZ++
                 }
                 is EditOp.Group -> {
