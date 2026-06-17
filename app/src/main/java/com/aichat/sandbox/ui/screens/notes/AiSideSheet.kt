@@ -54,7 +54,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,6 +72,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.aichat.sandbox.data.notes.NoteMetadataSuggestion
 import com.aichat.sandbox.data.notes.PaletteScheme
 import com.aichat.sandbox.data.notes.PaletteSource
 import com.aichat.sandbox.data.notes.SceneComplexity
@@ -145,6 +151,13 @@ fun AiSideSheet(
     onSceneComplexityChanged: (SceneComplexity) -> Unit,
     onGenerateScene: () -> Unit,
     onSceneClose: () -> Unit,
+    metadataState: MetadataUiState?,
+    onOpenMetadata: () -> Unit,
+    onSuggestMetadata: () -> Unit,
+    onApplyMetadataTitle: (String) -> Unit,
+    onApplyMetadataTags: (List<String>) -> Unit,
+    onApplyMetadataDescription: (String) -> Unit,
+    onMetadataClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
@@ -242,6 +255,13 @@ fun AiSideSheet(
                     onSceneComplexityChanged = onSceneComplexityChanged,
                     onGenerateScene = onGenerateScene,
                     onSceneClose = onSceneClose,
+                    metadataState = metadataState,
+                    onOpenMetadata = onOpenMetadata,
+                    onSuggestMetadata = onSuggestMetadata,
+                    onApplyMetadataTitle = onApplyMetadataTitle,
+                    onApplyMetadataTags = onApplyMetadataTags,
+                    onApplyMetadataDescription = onApplyMetadataDescription,
+                    onMetadataClose = onMetadataClose,
                 )
             }
         }
@@ -302,6 +322,13 @@ private fun SheetContent(
     onSceneComplexityChanged: (SceneComplexity) -> Unit,
     onGenerateScene: () -> Unit,
     onSceneClose: () -> Unit,
+    metadataState: MetadataUiState?,
+    onOpenMetadata: () -> Unit,
+    onSuggestMetadata: () -> Unit,
+    onApplyMetadataTitle: (String) -> Unit,
+    onApplyMetadataTags: (List<String>) -> Unit,
+    onApplyMetadataDescription: (String) -> Unit,
+    onMetadataClose: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         SheetHeader(
@@ -396,6 +423,19 @@ private fun SheetContent(
             )
             HorizontalDivider()
         }
+        // Phase 9 — metadata & accessibility panel sits alongside the other
+        // art-assist panels, above the scope row, when open.
+        if (metadataState?.isOpen == true) {
+            MetadataPanel(
+                state = metadataState,
+                onSuggest = onSuggestMetadata,
+                onApplyTitle = onApplyMetadataTitle,
+                onApplyTags = onApplyMetadataTags,
+                onApplyDescription = onApplyMetadataDescription,
+                onClose = onMetadataClose,
+            )
+            HorizontalDivider()
+        }
         ScopeAndCannedPromptRow(
             scopeLabel = state.scopeLabel,
             hasSelection = state.pendingSelection != null,
@@ -409,6 +449,7 @@ private fun SheetContent(
             restyleOpen = restyleState?.isOpen == true,
             drawWithMeOpen = drawWithMeState?.isOpen == true,
             sceneOpen = sceneState?.isOpen == true,
+            metadataOpen = metadataState?.isOpen == true,
             onCannedPrompt = onCannedPrompt,
             onIconQuickAction = onIconQuickAction,
             onClearScope = onClearScope,
@@ -419,6 +460,7 @@ private fun SheetContent(
             onOpenRestyle = onOpenRestyle,
             onOpenDrawWithMe = onOpenDrawWithMe,
             onOpenScene = onOpenScene,
+            onOpenMetadata = onOpenMetadata,
         )
         SheetFooter(
             inputText = state.inputText,
@@ -791,6 +833,184 @@ private fun TypingIndicator() {
 }
 
 /**
+ * Phase 9 — metadata & accessibility panel ("Title & tags"). Surfaces an AI
+ * suggestion as editable fields the user accepts/edits/discards: a title field
+ * ("Use title"), toggleable tag chips ("Add tags"), and a description/alt-text
+ * field ("Save description"). Nothing here touches canvas geometry — applying a
+ * field writes only the note title, the tag set, or the export alt text. The
+ * editable fields re-seed whenever a fresh [MetadataUiState.suggestion] lands.
+ */
+@Composable
+private fun MetadataPanel(
+    state: MetadataUiState,
+    onSuggest: () -> Unit,
+    onApplyTitle: (String) -> Unit,
+    onApplyTags: (List<String>) -> Unit,
+    onApplyDescription: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    val suggestion = state.suggestion
+    var titleText by remember(suggestion) { mutableStateOf(suggestion?.title.orEmpty()) }
+    var descriptionText by remember(suggestion) { mutableStateOf(suggestion?.description.orEmpty()) }
+    // Selected tags default to every suggested tag not already on the note.
+    val selectedTags: SnapshotStateList<String> = remember(suggestion) {
+        mutableStateListOf<String>().apply {
+            suggestion?.tags?.forEach { if (it !in state.currentTags) add(it) }
+        }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 360.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Title & tags",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close title & tags panel",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        if (suggestion == null) {
+            Text(
+                text = "Suggest a title, tags, and a screen-reader description for this drawing. " +
+                    "Nothing is applied until you tap — review and edit first.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (state.loading) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Thinking…", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    AssistChip(
+                        onClick = onSuggest,
+                        label = { Text("Suggest with AI") },
+                        colors = AssistChipDefaults.assistChipColors(),
+                    )
+                }
+            }
+        } else {
+            // Title.
+            Spacer(modifier = Modifier.height(4.dp))
+            OutlinedTextField(
+                value = titleText,
+                onValueChange = { titleText = it.take(NoteMetadataSuggestion.MAX_TITLE_LENGTH) },
+                label = { Text("Title") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onApplyTitle(titleText) }) { Text("Use title") }
+                if (state.appliedTitle) {
+                    AppliedMark()
+                }
+            }
+            // Tags.
+            if (suggestion.tags.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Tags", style = MaterialTheme.typography.labelMedium)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(suggestion.tags, key = { it }) { tag ->
+                        val already = tag in state.currentTags
+                        FilterChip(
+                            selected = already || tag in selectedTags,
+                            onClick = {
+                                if (already) return@FilterChip
+                                if (tag in selectedTags) selectedTags.remove(tag)
+                                else selectedTags.add(tag)
+                            },
+                            enabled = !already,
+                            label = { Text(tag, style = MaterialTheme.typography.labelMedium) },
+                            colors = FilterChipDefaults.filterChipColors(),
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = { onApplyTags(selectedTags.toList()) },
+                        enabled = selectedTags.isNotEmpty(),
+                    ) { Text("Add tags") }
+                    if (state.appliedTags) {
+                        AppliedMark()
+                    }
+                }
+            }
+            // Description / alt text.
+            Spacer(modifier = Modifier.height(4.dp))
+            OutlinedTextField(
+                value = descriptionText,
+                onValueChange = {
+                    descriptionText = it.take(NoteMetadataSuggestion.MAX_DESCRIPTION_LENGTH)
+                },
+                label = { Text("Description (alt text)") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onApplyDescription(descriptionText) }) {
+                    Text("Save description")
+                }
+                if (state.appliedDescription) {
+                    AppliedMark()
+                }
+            }
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = "The description is embedded in PNG and SVG exports as alt text for " +
+                    "screen readers (optional — clear it to omit).",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (state.loading) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    AssistChip(
+                        onClick = onSuggest,
+                        label = { Text("Re-suggest") },
+                        colors = AssistChipDefaults.assistChipColors(),
+                    )
+                }
+            }
+        }
+        state.error?.let { err ->
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = err,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+/** Small "applied" confirmation marker shared by the metadata panel's actions. */
+@Composable
+private fun AppliedMark() {
+    Icon(
+        imageVector = Icons.Filled.Check,
+        contentDescription = "Applied",
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(16.dp),
+    )
+}
+
+/**
  * Scope chip + canned-prompt row (sub-phase 2.7). Sits above the input
  * field. The scope chip ("Whole note" or "3 strokes selected") tap-clears
  * the frozen selection so the user can pivot mid-conversation. Canned
@@ -817,6 +1037,7 @@ private fun ScopeAndCannedPromptRow(
     restyleOpen: Boolean,
     drawWithMeOpen: Boolean,
     sceneOpen: Boolean,
+    metadataOpen: Boolean,
     onCannedPrompt: (CannedPrompt) -> Unit,
     onIconQuickAction: (IconQuickAction) -> Unit,
     onClearScope: () -> Unit,
@@ -827,6 +1048,7 @@ private fun ScopeAndCannedPromptRow(
     onOpenRestyle: () -> Unit,
     onOpenDrawWithMe: () -> Unit,
     onOpenScene: () -> Unit,
+    onOpenMetadata: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -945,6 +1167,17 @@ private fun ScopeAndCannedPromptRow(
                     onClick = onOpenScene,
                     enabled = !sceneOpen,
                     label = { Text("Make a scene") },
+                    colors = AssistChipDefaults.assistChipColors(),
+                )
+            }
+            // Phase 9 — metadata & accessibility helper (title / tags / alt
+            // text). Available for both notes and icons; suggestions never
+            // touch the canvas. Disabled while the panel is already open.
+            item(key = "metadata") {
+                AssistChip(
+                    onClick = onOpenMetadata,
+                    enabled = !metadataOpen,
+                    label = { Text("Title & tags") },
                     colors = AssistChipDefaults.assistChipColors(),
                 )
             }

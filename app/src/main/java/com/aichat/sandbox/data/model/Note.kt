@@ -40,4 +40,10 @@ data class Note(
     val viewportOffsetX: Float? = null,
     val viewportOffsetY: Float? = null,
     val viewportScale: Float? = null,
+    // Phase 9 — accessibility description / alt text for exports. Optional and
+    // null by default; when present it is embedded as the SVG `<desc>` element
+    // and a PNG `tEXt` "Description" chunk so screen readers can describe the
+    // exported image. Suggested by the AI metadata assistant but always
+    // user-editable. Never affects canvas geometry.
+    val altText: String? = null,
 )

@@ -46,6 +46,8 @@ class NoteExporter @Inject constructor(
         marginWorld: Float = NoteRasterizer.MARGIN_WORLD,
         /** Sub-phase 8.1 — if non-null, bound the render to this frame's world rect. */
         frameBounds: FloatArray? = null,
+        /** Phase 9 — embed [Note.altText] as a PNG `tEXt` "Description" chunk. */
+        embedMetadata: Boolean = true,
     ): Uri = withContext(Dispatchers.IO) {
         val bitmap = if (frameBounds != null) {
             NoteRasterizer.renderForFrame(
@@ -70,10 +72,21 @@ class NoteExporter @Inject constructor(
         val outName = "${sanitizeBaseName(note.title)}-${System.currentTimeMillis()}.png"
         val finalFile = File(dir, outName)
         val tmpFile = File(dir, "$outName.tmp")
+        // Phase 9 — embed the optional accessibility description as a PNG `tEXt`
+        // chunk. No-op when disabled or the note has no alt text, so default-on
+        // changes nothing for un-described exports.
+        val altText = note.altText?.trim().orEmpty()
         try {
-            FileOutputStream(tmpFile).use { os ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY_IGNORED, os)
+            val pngBytes = java.io.ByteArrayOutputStream(bitmap.byteCount.coerceAtLeast(1024)).use { buf ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY_IGNORED, buf)
+                buf.toByteArray()
             }
+            val finalBytes = if (embedMetadata && altText.isNotEmpty()) {
+                PngMetadata.withDescription(pngBytes, altText)
+            } else {
+                pngBytes
+            }
+            FileOutputStream(tmpFile).use { os -> os.write(finalBytes) }
             if (finalFile.exists()) finalFile.delete()
             check(tmpFile.renameTo(finalFile)) {
                 "NoteExporter: failed to rename ${tmpFile.name} → ${finalFile.name}"

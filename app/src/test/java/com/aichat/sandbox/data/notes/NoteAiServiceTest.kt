@@ -436,6 +436,64 @@ class NoteAiServiceTest {
     // `editModeMalformedReplyEmitsError`). The parse-failure behaviour itself is
     // covered headlessly by `BrushSpecParserTest.emptyOrJsonlessReplyFails`.
 
+    // ---- Phase 9: SUGGEST_METADATA mode ----
+
+    @Test
+    fun metadataModeEmitsValidatedMetadataResult() = runTest {
+        val streamer = RecordingChatStreamer(
+            flow = flowOf(
+                StreamEvent.Delta("```json\n{ \"schema\": 1, "),
+                StreamEvent.Delta("\"title\": \"Settings gear\", "),
+                StreamEvent.Delta("\"tags\": [\"settings\", \"gear\"], "),
+                StreamEvent.Delta("\"description\": \"A grey gear icon.\" }\n```"),
+                StreamEvent.Complete(Usage(promptTokens = 2, completionTokens = 3, totalTokens = 5)),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer("unused"),
+            imageRenderer = FakeImageRenderer(ByteArray(4)),
+        )
+
+        val chunks = service.ask(
+            visionRequest(strokes = listOf(strokeItem())).copy(mode = AskMode.SUGGEST_METADATA)
+        ).toList()
+
+        val result = chunks.filterIsInstance<AiChunk.MetadataResult>().single()
+        assertEquals("Settings gear", result.suggestion.title)
+        assertEquals(listOf("settings", "gear"), result.suggestion.tags)
+        assertEquals("A grey gear icon.", result.suggestion.description)
+        assertEquals(5, result.usage?.totalTokens)
+        // Uses the metadata system message + a vision turn (image attached).
+        assertEquals(MetadataParser.SYSTEM_MESSAGE, streamer.lastChat!!.systemMessage)
+        assertEquals("multimodal", streamer.lastMessages.single().contentType)
+    }
+
+    @Test
+    fun metadataModeNonVisionInlinesOcrText() = runTest {
+        val streamer = RecordingChatStreamer(
+            flow = flowOf(
+                StreamEvent.Delta("```json\n{ \"title\": \"Shopping list\", \"tags\": [\"list\"] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer("milk eggs bread"),
+            imageRenderer = ExplodingImageRenderer, // non-vision must not rasterize
+        )
+
+        val chunks = service.ask(
+            nonVisionRequest(strokes = listOf(strokeItem()), cachedOcrText = null)
+                .copy(mode = AskMode.SUGGEST_METADATA)
+        ).toList()
+
+        assertTrue(chunks.any { it is AiChunk.MetadataResult })
+        val sent = streamer.lastMessages.single()
+        assertEquals("text", sent.contentType)
+        assertTrue("OCR text should be inlined: ${sent.content}", sent.content.contains("milk eggs bread"))
+    }
+
     // ---- helpers ----
 
     @Test

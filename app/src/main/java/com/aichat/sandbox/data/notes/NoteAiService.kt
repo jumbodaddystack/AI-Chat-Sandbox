@@ -67,6 +67,10 @@ class NoteAiService @Inject constructor(
             collectRestyle(request, caps.supportsVision)
             return@flow
         }
+        if (request.mode == AskMode.SUGGEST_METADATA) {
+            collectMetadata(request, caps.supportsVision)
+            return@flow
+        }
         if (request.mode == AskMode.EDIT) {
             if (request.generate) {
                 collectGenerate(request, caps.supportsVision)
@@ -410,6 +414,126 @@ class NoteAiService @Inject constructor(
         }
         append("\n\n")
         append("Here is the vector JSON of the in-scope items (reference items by `id`):\n")
+        append("```json\n")
+        append(vectorJson)
+        append("\n```")
+    }
+
+    /**
+     * Phase 9 — **metadata & accessibility** dispatcher. Serializes the in-scope
+     * geometry as [VectorCanvasJson], attaches the rasterized preview for a
+     * vision model (or OCR text otherwise), buffers the reply, validates it with
+     * [MetadataParser], and emits a single [AiChunk.MetadataResult]. Non-mutating
+     * — the title / tags / description are surfaced as editable suggestions and
+     * applied (if at all) only to the note row, the tag table, and export alt
+     * text; canvas geometry is never touched.
+     */
+    private suspend fun FlowCollector<AiChunk>.collectMetadata(
+        request: AskRequest,
+        supportsVision: Boolean,
+    ) {
+        val serialized = VectorCanvasJson.serialize(
+            items = request.selection ?: request.allItems,
+            bounds = null,
+            layers = request.layers,
+        )
+        val chat = Chat(
+            id = SYNTHETIC_CHAT_ID,
+            title = "Metadata",
+            model = request.modelId,
+            systemMessage = MetadataParser.SYSTEM_MESSAGE,
+        )
+        val items = request.selection ?: request.allItems
+        // OCR transcription helps a non-vision model title/tag a handwritten
+        // note; a vision model reads the image directly.
+        val ocrText = if (supportsVision) null
+            else resolveOcrText(request).takeIf { it.isNotBlank() }
+        val promptBody = buildMetadataPromptBody(serialized.json, ocrText)
+        val userMessage = if (supportsVision && items.isNotEmpty()) {
+            withContext(Dispatchers.Default) {
+                val pngBytes = try {
+                    imageRenderer.renderToPng(
+                        items = items,
+                        backgroundStyle = request.note.backgroundStyle,
+                        maxEdgePx = MAX_EDGE_PX,
+                    )
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Failed to rasterize note ${request.note.id} for metadata", t)
+                    null
+                }
+                if (pngBytes == null) {
+                    textMessage(promptBody)
+                } else {
+                    val dataUri = "data:image/png;base64,${Base64.getEncoder().encodeToString(pngBytes)}"
+                    val metadata = gson.toJson(
+                        ImageMetadata(images = listOf(ImageAttachment(dataUri = dataUri)))
+                    )
+                    Message(
+                        chatId = SYNTHETIC_CHAT_ID,
+                        role = MessageRole.USER.value,
+                        content = promptBody,
+                        contentType = "multimodal",
+                        metadata = metadata,
+                    )
+                }
+            }
+        } else {
+            textMessage(promptBody)
+        }
+        val upstream = chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = chat,
+            messages = listOf(userMessage),
+        )
+        val buffer = StringBuilder()
+        var lastUsage: com.aichat.sandbox.data.model.Usage? = null
+        var errored = false
+        upstream.collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> buffer.append(event.content)
+                is StreamEvent.Complete -> { lastUsage = event.usage }
+                is StreamEvent.Error -> {
+                    errored = true
+                    emit(AiChunk.Error(event.message))
+                }
+                is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
+            }
+        }
+        if (errored) {
+            aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "stream error")
+            return
+        }
+        MetadataParser.parse(buffer.toString()).fold(
+            onSuccess = { suggestion ->
+                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "metadata parsed")
+                emit(AiChunk.MetadataResult(suggestion = suggestion, usage = lastUsage))
+            },
+            onFailure = { t ->
+                Log.w(TAG, "metadata parse failed: ${t.message}")
+                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
+            },
+        )
+    }
+
+    /**
+     * Build the metadata prompt body. Exposed `internal` so a unit test can pin
+     * the wire format. Any OCR transcription leads (non-vision branch only), then
+     * the canvas JSON so the model can read the drawing's structure.
+     */
+    internal fun buildMetadataPromptBody(
+        vectorJson: String,
+        ocrText: String?,
+    ): String = buildString {
+        if (!ocrText.isNullOrBlank()) {
+            append("Transcribed note (may have OCR errors):\n")
+            append(ocrText)
+            append("\n\n")
+        }
+        append("Suggest a title, tags, and a short description for this drawing.")
+        append("\n\n")
+        append("Here is the vector JSON of the in-scope items:\n")
         append("```json\n")
         append(vectorJson)
         append("\n```")

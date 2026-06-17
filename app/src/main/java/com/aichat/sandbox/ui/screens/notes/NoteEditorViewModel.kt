@@ -41,6 +41,7 @@ import com.aichat.sandbox.data.notes.HandwritingOcr.OcrModelState
 import com.aichat.sandbox.data.notes.NoteAiService
 import com.aichat.sandbox.data.notes.NoteExporter
 import com.aichat.sandbox.data.notes.NoteImageStore
+import com.aichat.sandbox.data.notes.NoteMetadataSuggestion
 import com.aichat.sandbox.data.notes.NoteSvgExporter
 import com.aichat.sandbox.data.notes.ColorHarmony
 import com.aichat.sandbox.data.notes.PaletteRecolor
@@ -382,6 +383,15 @@ class NoteEditorViewModel @Inject constructor(
     private val _restyleState = MutableStateFlow<RestyleUiState?>(null)
     val restyleState: StateFlow<RestyleUiState?> = _restyleState.asStateFlow()
     private var restyleJob: Job? = null
+
+    // Phase 9 — metadata & accessibility panel. Null when closed. A metadata
+    // suggestion always needs the model, so the panel opens (optionally
+    // auto-suggesting) and fills editable title/tags/description fields once the
+    // reply lands. Applying a field writes only the note title, the note_tags
+    // table, or the note's export alt text — never canvas geometry.
+    private val _metadataState = MutableStateFlow<MetadataUiState?>(null)
+    val metadataState: StateFlow<MetadataUiState?> = _metadataState.asStateFlow()
+    private var metadataJob: Job? = null
 
     // Phase 8 — prompt-to-vector scene launcher. Configures a scene generation
     // (prompt + placement target + complexity) that routes through the
@@ -3523,6 +3533,7 @@ class NoteEditorViewModel @Inject constructor(
         dismissCritique()
         dismissBrushDesigner()
         dismissRestyle()
+        dismissMetadata()
     }
 
     // ── Named-style restyle (Phase 7) ────────────────────────────────────
@@ -3873,6 +3884,152 @@ class NoteEditorViewModel @Inject constructor(
         critiqueJob?.cancel()
         critiqueJob = null
         _critiqueState.value = null
+    }
+
+    // ── Metadata & accessibility helpers (Phase 9) ───────────────────────
+
+    /**
+     * Open the metadata panel ("Title & tags"). Freezes the scope and loads the
+     * note's existing tags so the panel can pre-select / merge. When the
+     * "auto-suggest" preference is on, immediately fires the AI suggestion;
+     * otherwise the user triggers it manually. No canvas mutation ever occurs.
+     */
+    fun openMetadata() {
+        val scope = currentPaletteScope()
+        _metadataState.value = MetadataUiState(isOpen = true, scope = scope)
+        viewModelScope.launch {
+            val current = runCatching { repository.getTags(resolvedNoteId) }.getOrDefault(emptyList())
+            _metadataState.update { it?.copy(currentTags = current) }
+            if (preferencesManager.noteMetadataAutoSuggest.first()) {
+                suggestMetadataWithAi()
+            }
+        }
+    }
+
+    /**
+     * Ask the model for a title, tags, and a short description for the frozen
+     * scope. Non-mutating — the result fills [metadataState] with editable
+     * suggestions; applying any field is a separate, explicit step. No-op while a
+     * request is in flight.
+     */
+    fun suggestMetadataWithAi() {
+        val state = _metadataState.value ?: return
+        if (state.loading) return
+        metadataJob?.cancel()
+        _metadataState.update { it?.copy(loading = true, error = null) }
+        metadataJob = viewModelScope.launch {
+            try {
+                val modelId = _aiSheetState.value.activeModelId
+                    .ifEmpty { preferencesManager.defaultModel.first() }
+                val creds = preferencesManager.credentialsFor(modelId)
+                val request = AskRequest(
+                    note = _note.value,
+                    allItems = items.toList(),
+                    selection = state.scope.ifEmpty { null },
+                    userPrompt = "",
+                    modelId = modelId,
+                    baseUrl = creds.baseUrl,
+                    apiKey = creds.apiKey,
+                    mode = AskMode.SUGGEST_METADATA,
+                    layers = _layers.value,
+                    isIcon = _note.value.isIcon,
+                )
+                aiService.ask(request).collect { chunk ->
+                    when (chunk) {
+                        is AiChunk.MetadataResult ->
+                            _metadataState.update {
+                                it?.copy(
+                                    suggestion = chunk.suggestion,
+                                    loading = false,
+                                    error = null,
+                                )
+                            }
+                        is AiChunk.Error ->
+                            _metadataState.update { it?.copy(loading = false, error = chunk.message) }
+                        else -> { /* deltas / completes ignored — metadata is terminal */ }
+                    }
+                }
+                _metadataState.update { if (it?.loading == true) it.copy(loading = false) else it }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _metadataState.update {
+                    it?.copy(loading = false, error = t.message ?: "Metadata request failed")
+                }
+            } finally {
+                metadataJob = null
+            }
+        }
+    }
+
+    /**
+     * Apply [title] as the note's title. Trims and clamps to the suggestion cap;
+     * a blank title is ignored. Updates the in-memory note and schedules an
+     * autosave — no canvas geometry is touched.
+     */
+    fun applyMetadataTitle(title: String) {
+        val clean = title.trim()
+            .split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+            .take(NoteMetadataSuggestion.MAX_TITLE_LENGTH)
+        if (clean.isEmpty()) {
+            _metadataState.update { it?.copy(error = "Title can't be empty.") }
+            return
+        }
+        setTitle(clean)
+        _metadataState.update { it?.copy(appliedTitle = true, error = null) }
+    }
+
+    /**
+     * Merge [tags] into the note's tag set and persist atomically. Tags are
+     * normalized via [com.aichat.sandbox.data.notes.IconTags], unioned with the
+     * note's existing tags (preserving order, capped at
+     * [com.aichat.sandbox.data.notes.IconTags.MAX_TAGS_PER_NOTE]). No-op for an
+     * empty selection.
+     */
+    fun applyMetadataTags(tags: List<String>) {
+        val state = _metadataState.value ?: return
+        val normalized = tags
+            .map { com.aichat.sandbox.data.notes.IconTags.normalize(it) }
+            .filter { it.isNotEmpty() }
+        if (normalized.isEmpty()) {
+            _metadataState.update { it?.copy(error = "Pick at least one tag to add.") }
+            return
+        }
+        val merged = (state.currentTags + normalized)
+            .distinct()
+            .take(com.aichat.sandbox.data.notes.IconTags.MAX_TAGS_PER_NOTE)
+        viewModelScope.launch {
+            runCatching { repository.setTags(resolvedNoteId, merged) }
+                .onSuccess {
+                    _metadataState.update {
+                        it?.copy(currentTags = merged, appliedTags = true, error = null)
+                    }
+                }
+                .onFailure { t ->
+                    _metadataState.update { it?.copy(error = t.message ?: "Couldn't save tags.") }
+                }
+        }
+    }
+
+    /**
+     * Apply [description] as the note's export alt text. Trims and clamps to the
+     * suggestion cap; a blank value clears it. Persisted as part of the note row
+     * on the next autosave. No canvas geometry is touched.
+     */
+    fun applyMetadataDescription(description: String) {
+        val clean = description.trim()
+            .split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+            .take(NoteMetadataSuggestion.MAX_DESCRIPTION_LENGTH)
+        _note.update { it.copy(altText = clean.ifEmpty { null }) }
+        scheduleAutosave()
+        _metadataState.update { it?.copy(appliedDescription = true, error = null) }
+    }
+
+    /** Close the metadata panel and cancel any in-flight request. */
+    fun dismissMetadata() {
+        metadataJob?.cancel()
+        metadataJob = null
+        _metadataState.value = null
     }
 
     // ── AI brush designer (Phase 4 / N1) ─────────────────────────────────
@@ -4837,6 +4994,9 @@ class NoteEditorViewModel @Inject constructor(
                         // Likewise critique results — the critique panel collects
                         // `CRITIQUE` directly, never through a conversation turn.
                         is AiChunk.CritiqueResult -> turn
+                        // Metadata results never flow through `runStream` — the
+                        // metadata panel collects `SUGGEST_METADATA` directly.
+                        is AiChunk.MetadataResult -> turn
                     }
                 }
             }
@@ -5109,7 +5269,11 @@ class NoteEditorViewModel @Inject constructor(
     suspend fun sharePng(): Uri {
         commitTextEdit()
         save()
-        return noteExporter.exportPng(note = _note.value, items = items.toList())
+        return noteExporter.exportPng(
+            note = _note.value,
+            items = items.toList(),
+            embedMetadata = preferencesManager.exportEmbedMetadata.first(),
+        )
     }
 
     /**
@@ -5125,6 +5289,7 @@ class NoteEditorViewModel @Inject constructor(
             note = _note.value,
             items = items.toList(),
             frameBounds = bounds,
+            embedMetadata = preferencesManager.exportEmbedMetadata.first(),
         )
     }
 
@@ -5139,6 +5304,7 @@ class NoteEditorViewModel @Inject constructor(
             frameBounds = bounds,
             preservePressure = preservePressure,
             layers = _layers.value,
+            embedMetadata = preferencesManager.exportEmbedMetadata.first(),
         )
     }
 
@@ -5155,6 +5321,7 @@ class NoteEditorViewModel @Inject constructor(
             items = items.toList(),
             preservePressure = preservePressure,
             layers = _layers.value,
+            embedMetadata = preferencesManager.exportEmbedMetadata.first(),
         )
     }
 

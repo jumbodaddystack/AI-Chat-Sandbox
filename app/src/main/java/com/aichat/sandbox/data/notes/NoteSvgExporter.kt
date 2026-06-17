@@ -64,8 +64,10 @@ class NoteSvgExporter @Inject constructor(
         preservePressure: Boolean = false,
         /** Phase 17.3 — preserve these layers as `<g>` groups; empty = flat. */
         layers: List<NoteLayer> = emptyList(),
+        /** Phase 9 — embed the note title / alt text as `<title>` / `<desc>`. */
+        embedMetadata: Boolean = true,
     ): Uri = withContext(Dispatchers.IO) {
-        val svg = renderSvg(note, items, context.filesDir, frameBounds, preservePressure, layers)
+        val svg = renderSvg(note, items, context.filesDir, frameBounds, preservePressure, layers, embedMetadata)
         val dir = exportsDir().apply { if (!exists()) mkdirs() }
         val outName = "${NoteExporter.sanitizeBaseName(note.title)}-${System.currentTimeMillis()}.svg"
         val finalFile = File(dir, outName)
@@ -108,6 +110,14 @@ class NoteSvgExporter @Inject constructor(
             preservePressure: Boolean = false,
             /** Phase 17.3 — preserve these layers as `<g>` groups; empty = flat. */
             layers: List<NoteLayer> = emptyList(),
+            /**
+             * Phase 9 — when true and [note] carries a non-blank
+             * [Note.altText], emit a `<title>` (note title) and `<desc>` (alt
+             * text) right after the opening `<svg>` so screen readers can
+             * describe the export. Default-on, but no-op without alt text, so
+             * pre-Phase-9 fixtures stay byte-identical.
+             */
+            embedMetadata: Boolean = true,
         ): String {
             val baseBounds = frameBounds
                 ?: NoteRasterizer.computeBounds(items)
@@ -132,6 +142,17 @@ class NoteSvgExporter @Inject constructor(
                 .append("\" ")
                 .append("width=\"").append(fmt(width)).append("\" ")
                 .append("height=\"").append(fmt(height)).append("\">\n")
+            // Phase 9 — accessibility metadata. Only emitted when the note has a
+            // description, so default-on stays a no-op for untagged exports and
+            // existing golden fixtures are unaffected.
+            val altText = note.altText?.trim().orEmpty()
+            if (embedMetadata && altText.isNotEmpty()) {
+                val title = note.title.trim()
+                if (title.isNotEmpty()) {
+                    sb.append("  <title>").append(escapeXml(title)).append("</title>\n")
+                }
+                sb.append("  <desc>").append(escapeXml(altText)).append("</desc>\n")
+            }
             // Paper background — keeps the export visually consistent with PNG/PDF.
             sb.append("  <rect x=\"").append(fmt(minX)).append("\" y=\"").append(fmt(minY))
                 .append("\" width=\"").append(fmt(width)).append("\" height=\"")

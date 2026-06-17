@@ -54,6 +54,16 @@ class PreferencesManager @Inject constructor(
         // Developer: capture each note/canvas AI exchange (prompt + raw reply +
         // parse outcome) into the in-app AI debug log. Off by default.
         val AI_DEBUG_LOG = booleanPreferencesKey("ai_debug_log")
+        // Phase 9 — auto-fire the AI metadata (title/tags/description) suggestion
+        // when the "Title & tags" panel opens, vs. waiting for a manual tap.
+        // Off by default (manual-trigger) so the panel never spends tokens
+        // unprompted. See NoteEditorViewModel.openMetadata.
+        val NOTE_METADATA_AUTO_SUGGEST = booleanPreferencesKey("note_metadata_auto_suggest")
+        // Phase 9 — embed the note's optional alt text as accessibility metadata
+        // in PNG (`tEXt`) and SVG (`<desc>`) exports. On by default, but a no-op
+        // unless the note actually carries a description, so exports stay
+        // identical until the user writes one.
+        val EXPORT_EMBED_METADATA = booleanPreferencesKey("export_embed_metadata")
 
         private val gson = Gson()
 
@@ -109,6 +119,8 @@ class PreferencesManager @Inject constructor(
     val darkMode: Flow<Boolean> = dataStore.data.map { it[DARK_MODE] ?: ChatSettings.Defaults.DARK_MODE }
     val autoGenerateTitles: Flow<Boolean> = dataStore.data.map { it[AUTO_GENERATE_TITLES] ?: true }
     val aiDebugLogEnabled: Flow<Boolean> = dataStore.data.map { it[AI_DEBUG_LOG] ?: false }
+    val noteMetadataAutoSuggest: Flow<Boolean> = dataStore.data.map { it[NOTE_METADATA_AUTO_SUGGEST] ?: false }
+    val exportEmbedMetadata: Flow<Boolean> = dataStore.data.map { it[EXPORT_EMBED_METADATA] ?: true }
 
     val customModels: Flow<Map<String, List<String>>> = dataStore.data.map { prefs ->
         val json = prefs[CUSTOM_MODELS] ?: "{}"
@@ -327,6 +339,22 @@ class PreferencesManager @Inject constructor(
             dataStore.edit { it[AUTO_GENERATE_TITLES] = enabled }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save auto-generate titles preference", e)
+        }
+    }
+
+    suspend fun setNoteMetadataAutoSuggest(enabled: Boolean) {
+        try {
+            dataStore.edit { it[NOTE_METADATA_AUTO_SUGGEST] = enabled }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save note metadata auto-suggest preference", e)
+        }
+    }
+
+    suspend fun setExportEmbedMetadata(enabled: Boolean) {
+        try {
+            dataStore.edit { it[EXPORT_EMBED_METADATA] = enabled }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save export metadata preference", e)
         }
     }
 }

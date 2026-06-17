@@ -132,6 +132,7 @@ fun NoteEditorScreen(
     val tutorSession by viewModel.tutorSession.collectAsState()
     val drawWithMeState by viewModel.drawWithMeState.collectAsState()
     val sceneState by viewModel.sceneState.collectAsState()
+    val metadataState by viewModel.metadataState.collectAsState()
     // Phase 6 — replay playhead: the launcher state and the ids it suppresses.
     val replayState by viewModel.replayState.collectAsState()
     val replayHiddenIds by viewModel.replayHiddenIds.collectAsState()
@@ -1396,6 +1397,13 @@ fun NoteEditorScreen(
                 viewModel.submitScene()
             },
             onSceneClose = viewModel::dismissScene,
+            metadataState = metadataState,
+            onOpenMetadata = viewModel::openMetadata,
+            onSuggestMetadata = viewModel::suggestMetadataWithAi,
+            onApplyMetadataTitle = viewModel::applyMetadataTitle,
+            onApplyMetadataTags = viewModel::applyMetadataTags,
+            onApplyMetadataDescription = viewModel::applyMetadataDescription,
+            onMetadataClose = viewModel::dismissMetadata,
         )
       }
     }

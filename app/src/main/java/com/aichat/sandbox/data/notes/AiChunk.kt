@@ -63,4 +63,15 @@ sealed interface AiChunk {
         val layerMap: Map<String, String>,
         val usage: Usage? = null,
     ) : AiChunk
+
+    /**
+     * Phase 9 — terminal event emitted by `SUGGEST_METADATA` mode. Carries the
+     * validated [suggestion] (title + tags + description). No canvas mutation is
+     * implied — the fields are surfaced as editable suggestions and applied only
+     * to the note's title / tags / export alt text on an explicit user tap.
+     */
+    data class MetadataResult(
+        val suggestion: NoteMetadataSuggestion,
+        val usage: Usage? = null,
+    ) : AiChunk
 }

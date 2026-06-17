@@ -742,3 +742,16 @@ val MIGRATION_22_23 = object : Migration(22, 23) {
         db.execSQL("ALTER TABLE `note_items` ADD COLUMN `fixedWidth` INTEGER NOT NULL DEFAULT 0")
     }
 }
+
+/**
+ * Migration from version 23 to 24:
+ * Phase 9 (metadata & accessibility helpers) — adds the nullable
+ * `notes.altText` column holding an optional accessibility description / alt
+ * text embedded in PNG/SVG exports. Purely additive; existing rows default to
+ * NULL (no alt text), so exports are byte-identical until a description is set.
+ */
+val MIGRATION_23_24 = object : Migration(23, 24) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `notes` ADD COLUMN `altText` TEXT")
+    }
+}
