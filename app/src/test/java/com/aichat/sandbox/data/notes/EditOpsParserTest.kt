@@ -122,6 +122,45 @@ class EditOpsParserTest {
     }
 
     @Test
+    fun parsesSceneGroupLabelOnAuthoringOps() {
+        // Phase 8 — a scene tags each authoring op with a "group" so the applier
+        // can keep one object's parts together. add_path uses "group"; add_shape
+        // here uses the "layer" alias some models echo.
+        val raw = """{ "summary": "campsite", "ops": [
+            { "op": "add_path", "group": "tent",
+              "subpaths": [ { "closed": true, "anchors": [ [0,0], [10,0], [5,8] ] } ] },
+            { "op": "add_shape", "layer": "moon",
+              "shape": { "type": "ellipse", "cx": 80, "cy": 10, "rx": 6, "ry": 6 } },
+            { "op": "add_shape", "shape": { "type": "rect", "x0": 0, "y0": 20, "x1": 100, "y1": 24 } }
+        ]}"""
+        val ops = EditOpsParser.parse(raw).getOrThrow().ops
+        assertEquals("tent", (ops[0] as EditOp.AddPath).group)
+        assertEquals("moon", (ops[1] as EditOp.AddShape).group)
+        // No group / layer → null (ungrouped).
+        assertNull((ops[2] as EditOp.AddShape).group)
+    }
+
+    @Test
+    fun blankGroupLabelIsTreatedAsUngrouped() {
+        val raw = """{ "summary": "", "ops": [
+            { "op": "add_shape", "group": "   ",
+              "shape": { "type": "rect", "x0": 0, "y0": 0, "x1": 4, "y1": 4 } }
+        ]}"""
+        val op = EditOpsParser.parse(raw).getOrThrow().ops.single() as EditOp.AddShape
+        assertNull(op.group)
+    }
+
+    @Test
+    fun sceneSystemMessageDescribesGroupedLayout() {
+        val msg = EditOpsParser.SCENE_GENERATE_SYSTEM_MESSAGE
+        assertTrue(msg.contains("group"))
+        assertTrue(msg.contains("add_path"))
+        assertTrue(msg.contains("add_shape"))
+        // It's a scene message, not the single-icon one.
+        assertTrue(msg.contains("SCENE", ignoreCase = true))
+    }
+
+    @Test
     fun parsesShapeWithNestedGeometry() {
         // The canvas JSON the model is primed on nests coordinates under a
         // "geometry" object (VectorCanvasJson.writeShape). Models mimic that

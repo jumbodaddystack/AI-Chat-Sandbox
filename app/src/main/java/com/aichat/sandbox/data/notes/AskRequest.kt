@@ -54,6 +54,17 @@ data class AskRequest(
      * the result beside the original (a placement offset, not in-place).
      */
     val refine: Boolean = false,
+    /**
+     * Phase 8 — when true (with [generate], never with [refine]) the model
+     * authors a compact multi-object *scene* instead of a single icon: several
+     * grouped `add_path` / `add_shape` objects with a layout, each op tagged
+     * with a [EditOp.AddPath.group] label. Uses the scene system message and a
+     * [sceneComplexity]-tuned prompt; the editor fits the result into a chosen
+     * placement rect so it always lands on-canvas.
+     */
+    val scene: Boolean = false,
+    /** Phase 8 — requested scene density. Ignored unless [scene] is true. */
+    val sceneComplexity: SceneComplexity = SceneComplexity.DEFAULT,
 )
 
 /**

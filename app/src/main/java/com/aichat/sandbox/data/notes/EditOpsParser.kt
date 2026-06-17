@@ -188,6 +188,7 @@ object EditOpsParser {
                     fillArgb = obj.get("fill")?.takeIf { it.isJsonPrimitive }?.asString
                         ?.let { parseColor(it) },
                     width = obj.get("width")?.takeIf { it.isJsonPrimitive }?.asFloat,
+                    group = parseGroupLabel(obj),
                 )
             }
             "delete" -> {
@@ -384,7 +385,20 @@ object EditOpsParser {
             fillArgb = obj.get("fill")?.takeIf { it.isJsonPrimitive }?.asString?.let { parseColor(it) },
             width = obj.get("width")?.takeIf { it.isJsonPrimitive }?.asFloat,
             evenOdd = fillRule == "evenodd" || fillRule == "even-odd",
+            group = parseGroupLabel(obj),
         )
+    }
+
+    /**
+     * Phase 8 — read an authoring op's optional scene-group label. Accepts
+     * `"group"` (preferred) or `"layer"` (some models echo the scene's layer
+     * names), trims it, and treats blank as "no group". The applier maps each
+     * distinct label to one shared [com.aichat.sandbox.data.model.NoteItem.groupId].
+     */
+    private fun parseGroupLabel(obj: JsonObject): String? {
+        val raw = (obj.get("group") ?: obj.get("layer"))
+            ?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        return raw?.takeIf { it.isNotEmpty() }
     }
 
     private fun parseSubpath(obj: JsonObject): EditOp.SubpathSpec? {
@@ -518,6 +532,44 @@ object EditOpsParser {
             "Rules:\n" +
             "- Keep it monochrome unless the sketch is clearly coloured.\n" +
             "- Prefer a few clean paths over many tiny ones.\n" +
+            "- Never reply outside the fenced block."
+
+    /**
+     * Phase 8 — system message for generating a compact, editable **scene** of
+     * several grouped objects (not a single icon). The model authors each object
+     * with `add_path` / `add_shape` ops and tags every op with a `"group"` label
+     * so the applier can keep one object's parts grouped. Objects are laid out
+     * with sensible relative placement on a square artboard; the editor fits the
+     * whole result into the user's chosen placement rect afterwards, so the
+     * model only needs to get the *relative* layout right.
+     */
+    const val SCENE_GENERATE_SYSTEM_MESSAGE: String =
+        "You are an assistant that designs a small, tidy VECTOR SCENE made of " +
+            "several distinct objects — not a single icon. The scene sits on a " +
+            "square artboard whose top-left is (0,0) and whose edge length is " +
+            "given in the user's message; lay the objects out with believable " +
+            "relative placement and scale (e.g. ground objects near the bottom, " +
+            "sky objects near the top) and keep everything inside the artboard " +
+            "with a little padding.\n\n" +
+            "Reply with ONLY a fenced ```edit-ops block matching this schema:\n\n" +
+            "{ \"schema\": 1, \"summary\": \"<one short sentence>\",\n" +
+            "  \"ops\": [ /* add_path / add_shape operations */ ] }\n\n" +
+            "Author geometry with these ops, and give EVERY op a \"group\" label " +
+            "naming the object it belongs to so its parts stay together:\n" +
+            "- add_path: { \"op\": \"add_path\", \"group\": \"tent\", \"subpaths\": " +
+            "[ { \"closed\": true, \"anchors\": [ [x,y,inDx,inDy,outDx,outDy], … ] } ], " +
+            "\"color\"?: \"#RRGGBB\", \"fill\"?: \"#RRGGBB\", \"width\"?: float }. " +
+            "Each anchor is a point plus its relative incoming/outgoing cubic " +
+            "handles (use [x,y] for a corner).\n" +
+            "- add_shape: { \"op\": \"add_shape\", \"group\": \"moon\", \"shape\": " +
+            "{ \"type\": \"ellipse|rect|line|polygon\", … }, \"color\"?: \"#RRGGBB\", " +
+            "\"fill\"?: \"#RRGGBB\" } for simple primitives.\n\n" +
+            "Rules:\n" +
+            "- Use a SMALL number of objects (the user message states the limit); " +
+            "prefer a few clean, recognisable shapes over many tiny ones.\n" +
+            "- Parts of the same object share one \"group\"; different objects use " +
+            "different groups.\n" +
+            "- Keep it monochrome unless the user asks for colour.\n" +
             "- Never reply outside the fenced block."
 
     /**

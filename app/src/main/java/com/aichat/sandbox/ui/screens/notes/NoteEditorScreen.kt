@@ -131,6 +131,7 @@ fun NoteEditorScreen(
     val tutorHiddenIds by viewModel.tutorHiddenIds.collectAsState()
     val tutorSession by viewModel.tutorSession.collectAsState()
     val drawWithMeState by viewModel.drawWithMeState.collectAsState()
+    val sceneState by viewModel.sceneState.collectAsState()
     // Phase 6 — replay playhead: the launcher state and the ids it suppresses.
     val replayState by viewModel.replayState.collectAsState()
     val replayHiddenIds by viewModel.replayHiddenIds.collectAsState()
@@ -1361,6 +1362,40 @@ fun NoteEditorScreen(
             onStartDrawWithMe = viewModel::submitDrawWithMe,
             onOpenReplay = viewModel::openReplay,
             onDrawWithMeClose = viewModel::dismissDrawWithMe,
+            sceneState = sceneState,
+            // Phase 8 — report the current visible world rect just before
+            // opening the scene launcher, so "Visible area" placement targets
+            // exactly what the user sees right now.
+            onOpenScene = {
+                val vp = viewportController
+                if (vp != null && canvasSize != IntSize.Zero) {
+                    viewModel.setVisibleWorldRect(
+                        vp.screenToWorldX(0f),
+                        vp.screenToWorldY(0f),
+                        vp.screenToWorldX(canvasSize.width.toFloat()),
+                        vp.screenToWorldY(canvasSize.height.toFloat()),
+                    )
+                }
+                viewModel.openScene()
+            },
+            onScenePromptChanged = viewModel::setScenePrompt,
+            onScenePlacementChanged = viewModel::setScenePlacement,
+            onSceneComplexityChanged = viewModel::setSceneComplexity,
+            onGenerateScene = {
+                // Refresh the visible rect at submit time too, in case the user
+                // panned / zoomed while the launcher was open.
+                val vp = viewportController
+                if (vp != null && canvasSize != IntSize.Zero) {
+                    viewModel.setVisibleWorldRect(
+                        vp.screenToWorldX(0f),
+                        vp.screenToWorldY(0f),
+                        vp.screenToWorldX(canvasSize.width.toFloat()),
+                        vp.screenToWorldY(canvasSize.height.toFloat()),
+                    )
+                }
+                viewModel.submitScene()
+            },
+            onSceneClose = viewModel::dismissScene,
         )
       }
     }
