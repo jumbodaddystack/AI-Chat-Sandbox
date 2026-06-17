@@ -27,7 +27,10 @@ data class SettingsUiState(
     val defaultPresencePenalty: Float = ChatSettings.Defaults.PRESENCE_PENALTY,
     val defaultFrequencyPenalty: Float = ChatSettings.Defaults.FREQUENCY_PENALTY,
     val darkMode: Boolean = ChatSettings.Defaults.DARK_MODE,
-    val customModels: Map<String, List<String>> = emptyMap()
+    val customModels: Map<String, List<String>> = emptyMap(),
+    // Phase 9 — metadata & accessibility helpers.
+    val noteMetadataAutoSuggest: Boolean = false,
+    val exportEmbedMetadata: Boolean = true,
 )
 
 @HiltViewModel
@@ -109,6 +112,24 @@ class SettingsViewModel @Inject constructor(
                 _uiState.update { it.copy(customModels = customModels) }
             }
         }
+        viewModelScope.launch {
+            combine(
+                preferencesManager.noteMetadataAutoSuggest,
+                preferencesManager.exportEmbedMetadata,
+            ) { autoSuggest, embed ->
+                _uiState.update {
+                    it.copy(noteMetadataAutoSuggest = autoSuggest, exportEmbedMetadata = embed)
+                }
+            }.collect()
+        }
+    }
+
+    fun setNoteMetadataAutoSuggest(enabled: Boolean) {
+        viewModelScope.launch { preferencesManager.setNoteMetadataAutoSuggest(enabled) }
+    }
+
+    fun setExportEmbedMetadata(enabled: Boolean) {
+        viewModelScope.launch { preferencesManager.setExportEmbedMetadata(enabled) }
     }
 
     fun setProviderApiKey(providerName: String, key: String) {

@@ -190,6 +190,53 @@ fun SettingsScreen(
             )
         }
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Phase 9 — metadata & accessibility helpers.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Auto-suggest title & tags", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Ask the AI for a title, tags, and a description as soon as the " +
+                        "“Title & tags” panel opens, instead of waiting for a tap.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = uiState.noteMetadataAutoSuggest,
+                onCheckedChange = { viewModel.setNoteMetadataAutoSuggest(it) }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Embed alt text in exports", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Include a note's description as accessibility alt text in PNG and " +
+                        "SVG exports for screen readers.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = uiState.exportEmbedMetadata,
+                onCheckedChange = { viewModel.setExportEmbedMetadata(it) }
+            )
+        }
+
         Spacer(modifier = Modifier.height(24.dp))
 
         // Developer — capture each note/canvas AI exchange so the raw model

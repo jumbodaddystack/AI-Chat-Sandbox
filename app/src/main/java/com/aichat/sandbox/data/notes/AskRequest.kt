@@ -93,5 +93,11 @@ data class AskRequest(
  *   subject stays the same — only its appearance changes. [userPrompt] carries
  *   the chosen preset's [StylePreset.buildInstruction]; selection / layers scope
  *   the geometry the model restyles.
+ * - [SUGGEST_METADATA] — phase 9: reply with a validated metadata JSON
+ *   ([MetadataParser]) — a short title, a few keyword tags, and a short
+ *   description usable as export alt text. Non-mutating: the result is surfaced
+ *   as editable suggestions and applied only to the note title, the `note_tags`
+ *   table, and the export accessibility metadata — never to canvas geometry.
+ *   selection / layers scope the geometry the model is shown.
  */
-enum class AskMode { ASK, EDIT, DESIGN_BRUSH, SUGGEST_PALETTE, CRITIQUE, RESTYLE }
+enum class AskMode { ASK, EDIT, DESIGN_BRUSH, SUGGEST_PALETTE, CRITIQUE, RESTYLE, SUGGEST_METADATA }

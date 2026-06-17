@@ -3,6 +3,7 @@ package com.aichat.sandbox.ui.screens.notes
 import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.data.notes.BrushSpec
 import com.aichat.sandbox.data.notes.CompositionCritique
+import com.aichat.sandbox.data.notes.NoteMetadataSuggestion
 import com.aichat.sandbox.data.notes.PaletteScheme
 import com.aichat.sandbox.data.notes.PaletteSource
 import com.aichat.sandbox.data.notes.PaletteSuggestion
@@ -231,6 +232,34 @@ data class SceneUiState(
  * this is just the playback chrome. Video/GIF *encoding* is the device-only
  * export path and is intentionally out of scope.
  */
+/**
+ * Phase 9 — state for the metadata & accessibility panel ("Title & tags")
+ * hosted inside the AI side sheet. Opened from the "Title & tags" chip; [scope]
+ * freezes the items the suggestion is computed from.
+ *
+ * A metadata suggestion always needs the model (there is no local fallback), so
+ * the panel renders the editable fields once the reply lands. The panel never
+ * touches the canvas: applying a suggestion writes only the note title, the
+ * `note_tags` table, and the note's export alt text — each on an explicit tap,
+ * so the user can accept, edit, or discard any field. [currentTags] mirrors the
+ * note's existing tags so the panel can pre-select / merge cleanly.
+ *
+ * [appliedTitle] / [appliedTags] / [appliedDescription] flip true after the
+ * matching field is applied so the panel can show a quiet confirmation.
+ */
+data class MetadataUiState(
+    val isOpen: Boolean = false,
+    val scope: List<NoteItem> = emptyList(),
+    val suggestion: NoteMetadataSuggestion? = null,
+    /** The note's tags at open time, for merge / pre-selection. */
+    val currentTags: List<String> = emptyList(),
+    val loading: Boolean = false,
+    val error: String? = null,
+    val appliedTitle: Boolean = false,
+    val appliedTags: Boolean = false,
+    val appliedDescription: Boolean = false,
+)
+
 data class ReplayUiState(
     val isOpen: Boolean = false,
     val positionMs: Long = 0L,

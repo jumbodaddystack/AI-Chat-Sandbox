@@ -1,6 +1,6 @@
 # AI Art-Assist Implementation Plan
 
-Status: **Phases 1–8 implemented and verified as of 2026-06-16**.
+Status: **Phases 1–9 implemented and verified as of 2026-06-17**.
 
 This document supersedes the older brainstorm-style notes in this file. It keeps
 only the AI art-assist work that still makes sense for the app as it exists now,
@@ -684,21 +684,71 @@ lands inside the current viewport or selected frame.
 **Goal:** add low-risk, non-mutating AI helpers that improve organization and
 exports.
 
+**Status: implemented and verified (unit-test green) as of 2026-06-17.** A
+"Title & tags" panel in the AI sheet asks the model for a short title, a few
+keyword tags, and a one-sentence description, then surfaces each as an editable
+field the user accepts / edits / discards. Applying a field writes only the note
+title, the `note_tags` table, or the note's export alt text — never canvas
+geometry. The description rides into PNG / SVG exports as accessibility metadata.
+
 ### Candidate tasks
 
-- [ ] Auto-title and auto-tag notes/icons from OCR, `VectorCanvasJson`, and/or
+- [x] Auto-title and auto-tag notes/icons from OCR, `VectorCanvasJson`, and/or
   raster preview.
-- [ ] Generate alt text / description for PNG and SVG export.
-- [ ] Add settings for auto-suggest vs manual-trigger behavior.
-- [ ] Store generated metadata in existing note/tag/export metadata structures;
+  - New `AskMode.SUGGEST_METADATA` + `NoteAiService.collectMetadata` serialize
+    the in-scope items via `VectorCanvasJson`, attach the rasterized preview for
+    vision models, and fall back to OCR text (`resolveOcrText`) for non-vision
+    models (`buildMetadataPromptBody`). `MetadataParser.SYSTEM_MESSAGE` pins a
+    jargon-free JSON contract; the reply becomes a validated
+    `NoteMetadataSuggestion` (`data/notes/NoteMetadataSuggestion.kt`) and a
+    terminal `AiChunk.MetadataResult`.
+- [x] Generate alt text / description for PNG and SVG export.
+  - The suggestion's `description` is applied to the new nullable
+    `Note.altText`. `NoteSvgExporter.renderSvg` emits `<title>` (note title) +
+    `<desc>` (alt text) right after the opening `<svg>` when alt text is present;
+    `NoteExporter.exportPng` embeds it as a PNG `tEXt` "Description" chunk via the
+    pure-JVM `PngMetadata.withDescription`. Both are no-ops without alt text, so
+    un-described exports stay byte-identical to before.
+- [x] Add settings for auto-suggest vs manual-trigger behavior.
+  - `PreferencesManager.noteMetadataAutoSuggest` (default off → manual; when on,
+    `openMetadata()` fires the AI suggestion as the panel opens) and
+    `exportEmbedMetadata` (default on; gates the export alt-text embedding).
+    Both are exposed as Settings switches ("Auto-suggest title & tags" /
+    "Embed alt text in exports") via `SettingsViewModel` / `SettingsScreen`.
+- [x] Store generated metadata in existing note/tag/export metadata structures;
   add migrations only if no suitable fields exist.
-- [ ] Add tests for title/tag validation, duplicate tags, and export metadata.
+  - Title reuses the existing `Note.title`; tags reuse the existing `note_tags`
+    junction table (`NoteRepository.setTags`, merged + de-duped via `IconTags`).
+    Only alt text had no home, so `MIGRATION_23_24` adds the nullable
+    `notes.altText` column (DB version 23 → 24, schema `24.json` exported,
+    migration registered in `AppModule`).
+- [x] Add tests for title/tag validation, duplicate tags, and export metadata.
+  - `MetadataParserTest` (title/tag/description validation, duplicate-tag
+    de-dup + normalization, caps, alias keys, prose-only / garbage failure),
+    `PngMetadataTest` (well-formed `tEXt` chunk + CRC, blank/non-PNG no-op),
+    `NoteSvgExporterMetadataTest` (`<title>`/`<desc>` emission, XML escaping,
+    absent-alt-text + disabled no-op), and two new `NoteAiServiceTest` cases
+    (vision happy path + non-vision OCR inlining). `Migration_23_24_Test`
+    (androidTest) mirrors the existing migration-test convention. All JVM tests
+    green (only the two pre-existing, documented framework-mock failures remain).
 
 ### Acceptance criteria
 
-- Metadata suggestions never alter canvas geometry.
-- Users can accept, edit, or discard suggested text.
-- Exported alt text is short, accurate, and optional.
+- [x] Metadata suggestions never alter canvas geometry.
+  - The flow only ever writes the note title, the tag table, or `Note.altText`;
+    it never stages a `PendingEdit` or touches `items`. The request runs
+    read-only over the serialized scope.
+- [x] Users can accept, edit, or discard suggested text.
+  - `MetadataPanel` renders the title and description in editable text fields and
+    the tags as toggleable chips; nothing is applied until an explicit "Use
+    title" / "Add tags" / "Save description" tap. Closing the panel discards
+    everything unapplied.
+- [x] Exported alt text is short, accurate, and optional.
+  - The description is capped at `NoteMetadataSuggestion.MAX_DESCRIPTION_LENGTH`
+    (240 chars) and the system message asks for one ≤30-word sentence. Embedding
+    is optional twice over: it is skipped unless the note carries alt text *and*
+    the `exportEmbedMetadata` setting is on, so exports never gain metadata the
+    user didn't opt into.
 
 ---
 
