@@ -77,7 +77,8 @@ data class StylePreset(
             is EditOp.Restyle,
             is EditOp.Smooth,
             is EditOp.Simplify,
-            is EditOp.ReplaceWithShape -> true
+            is EditOp.ReplaceWithShape,
+            is EditOp.ReplaceWithPath -> true
             is EditOp.Transform,
             is EditOp.Delete,
             is EditOp.AddPath,

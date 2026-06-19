@@ -124,7 +124,9 @@ object EditOpsParser {
         knownIds: Set<String>?,
         knownLayers: Set<String>?,
     ): EditOp? {
-        val opName = obj.get("op")?.takeIf { it.isJsonPrimitive }?.asString ?: return null
+        val opName = obj.get("op")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.trim()?.lowercase()?.replace('-', '_')
+            ?: return null
         return when (opName) {
             "transform" -> {
                 val ids = parseIdList(obj, knownIds)
@@ -148,15 +150,15 @@ object EditOpsParser {
                 }
                 EditOp.Restyle(ids, width, opacity?.coerceIn(0f, 1f))
             }
-            "replace_with_shape" -> {
-                val id = obj.get("id")?.asString
-                    ?: throw IllegalArgumentException("replace_with_shape: missing id")
-                if (knownIds != null && id !in knownIds) {
-                    throw IllegalArgumentException("replace_with_shape: unknown id $id")
-                }
+            "replace_with_shape", "replace_shape" -> {
+                val id = parseSingleId(obj, knownIds, "replace_with_shape")
                 val shape = parseShape(obj.get("shape") as? JsonObject
                     ?: throw IllegalArgumentException("replace_with_shape: missing shape"))
                 EditOp.ReplaceWithShape(id, shape)
+            }
+            "replace_with_path", "replace_path", "modify_path", "update_path" -> {
+                val id = parseSingleId(obj, knownIds, "replace_with_path")
+                EditOp.ReplaceWithPath(id, parseAddPath(obj))
             }
             "smooth" -> {
                 val ids = parseIdList(obj, knownIds)
@@ -213,6 +215,18 @@ object EditOpsParser {
             }
             else -> null
         }
+    }
+
+    private fun parseSingleId(obj: JsonObject, knownIds: Set<String>?, context: String): String {
+        val id = obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+            ?: obj.get("source_id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+            ?: parseIdList(obj, knownIds).singleOrNull()
+            ?: throw IllegalArgumentException("$context: missing id")
+        if (id.isEmpty()) throw IllegalArgumentException("$context: missing id")
+        if (knownIds != null && id !in knownIds) {
+            throw IllegalArgumentException("$context: unknown id $id")
+        }
+        return id
     }
 
     private fun parseIdList(obj: JsonObject, knownIds: Set<String>?): List<String> {
@@ -440,7 +454,8 @@ object EditOpsParser {
             "Rules:\n" +
             "- Modify only items that appear in the provided JSON.\n" +
             "- Do not invent new strokes from scratch. To turn a freehand stroke into " +
-            "a clean shape, use `replace_with_shape` referencing the original ID.\n" +
+            "clean geometry, use `replace_with_shape` or `replace_with_path` " +
+            "referencing the original ID.\n" +
             "- Do not target items on locked or hidden layers.\n" +
             "- If you can't fulfil the request, return an empty ops array and explain " +
             "in `summary`. Never reply outside the fenced block."
@@ -456,7 +471,8 @@ object EditOpsParser {
             "JSON description of every item by ID. The drawing sits on a square " +
             "artboard; keep all geometry inside it and aim for a balanced, " +
             "centred composition. Prefer simple, crisp geometry — straighten " +
-            "wobbly strokes into clean shapes with `replace_with_shape`, align " +
+            "wobbly strokes into clean shapes with `replace_with_shape` or " +
+            "clean paths with `replace_with_path`, align " +
             "edges, and keep the icon monochrome unless the user asks for " +
             "colour.\n\n" +
             "Reply with ONLY a fenced ```edit-ops block matching this schema:\n\n" +
@@ -465,8 +481,8 @@ object EditOpsParser {
             "Rules:\n" +
             "- Modify only items that appear in the provided JSON.\n" +
             "- Do not invent new strokes from scratch. To turn a freehand stroke " +
-            "into a clean shape, use `replace_with_shape` referencing the " +
-            "original ID.\n" +
+            "into clean geometry, use `replace_with_shape` or `replace_with_path` " +
+            "referencing the original ID.\n" +
             "- Do not target items on locked or hidden layers.\n" +
             "- If you can't fulfil the request, return an empty ops array and " +
             "explain in `summary`. Never reply outside the fenced block."

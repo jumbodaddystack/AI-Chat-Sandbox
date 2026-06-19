@@ -61,6 +61,21 @@ sealed interface EditOp {
         override val ids: List<String> get() = listOf(sourceId)
     }
 
+    /**
+     * `{ "op": "replace_with_path", "id": "s_004", "subpaths": [...] }`.
+     * The source item is deleted and a `kind=path` item is inserted in its
+     * place. This is intentionally separate from [AddPath]: edit-mode models
+     * often redraw a rough stroke with cleaner anchors instead of using the
+     * smoothing primitive, and that replacement must still reference an
+     * existing item for safety.
+     */
+    data class ReplaceWithPath(
+        val sourceId: String,
+        val path: AddPath,
+    ) : EditOp {
+        override val ids: List<String> get() = listOf(sourceId)
+    }
+
     /** `{ "op": "smooth", "ids": [...], "amount": 0..1 }`. */
     data class Smooth(
         override val ids: List<String>,

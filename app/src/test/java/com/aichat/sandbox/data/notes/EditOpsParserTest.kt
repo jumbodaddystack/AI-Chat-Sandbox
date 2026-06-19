@@ -25,6 +25,7 @@ class EditOpsParserTest {
                 { "op": "restyle",    "ids": ["s_003"], "width": 3.5, "opacity": 0.8 },
                 { "op": "replace_with_shape", "id": "s_004",
                   "shape": { "type": "ellipse", "cx": 10, "cy": 10, "rx": 5, "ry": 3 } },
+                { "op": "replace_with_path", "id": "s_004b", "anchors": [[0,0], [10,0]], "color": "#000000" },
                 { "op": "smooth",     "ids": ["s_005"], "amount": 0.5 },
                 { "op": "simplify",   "ids": ["s_006"], "tolerance": 1.5 },
                 { "op": "delete",     "ids": ["s_007"] },
@@ -36,18 +37,34 @@ class EditOpsParserTest {
             ```
         """.trimIndent()
         val doc = EditOpsParser.parse(raw).getOrThrow()
-        assertEquals(10, doc.ops.size)
+        assertEquals(11, doc.ops.size)
         assertEquals("ok", doc.summary)
         assertTrue(doc.ops[0] is EditOp.Transform)
         assertTrue(doc.ops[1] is EditOp.Recolor)
         assertTrue(doc.ops[2] is EditOp.Restyle)
         assertTrue(doc.ops[3] is EditOp.ReplaceWithShape)
-        assertTrue(doc.ops[4] is EditOp.Smooth)
-        assertTrue(doc.ops[5] is EditOp.Simplify)
-        assertTrue(doc.ops[6] is EditOp.Delete)
-        assertTrue(doc.ops[7] is EditOp.SetLayer)
-        assertTrue(doc.ops[8] is EditOp.Group)
-        assertTrue(doc.ops[9] is EditOp.MergePaths)
+        assertTrue(doc.ops[4] is EditOp.ReplaceWithPath)
+        assertTrue(doc.ops[5] is EditOp.Smooth)
+        assertTrue(doc.ops[6] is EditOp.Simplify)
+        assertTrue(doc.ops[7] is EditOp.Delete)
+        assertTrue(doc.ops[8] is EditOp.SetLayer)
+        assertTrue(doc.ops[9] is EditOp.Group)
+        assertTrue(doc.ops[10] is EditOp.MergePaths)
+    }
+
+    @Test
+    fun acceptsCommonPathReplacementAliases() {
+        val raw = """{ "summary": "", "ops": [
+            { "op": "modify_path", "id": "s_1", "anchors": [[0,0], [10,0]], "width": 4 },
+            { "op": "replace-path", "source_id": "s_2", "subpaths": [
+              { "closed": true, "anchors": [[0,0], [10,0], [10,10]] }
+            ] }
+        ]}"""
+        val doc = EditOpsParser.parse(raw, knownIds = setOf("s_1", "s_2")).getOrThrow()
+        assertTrue(doc.rejected.isEmpty())
+        assertEquals(2, doc.ops.size)
+        assertEquals("s_1", (doc.ops[0] as EditOp.ReplaceWithPath).sourceId)
+        assertEquals("s_2", (doc.ops[1] as EditOp.ReplaceWithPath).sourceId)
     }
 
     @Test

@@ -266,6 +266,21 @@ object EditPreviewController {
                     toRemove += source.id
                     toAdd += replacement
                 }
+                is EditOp.ReplaceWithPath -> {
+                    val source = fetch(op.sourceId)
+                    if (source == null) {
+                        skipped += "replace_with_path ${op.sourceId} (unknown/locked)"
+                        continue
+                    }
+                    val replacement = buildPathReplacement(source, op.path)
+                    if (replacement == null) {
+                        skipped += "replace_with_path ${op.sourceId} (empty geometry)"
+                        continue
+                    }
+                    working.remove(op.sourceId)
+                    toRemove += source.id
+                    toAdd += replacement
+                }
                 is EditOp.AddPath -> {
                     val item = buildAddedPath(op, authorNoteId, nextAuthoredZ)
                     if (item == null) {
@@ -533,6 +548,17 @@ object EditPreviewController {
             colorArgb = op.colorArgb ?: DEFAULT_AUTHORED_COLOR,
             baseWidthPx = op.width ?: DEFAULT_AUTHORED_WIDTH,
             payload = PathCodec.encode(payload),
+        )
+    }
+
+    /** Build a path replacement that inherits source style/layer/z when omitted. */
+    private fun buildPathReplacement(source: NoteItem, op: EditOp.AddPath): NoteItem? {
+        val replacement = buildAddedPath(op, source.noteId, source.zIndex) ?: return null
+        return replacement.copy(
+            layerId = source.layerId,
+            groupId = source.groupId,
+            colorArgb = op.colorArgb ?: source.colorArgb,
+            baseWidthPx = op.width ?: source.baseWidthPx,
         )
     }
 
