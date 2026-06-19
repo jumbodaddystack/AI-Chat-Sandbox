@@ -40,6 +40,7 @@ import com.aichat.sandbox.data.local.StampTagDao
 import com.aichat.sandbox.data.local.UserTemplateDao
 import com.aichat.sandbox.data.local.VectorSymbolDao
 import com.aichat.sandbox.data.local.VectorTuneupDao
+import com.aichat.sandbox.data.notes.AiDebugLog
 import com.aichat.sandbox.data.notes.HandwritingOcr
 import com.aichat.sandbox.data.notes.NoteAiService
 import com.aichat.sandbox.data.remote.ApiClient
@@ -206,9 +207,14 @@ object AppModule {
     fun provideNoteAiService(
         chatStreamer: ChatStreamer,
         ocr: HandwritingOcr,
+        aiDebugLog: AiDebugLog,
     ): NoteAiService {
         // Pass the concrete recognizer in; the service holds the
         // `HandwritingRecognizer` interface so tests can substitute a fake.
-        return NoteAiService(chatStreamer, ocr)
+        // Also pass the singleton debug log; otherwise this provider falls back
+        // to NoteAiService's test-only default AiDebugLog instance, so the
+        // Settings toggle enables a different recorder than the one note AI
+        // requests write to.
+        return NoteAiService(chatStreamer, ocr, aiDebugLog = aiDebugLog)
     }
 }
