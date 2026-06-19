@@ -59,6 +59,7 @@ object EditOpToManualEdit {
             // the vector lane re-vectorizes rather than mirroring authoring ops.
             is EditOp.Transform,
             is EditOp.ReplaceWithShape,
+            is EditOp.ReplaceWithPath,
             is EditOp.Smooth,
             is EditOp.MergePaths,
             is EditOp.AddPath,

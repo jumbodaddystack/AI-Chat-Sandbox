@@ -82,7 +82,8 @@ data class CritiqueSuggestion(
             is EditOp.Restyle,
             is EditOp.Simplify,
             is EditOp.Smooth,
-            is EditOp.ReplaceWithShape -> true
+            is EditOp.ReplaceWithShape,
+            is EditOp.ReplaceWithPath -> true
             is EditOp.Delete,
             is EditOp.AddPath,
             is EditOp.AddShape,

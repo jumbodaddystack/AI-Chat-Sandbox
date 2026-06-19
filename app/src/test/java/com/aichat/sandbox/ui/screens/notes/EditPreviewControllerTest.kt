@@ -78,6 +78,35 @@ class EditPreviewControllerTest {
     }
 
     @Test
+    fun replaceWithPathRemovesSourceAndAddsPathInPlace() {
+        val source = strokeItem(colorArgb = 0xFF123456.toInt()).copy(layerId = "L1", zIndex = 7, baseWidthPx = 6f)
+        val doc = EditOpsDoc(1, "", listOf(EditOp.ReplaceWithPath(
+            sourceId = "s_001",
+            path = EditOp.AddPath(
+                subpaths = listOf(EditOp.SubpathSpec(
+                    anchors = listOf(EditOp.AnchorSpec(1f, 2f), EditOp.AnchorSpec(3f, 4f)),
+                    closed = false,
+                )),
+                colorArgb = null, fillArgb = null, width = null,
+            ),
+        )))
+        val sim = EditPreviewController.simulate(
+            currentItems = listOf(source),
+            doc = doc,
+            idMap = mapOf("s_001" to source.id),
+            layerMap = emptyMap(),
+            layers = emptyList(),
+        )
+        assertEquals(listOf(source), sim.removed)
+        assertEquals(1, sim.added.size)
+        assertEquals(com.aichat.sandbox.ui.components.notes.PathCodec.KIND, sim.added[0].kind)
+        assertEquals(source.colorArgb, sim.added[0].colorArgb)
+        assertEquals(source.baseWidthPx, sim.added[0].baseWidthPx)
+        assertEquals(source.layerId, sim.added[0].layerId)
+        assertEquals(source.zIndex, sim.added[0].zIndex)
+    }
+
+    @Test
     fun lockedLayerItemsAreSilentlyDropped() {
         val locked = NoteLayer(
             id = "L_LOCK", noteId = "n1", name = "L",
