@@ -3,6 +3,7 @@ package com.aichat.sandbox.data.notes
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.data.model.NoteLayer
+import java.io.File
 
 /**
  * Inputs for `NoteAiService.ask` (sub-phase 2.5 of
@@ -32,6 +33,8 @@ data class AskRequest(
     val apiKey: String,
     val mode: AskMode = AskMode.ASK,
     val layers: List<NoteLayer> = emptyList(),
+    /** App files directory used to resolve embedded note image payloads while rasterizing. */
+    val filesDir: File? = null,
     /** Icon-mode notes get an icon-design-tuned EDIT system message. */
     val isIcon: Boolean = false,
     /**

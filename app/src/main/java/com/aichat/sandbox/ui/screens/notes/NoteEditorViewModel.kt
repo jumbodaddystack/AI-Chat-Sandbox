@@ -3585,6 +3585,7 @@ class NoteEditorViewModel @Inject constructor(
                     apiKey = creds.apiKey,
                     mode = AskMode.RESTYLE,
                     layers = _layers.value,
+                    filesDir = noteImageStore.filesDir,
                     isIcon = _note.value.isIcon,
                 )
                 aiService.ask(request).collect { chunk ->
@@ -3705,6 +3706,7 @@ class NoteEditorViewModel @Inject constructor(
                     apiKey = creds.apiKey,
                     mode = AskMode.SUGGEST_PALETTE,
                     layers = _layers.value,
+                    filesDir = noteImageStore.filesDir,
                     isIcon = _note.value.isIcon,
                 )
                 aiService.ask(request).collect { chunk ->
@@ -3813,6 +3815,7 @@ class NoteEditorViewModel @Inject constructor(
                     apiKey = creds.apiKey,
                     mode = AskMode.CRITIQUE,
                     layers = _layers.value,
+                    filesDir = noteImageStore.filesDir,
                     isIcon = _note.value.isIcon,
                 )
                 aiService.ask(request).collect { chunk ->
@@ -3932,6 +3935,7 @@ class NoteEditorViewModel @Inject constructor(
                     apiKey = creds.apiKey,
                     mode = AskMode.SUGGEST_METADATA,
                     layers = _layers.value,
+                    filesDir = noteImageStore.filesDir,
                     isIcon = _note.value.isIcon,
                 )
                 aiService.ask(request).collect { chunk ->
@@ -4078,6 +4082,7 @@ class NoteEditorViewModel @Inject constructor(
                     apiKey = creds.apiKey,
                     mode = AskMode.DESIGN_BRUSH,
                     layers = _layers.value,
+                    filesDir = noteImageStore.filesDir,
                     isIcon = _note.value.isIcon,
                 )
                 aiService.ask(request).collect { chunk ->
@@ -4951,6 +4956,7 @@ class NoteEditorViewModel @Inject constructor(
             apiKey = creds.apiKey,
             mode = mode,
             layers = _layers.value,
+            filesDir = noteImageStore.filesDir,
             isIcon = _note.value.isIcon,
             generate = generate,
             styleReferences = styleReferences,

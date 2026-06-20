@@ -31,6 +31,9 @@ class NoteImageStore @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
 
+    val filesDir: File
+        get() = context.filesDir
+
     /**
      * Copy [sourceUri] into `filesDir/note-images/`, returning
      * `(relativePath, naturalWidth, naturalHeight)` on success or `null` on
