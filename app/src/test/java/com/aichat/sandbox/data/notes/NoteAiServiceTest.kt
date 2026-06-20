@@ -4,6 +4,7 @@ import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.data.model.NoteLayer
 import com.aichat.sandbox.data.model.ToolDefinition
 import com.aichat.sandbox.data.model.Usage
 import com.aichat.sandbox.data.remote.ChatStreamer
@@ -385,6 +386,50 @@ class NoteAiServiceTest {
         assertEquals(EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE, streamer.lastChat!!.systemMessage)
     }
 
+    @Test
+    fun jsonDrivenVisionModesRasterizeOnlyUnlockedSerializedScope() = runTest {
+        val lockedLayer = NoteLayer(
+            id = "L_LOCK", noteId = "n", name = "Locked",
+            opacityPercent = 100, visible = true, locked = true, ordinal = 0,
+        )
+        val openLayer = lockedLayer.copy(id = "L_OPEN", name = "Ink", locked = false, ordinal = 1)
+        val locked = strokeItem().copy(layerId = lockedLayer.id)
+        val unlocked = strokeItem().copy(layerId = openLayer.id)
+        val unlayered = strokeItem()
+
+        val modesAndReplies = listOf(
+            AskMode.EDIT to "```edit-ops\n{ \"schema\": 1, \"summary\": \"none\", \"ops\": [] }\n```",
+            AskMode.RESTYLE to "```edit-ops\n{ \"schema\": 1, \"summary\": \"none\", \"ops\": [] }\n```",
+            AskMode.CRITIQUE to "{ \"summary\": \"ok\", \"suggestions\": [ { \"title\": \"Keep it\", \"why\": \"Balanced.\" } ] }",
+            AskMode.SUGGEST_PALETTE to "{ \"swatches\": [\"#111111\", \"#222222\", \"#333333\"] }",
+            AskMode.SUGGEST_METADATA to "{ \"title\": \"Ink\", \"tags\": [\"ink\"], \"description\": \"Unlocked ink.\" }",
+        )
+
+        for ((mode, reply) in modesAndReplies) {
+            val renderer = RecordingImageRenderer(ByteArray(4))
+            val streamer = RecordingChatStreamer(
+                flow = flowOf(StreamEvent.Delta(reply), StreamEvent.Complete(null)),
+            )
+            val service = NoteAiService(
+                chatStreamer = streamer,
+                ocr = FakeRecognizer("unused"),
+                imageRenderer = renderer,
+            )
+
+            service.ask(
+                visionRequest(strokes = listOf(locked, unlocked, unlayered)).copy(
+                    mode = mode,
+                    layers = listOf(lockedLayer, openLayer),
+                )
+            ).toList()
+
+            assertEquals("$mode raster scope", listOf(unlocked.id, unlayered.id), renderer.lastItems.map { it.id })
+            val body = streamer.lastMessages.single().content
+            assertTrue("$mode JSON should include editable item ids", body.contains("s_001"))
+            assertEquals("$mode JSON should omit locked layer", false, body.contains("Locked"))
+        }
+    }
+
     // ---- I4 / N1: DESIGN_BRUSH mode ----
 
     @Test
@@ -617,6 +662,20 @@ class NoteAiServiceTest {
         override suspend fun recognize(strokes: List<NoteItem>, locale: String): OcrResult {
             calls++
             return OcrResult(text = text, confidence = if (text.isEmpty()) 0f else 1f, perWord = emptyList())
+        }
+    }
+
+    private class RecordingImageRenderer(private val bytes: ByteArray) : NoteImageRenderer {
+        var lastItems: List<NoteItem> = emptyList()
+            private set
+
+        override fun renderToPng(
+            items: List<NoteItem>,
+            backgroundStyle: String,
+            maxEdgePx: Int,
+        ): ByteArray {
+            lastItems = items
+            return bytes
         }
     }
 

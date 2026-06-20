@@ -99,13 +99,14 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
         val upstream = if (supportsVision) {
-            buildEditVisionStream(request, serialized.json)
+            buildEditVisionStream(request, scopedItems, serialized.json)
         } else {
             buildEditOcrStream(request, serialized.json)
         }
@@ -174,8 +175,9 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
@@ -186,7 +188,7 @@ class NoteAiService @Inject constructor(
             systemMessage = PaletteParser.SYSTEM_MESSAGE,
         )
         val promptBody = buildPalettePromptBody(request.userPrompt, serialized.json)
-        val items = request.selection ?: request.allItems
+        val items = scopedItems
         val userMessage = if (supportsVision && items.isNotEmpty()) {
             withContext(Dispatchers.Default) {
                 val pngBytes = try {
@@ -297,8 +299,9 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
@@ -308,7 +311,7 @@ class NoteAiService @Inject constructor(
             model = request.modelId,
             systemMessage = CritiqueParser.SYSTEM_MESSAGE,
         )
-        val items = request.selection ?: request.allItems
+        val items = scopedItems
         // Fall back to OCR text only when we can't show the model the image; a
         // vision model reads the drawing directly.
         val ocrText = if (supportsVision) null
@@ -432,8 +435,9 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
@@ -443,7 +447,7 @@ class NoteAiService @Inject constructor(
             model = request.modelId,
             systemMessage = MetadataParser.SYSTEM_MESSAGE,
         )
-        val items = request.selection ?: request.allItems
+        val items = scopedItems
         // OCR transcription helps a non-vision model title/tag a handwritten
         // note; a vision model reads the image directly.
         val ocrText = if (supportsVision) null
@@ -553,8 +557,9 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
@@ -564,7 +569,7 @@ class NoteAiService @Inject constructor(
             model = request.modelId,
             systemMessage = RestyleParser.SYSTEM_MESSAGE,
         )
-        val items = request.selection ?: request.allItems
+        val items = scopedItems
         val ocrText = if (supportsVision) null
             else resolveOcrText(request).takeIf { it.isNotBlank() }
         val promptBody = buildRestylePromptBody(request.userPrompt, serialized.json, ocrText)
@@ -1041,9 +1046,9 @@ class NoteAiService @Inject constructor(
      */
     private suspend fun buildEditVisionStream(
         request: AskRequest,
+        items: List<NoteItem>,
         vectorJson: String,
     ): Flow<StreamEvent> {
-        val items = request.selection ?: request.allItems
         if (items.isEmpty()) return errorFlow(EMPTY_NOTE_MESSAGE)
         val userMessage = withContext(Dispatchers.Default) {
             val pngBytes = try {

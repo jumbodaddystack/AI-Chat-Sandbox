@@ -60,6 +60,21 @@ object VectorCanvasJson {
     )
 
     /**
+     * Return the editable item scope shared by [serialize] and AI rasterization.
+     *
+     * Product behavior: locked layers are private/non-editable and are hidden
+     * from both the PNG sent to vision models and the JSON id space sent to all
+     * JSON-driven AI modes. Items without a layer remain in scope.
+     */
+    fun editableItems(items: List<NoteItem>, layers: List<NoteLayer>): List<NoteItem> {
+        val unlockedLayerIds = layers.asSequence()
+            .filterNot { it.locked }
+            .map { it.id }
+            .toHashSet()
+        return items.filter { it.layerId == null || it.layerId in unlockedLayerIds }
+    }
+
+    /**
      * Serialise [items] to model-readable JSON.
      *
      * @param items   the candidate items (caller should already have applied
@@ -74,10 +89,11 @@ object VectorCanvasJson {
         bounds: FloatArray?,
         layers: List<NoteLayer>,
     ): SerializedCanvas {
-        // Drop locked layers and any items that reference them.
+        // Drop locked layers and any items that reference them. Keep this path
+        // delegated to [editableItems] so JSON scope and AI raster scope cannot
+        // drift apart.
         val unlockedLayers = layers.filterNot { it.locked }
-        val unlockedLayerIds: Set<String> = unlockedLayers.mapTo(HashSet()) { it.id }
-        val visibleItems = items.filter { it.layerId == null || it.layerId in unlockedLayerIds }
+        val visibleItems = editableItems(items, layers)
 
         // Build short-id maps. Each kind has its own counter.
         val idMap = LinkedHashMap<String, String>()
