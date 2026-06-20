@@ -1139,20 +1139,14 @@ class DrawingSurface(context: Context) : View(context) {
                 activeInkStrokeId = null
                 if (strokeTool.isLasso) {
                     appendLassoVertex(event, idx)
-                } else if (inkAuthoringEnabled && strokeTool.isInk && inkAuthoringView != null) {
+                } else if (inkAuthoringEnabled && strokeTool.isInk) {
                     // Ink-first authoring: hand the live stroke to ink's
                     // front buffer. If ink declines the stroke, immediately
                     // seed the legacy path with this down sample so stylus and
                     // finger-ink routes continue normally.
-                    if (!startInkStroke(event, idx)) {
-                        appendStylusSample(event, idx)
-                        motionPredictor?.record(event)
-                        if (strokeTool.isEraser) eraseAtLastSample()
-                    }
+                    if (!startInkStroke(event, idx)) seedLegacyStrokeDown(event, idx)
                 } else {
-                    appendStylusSample(event, idx)
-                    motionPredictor?.record(event)
-                    if (strokeTool.isEraser) eraseAtLastSample()
+                    seedLegacyStrokeDown(event, idx)
                 }
                 strokeLastMoveUptime = event.eventTime
                 strokeLastMoveX = event.getX(idx)
@@ -1241,6 +1235,12 @@ class DrawingSurface(context: Context) : View(context) {
             }
             else -> false
         }
+    }
+
+    private fun seedLegacyStrokeDown(event: MotionEvent, idx: Int) {
+        appendStylusSample(event, idx)
+        motionPredictor?.record(event)
+        if (strokeTool.isEraser) eraseAtLastSample()
     }
 
     /** Abandon the in-flight stroke / lasso / pending erase without committing. */
