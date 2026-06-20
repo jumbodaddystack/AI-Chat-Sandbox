@@ -22,6 +22,9 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 /** Base URL + API key resolved for a given model's provider. */
 data class ProviderCredentials(val baseUrl: String, val apiKey: String)
 
+/** Provider credential preflight result for model-backed features. */
+data class ProviderCredentialValidation(val isValid: Boolean, val errorMessage: String? = null)
+
 @Singleton
 class PreferencesManager @Inject constructor(
     @ApplicationContext private val context: Context
@@ -247,6 +250,52 @@ class PreferencesManager @Inject constructor(
      */
     suspend fun hasApiKeyFor(modelId: String): Boolean =
         credentialsFor(modelId).apiKey.isNotBlank()
+
+    /**
+     * Validates the provider requirements for [modelId] before a model-backed
+     * canvas feature starts streaming. Keep these requirements next to
+     * [credentialsFor] so all note AI entry points reject missing/invalid
+     * settings consistently before reaching the network layer.
+     */
+    suspend fun validateCredentialsFor(
+        modelId: String,
+        credentials: ProviderCredentials = credentialsFor(modelId),
+    ): ProviderCredentialValidation {
+        val prefs = dataStore.data.first()
+        val provider = ApiProvider.providerNameFor(modelId, readCustomModelsMap(prefs))
+        return validateProviderCredentials(provider, credentials)
+    }
+
+    private fun validateProviderCredentials(
+        providerName: String,
+        credentials: ProviderCredentials,
+    ): ProviderCredentialValidation {
+        // Every built-in provider (and custom provider entry) needs a key. The
+        // provider name is routed through a requirement helper so any future
+        // exception can be changed in one place instead of drifting across view
+        // models.
+        if (providerRequiresApiKey(providerName) && credentials.apiKey.isBlank()) {
+            return ProviderCredentialValidation(
+                isValid = false,
+                errorMessage = "Add an API key in Settings to use AI on canvas.",
+            )
+        }
+        // Built-in providers also require a usable HTTPS base URL (localhost
+        // HTTP is accepted for development by [isValidApiBaseUrl]).
+        if (providerRequiresBaseUrl(providerName) && !isValidApiBaseUrl(credentials.baseUrl)) {
+            return ProviderCredentialValidation(
+                isValid = false,
+                errorMessage = "Add a valid base URL in Settings to use AI on canvas.",
+            )
+        }
+        return ProviderCredentialValidation(isValid = true)
+    }
+
+    private fun providerRequiresApiKey(providerName: String): Boolean =
+        providerName.isNotBlank()
+
+    private fun providerRequiresBaseUrl(providerName: String): Boolean =
+        providerName.isNotBlank()
 
     private fun apiKeyPrefFor(providerName: String) = when (providerName) {
         ApiProvider.Anthropic.name -> ANTHROPIC_API_KEY
