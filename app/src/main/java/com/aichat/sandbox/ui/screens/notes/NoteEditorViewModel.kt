@@ -8,6 +8,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichat.sandbox.data.local.PreferencesManager
+import com.aichat.sandbox.data.local.ProviderCredentials
 import com.aichat.sandbox.data.ink.ConstraintSnap
 import com.aichat.sandbox.data.ink.LassoTriangulation
 import com.aichat.sandbox.data.ink.MeshHitTest
@@ -3575,6 +3576,10 @@ class NoteEditorViewModel @Inject constructor(
                 val modelId = _aiSheetState.value.activeModelId
                     .ifEmpty { preferencesManager.defaultModel.first() }
                 val creds = preferencesManager.credentialsFor(modelId)
+                validateCanvasAiCredentials(modelId, creds)?.let { error ->
+                    _restyleState.update { it?.copy(loading = false, error = error) }
+                    return@launch
+                }
                 val request = AskRequest(
                     note = _note.value,
                     allItems = items.toList(),
@@ -3695,6 +3700,10 @@ class NoteEditorViewModel @Inject constructor(
                 val modelId = _aiSheetState.value.activeModelId
                     .ifEmpty { preferencesManager.defaultModel.first() }
                 val creds = preferencesManager.credentialsFor(modelId)
+                validateCanvasAiCredentials(modelId, creds)?.let { error ->
+                    _paletteState.update { it?.copy(loading = false, error = error) }
+                    return@launch
+                }
                 val scheme = _paletteState.value?.scheme ?: PaletteScheme.DEFAULT
                 val request = AskRequest(
                     note = _note.value,
@@ -3805,6 +3814,10 @@ class NoteEditorViewModel @Inject constructor(
                 val modelId = _aiSheetState.value.activeModelId
                     .ifEmpty { preferencesManager.defaultModel.first() }
                 val creds = preferencesManager.credentialsFor(modelId)
+                validateCanvasAiCredentials(modelId, creds)?.let { error ->
+                    _critiqueState.update { it?.copy(loading = false, error = error) }
+                    return@launch
+                }
                 val request = AskRequest(
                     note = _note.value,
                     allItems = items.toList(),
@@ -3925,6 +3938,10 @@ class NoteEditorViewModel @Inject constructor(
                 val modelId = _aiSheetState.value.activeModelId
                     .ifEmpty { preferencesManager.defaultModel.first() }
                 val creds = preferencesManager.credentialsFor(modelId)
+                validateCanvasAiCredentials(modelId, creds)?.let { error ->
+                    _metadataState.update { it?.copy(loading = false, error = error) }
+                    return@launch
+                }
                 val request = AskRequest(
                     note = _note.value,
                     allItems = items.toList(),
@@ -4072,6 +4089,10 @@ class NoteEditorViewModel @Inject constructor(
                 val modelId = _aiSheetState.value.activeModelId
                     .ifEmpty { preferencesManager.defaultModel.first() }
                 val creds = preferencesManager.credentialsFor(modelId)
+                validateCanvasAiCredentials(modelId, creds)?.let { error ->
+                    _brushDesignState.update { it?.copy(loading = false, error = error) }
+                    return@launch
+                }
                 val request = AskRequest(
                     note = _note.value,
                     allItems = items.toList(),
@@ -4908,6 +4929,15 @@ class NoteEditorViewModel @Inject constructor(
         return bounds
     }
 
+    private suspend fun validateCanvasAiCredentials(
+        modelId: String,
+        credentials: ProviderCredentials,
+    ): String? {
+        val validation = preferencesManager.validateCredentialsFor(modelId, credentials)
+        return if (validation.isValid) null else validation.errorMessage
+            ?: "Update Settings to use AI on canvas."
+    }
+
     private suspend fun runStream(
         turnId: String,
         prompt: String,
@@ -4923,6 +4953,11 @@ class NoteEditorViewModel @Inject constructor(
         val modelId = _aiSheetState.value.activeModelId
             .ifEmpty { preferencesManager.defaultModel.first() }
         val creds = preferencesManager.credentialsFor(modelId)
+        validateCanvasAiCredentials(modelId, creds)?.let { error ->
+            mutateTurn(turnId) { turn -> turn.copy(state = TurnState.Error(error)) }
+            streamingJobs.remove(turnId)
+            return
+        }
         // 17.5 #1: from-scratch generation pulls gallery style references (but a
         // multi-object scene doesn't — it has its own scene system message).
         // 17.5 #2: placement of a refine's cleaned vector. An icon is a
