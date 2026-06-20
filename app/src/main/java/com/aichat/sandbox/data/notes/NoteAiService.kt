@@ -130,7 +130,7 @@ class NoteAiService @Inject constructor(
         }
         val mode = if (request.isIcon) "ICON_EDIT" else "EDIT"
         if (errored) {
-            aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         val parseResult = EditOpsParser.parse(
@@ -147,6 +147,7 @@ class NoteAiService @Inject constructor(
                     rawReply = buffer.toString(),
                     outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
                     rejections = doc.rejected.map { it.reason },
+                    containsUserCanvasText = true,
                 )
                 emit(AiChunk.EditPreview(
                     doc = doc,
@@ -157,7 +158,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "edit-ops parse failed: ${t.message}")
-                aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -242,12 +243,12 @@ class NoteAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         PaletteParser.parse(buffer.toString(), knownIds = serialized.idMap.keys).fold(
             onSuccess = { suggestion ->
-                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "palette parsed")
+                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "palette parsed", containsUserCanvasText = true)
                 emit(AiChunk.PaletteResult(
                     suggestion = suggestion,
                     idMap = serialized.idMap,
@@ -256,7 +257,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "palette parse failed: ${t.message}")
-                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -371,7 +372,7 @@ class NoteAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         CritiqueParser.parse(
@@ -380,7 +381,7 @@ class NoteAiService @Inject constructor(
             knownLayers = serialized.layerMap.keys,
         ).fold(
             onSuccess = { critique ->
-                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "critique parsed")
+                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "critique parsed", containsUserCanvasText = true)
                 emit(AiChunk.CritiqueResult(
                     critique = critique,
                     idMap = serialized.idMap,
@@ -390,7 +391,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "critique parse failed: ${t.message}")
-                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -508,17 +509,17 @@ class NoteAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         MetadataParser.parse(buffer.toString()).fold(
             onSuccess = { suggestion ->
-                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "metadata parsed")
+                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "metadata parsed", containsUserCanvasText = true)
                 emit(AiChunk.MetadataResult(suggestion = suggestion, usage = lastUsage))
             },
             onFailure = { t ->
                 Log.w(TAG, "metadata parse failed: ${t.message}")
-                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -629,7 +630,7 @@ class NoteAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         RestyleParser.parse(
@@ -645,6 +646,7 @@ class NoteAiService @Inject constructor(
                     rawReply = buffer.toString(),
                     outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
                     rejections = doc.rejected.map { it.reason },
+                    containsUserCanvasText = true,
                 )
                 emit(AiChunk.EditPreview(
                     doc = doc,
@@ -655,7 +657,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "restyle parse failed: ${t.message}")
-                aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -765,7 +767,7 @@ class NoteAiService @Inject constructor(
             else -> "GENERATE"
         }
         if (errored) {
-            aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "stream error")
+            aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         EditOpsParser.parse(raw = buffer.toString(), knownIds = emptySet(), knownLayers = emptySet())
@@ -785,6 +787,7 @@ class NoteAiService @Inject constructor(
                         rawReply = buffer.toString(),
                         outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
                         rejections = doc.rejected.map { it.reason },
+                        containsUserCanvasText = true,
                     )
                     emit(AiChunk.EditPreview(
                         doc = doc,
@@ -795,7 +798,7 @@ class NoteAiService @Inject constructor(
                 },
                 onFailure = { t ->
                     Log.w(TAG, "icon-generate parse failed: ${t.message}")
-                    aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "parse failed: ${t.message}")
+                    aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                     emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
                 },
             )
@@ -845,17 +848,17 @@ class NoteAiService @Inject constructor(
         }
         val brushReq = buildDesignBrushPromptBody(request.userPrompt)
         if (errored) {
-            aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "stream error")
+            aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "stream error", containsUserCanvasText = false)
             return
         }
         BrushSpecParser.parse(buffer.toString()).fold(
             onSuccess = { spec ->
-                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "brush spec parsed")
+                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "brush spec parsed", containsUserCanvasText = false)
                 emit(AiChunk.BrushDesign(spec = spec, usage = lastUsage))
             },
             onFailure = { t ->
                 Log.w(TAG, "brush-spec parse failed: ${t.message}")
-                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = false)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
