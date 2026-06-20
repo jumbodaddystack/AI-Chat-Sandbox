@@ -128,6 +128,7 @@ object ToolDynamics {
         StrokeRenderer.TOOL_PEN -> pen(baseWidthPx, pressure, tiltRadians)
         StrokeRenderer.TOOL_PENCIL -> pencil(baseWidthPx, pressure, tiltRadians)
         StrokeRenderer.TOOL_HIGHLIGHTER -> highlighter(baseWidthPx, pressure, tiltRadians)
+        StrokeRenderer.TOOL_MARKER -> marker(baseWidthPx, pressure, tiltRadians)
         else -> pen(baseWidthPx, pressure, tiltRadians)
     }
 

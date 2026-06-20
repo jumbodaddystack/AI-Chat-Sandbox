@@ -263,3 +263,8 @@ Per Adoption principle 1 ("ink is the intended primary, the flag exists to fall
 *back*, not to opt *in* — but it still needs a checklist before default-on"), the
 switch is **not** flipped until the on-device harness above passes. This document
 is the live record of what remains.
+
+
+## Current ink-authoring default gate
+
+`InkInterop.INK_AUTHORING_DEFAULT_ENABLED` remains `false`. Headless width/geometry parity now covers pen, pencil, highlighter, and marker representative pressure/tilt fixtures; device pixel checks still intentionally cover pencil grain, marker fibre/texture, anti-aliasing, and blend/opacity output before the default can flip.

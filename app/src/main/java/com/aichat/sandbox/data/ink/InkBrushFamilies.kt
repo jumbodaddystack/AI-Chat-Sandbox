@@ -102,22 +102,29 @@ object InkBrushFamilies {
      */
     const val HIGHLIGHTER_TIP_SCALE = 1.0f
 
+    // ── Marker pressure width + opacity (matches ToolDynamics.marker) ──────
+    const val MARKER_MIN_SIZE_MULTIPLIER = 0.9f
+    const val MARKER_MAX_SIZE_MULTIPLIER = 1.15f
+    const val MARKER_MIN_OPACITY_MULTIPLIER = 0.85f
+    const val MARKER_MAX_OPACITY_MULTIPLIER = 1.0f
+
     /** Stable client ids so the families are identifiable / decodable. */
     private const val ID_PEN = "aichat:pen-pressure-taper"
     private const val ID_PENCIL = "aichat:pencil-tilt-grain"
     private const val ID_HIGHLIGHTER = "aichat:highlighter-chisel"
+    private const val ID_MARKER = "aichat:marker-pressure"
 
     /**
      * The single source of truth for which [BrushFamily] each tool authors with.
-     * [InkInterop.brushFamilyForTool] delegates here. `marker` and unknown tools
-     * keep the stable stock `marker` family (already GO in the I0.7 spike, so we
-     * don't risk regressing it).
+     * [InkInterop.brushFamilyForTool] delegates here. `marker` now uses a small
+     * pressure-width/opacity family to minimize pen-lift deltas against the
+     * committed renderer; unknown tools keep the stable stock `marker` family.
      */
     fun familyForTool(tool: String): BrushFamily = when (tool.lowercase()) {
         "pen" -> penFamily
         "pencil" -> pencilFamily
         "highlighter" -> highlighterFamily
-        "marker" -> StockBrushes.marker()
+        "marker" -> markerFamily
         else -> StockBrushes.marker()
     }
 
@@ -161,6 +168,29 @@ object InkBrushFamilies {
             roundTip(scaleX = HIGHLIGHTER_TIP_SCALE, scaleY = HIGHLIGHTER_TIP_SCALE),
             ID_HIGHLIGHTER,
         )
+    }
+
+    private val markerFamily: BrushFamily by lazy {
+        val pressureWidth = sizeMultiplierBehavior(
+            source = BrushBehavior.Source.NORMALIZED_PRESSURE,
+            sourceStart = 0f,
+            sourceEnd = 1f,
+            targetStart = MARKER_MIN_SIZE_MULTIPLIER,
+            targetEnd = MARKER_MAX_SIZE_MULTIPLIER,
+            responseCurve = EasingFunction.Linear(emptyList<ImmutableVec>()),
+        )
+        val pressureAlpha = BrushBehavior.Builder()
+            .setSource(BrushBehavior.Source.NORMALIZED_PRESSURE)
+            .setTarget(BrushBehavior.Target.OPACITY_MULTIPLIER)
+            .setSourceValueRangeStart(0f)
+            .setSourceValueRangeEnd(1f)
+            .setTargetModifierRangeStart(MARKER_MIN_OPACITY_MULTIPLIER)
+            .setTargetModifierRangeEnd(MARKER_MAX_OPACITY_MULTIPLIER)
+            .setResponseCurve(EasingFunction.Linear(emptyList<ImmutableVec>()))
+            .setSourceOutOfRangeBehavior(BrushBehavior.OutOfRange.CLAMP)
+            .setEnabledToolTypes(BrushBehavior.ALL_TOOL_TYPES)
+            .build()
+        familyOf(roundTip(behaviors = listOf(pressureWidth, pressureAlpha)), ID_MARKER)
     }
 
     // ── Construction helpers ────────────────────────────────────────────────
