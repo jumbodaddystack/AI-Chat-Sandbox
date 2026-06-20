@@ -23,6 +23,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.util.UUID
 
 /**
@@ -42,13 +43,17 @@ class NoteAiServiceTest {
                 StreamEvent.Complete(Usage(promptTokens = 10, completionTokens = 5, totalTokens = 15)),
             ),
         )
+        val imageRenderer = FakeImageRenderer(ByteArray(8) { 1 })
         val service = NoteAiService(
             chatStreamer = streamer,
             ocr = FakeRecognizer("should-not-be-called"),
-            imageRenderer = FakeImageRenderer(ByteArray(8) { 1 }),
+            imageRenderer = imageRenderer,
         )
+        val filesDir = File("/tmp/note-ai-service-files")
 
-        val chunks = service.ask(visionRequest(strokes = listOf(strokeItem()))).toList()
+        val chunks = service.ask(
+            visionRequest(strokes = listOf(strokeItem())).copy(filesDir = filesDir)
+        ).toList()
 
         assertEquals(3, chunks.size)
         assertEquals(AiChunk.Delta("Hello "), chunks[0])
@@ -67,6 +72,7 @@ class NoteAiServiceTest {
             "image metadata should embed a base64 PNG data URI",
             sentMsg.metadata!!.contains("data:image/png;base64,")
         )
+        assertEquals(filesDir, imageRenderer.lastFilesDir)
     }
 
     @Test
@@ -621,11 +627,18 @@ class NoteAiServiceTest {
     }
 
     private class FakeImageRenderer(private val bytes: ByteArray) : NoteImageRenderer {
+        var lastFilesDir: File? = null
+            private set
+
         override fun renderToPng(
             items: List<NoteItem>,
             backgroundStyle: String,
             maxEdgePx: Int,
-        ): ByteArray = bytes
+            filesDir: java.io.File?,
+        ): ByteArray {
+            lastFilesDir = filesDir
+            return bytes
+        }
     }
 
     private object ExplodingImageRenderer : NoteImageRenderer {
@@ -633,6 +646,7 @@ class NoteAiServiceTest {
             items: List<NoteItem>,
             backgroundStyle: String,
             maxEdgePx: Int,
+            filesDir: java.io.File?,
         ): ByteArray = error("image renderer must not be called on the non-vision branch")
     }
 }

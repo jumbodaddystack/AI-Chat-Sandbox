@@ -194,6 +194,7 @@ class NoteAiService @Inject constructor(
                         items = items,
                         backgroundStyle = request.note.backgroundStyle,
                         maxEdgePx = MAX_EDGE_PX,
+                        filesDir = request.filesDir,
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "Failed to rasterize note ${request.note.id} for palette", t)
@@ -321,6 +322,7 @@ class NoteAiService @Inject constructor(
                         items = items,
                         backgroundStyle = request.note.backgroundStyle,
                         maxEdgePx = MAX_EDGE_PX,
+                        filesDir = request.filesDir,
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "Failed to rasterize note ${request.note.id} for critique", t)
@@ -456,6 +458,7 @@ class NoteAiService @Inject constructor(
                         items = items,
                         backgroundStyle = request.note.backgroundStyle,
                         maxEdgePx = MAX_EDGE_PX,
+                        filesDir = request.filesDir,
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "Failed to rasterize note ${request.note.id} for metadata", t)
@@ -575,6 +578,7 @@ class NoteAiService @Inject constructor(
                         items = items,
                         backgroundStyle = request.note.backgroundStyle,
                         maxEdgePx = MAX_EDGE_PX,
+                        filesDir = request.filesDir,
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "Failed to rasterize note ${request.note.id} for restyle", t)
@@ -912,6 +916,7 @@ class NoteAiService @Inject constructor(
                 items = items,
                 backgroundStyle = request.note.backgroundStyle,
                 maxEdgePx = MAX_EDGE_PX,
+                filesDir = request.filesDir,
             )
         } catch (t: Throwable) {
             Log.w(TAG, "Failed to rasterize sketch for refine", t)
@@ -955,6 +960,7 @@ class NoteAiService @Inject constructor(
                     items = items,
                     backgroundStyle = request.note.backgroundStyle,
                     maxEdgePx = MAX_EDGE_PX,
+                    filesDir = request.filesDir,
                 )
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to rasterize note ${request.note.id}", t)
@@ -1051,6 +1057,7 @@ class NoteAiService @Inject constructor(
                     items = items,
                     backgroundStyle = request.note.backgroundStyle,
                     maxEdgePx = MAX_EDGE_PX,
+                    filesDir = request.filesDir,
                 )
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to rasterize note ${request.note.id} for EDIT", t)
@@ -1228,6 +1235,7 @@ interface NoteImageRenderer {
         items: List<NoteItem>,
         backgroundStyle: String,
         maxEdgePx: Int,
+        filesDir: java.io.File? = null,
     ): ByteArray?
 }
 
@@ -1236,6 +1244,7 @@ object NoteRasterizerImageRenderer : NoteImageRenderer {
         items: List<NoteItem>,
         backgroundStyle: String,
         maxEdgePx: Int,
+        filesDir: java.io.File?,
     ): ByteArray? {
         val bounds = NoteRasterizer.computeBounds(items) ?: return null
         val bitmap = NoteRasterizer.render(
@@ -1243,6 +1252,7 @@ object NoteRasterizerImageRenderer : NoteImageRenderer {
             bounds = bounds,
             maxEdgePx = maxEdgePx,
             backgroundStyle = backgroundStyle,
+            filesDir = filesDir,
         )
         return try {
             NoteRasterizer.toPng(bitmap)
