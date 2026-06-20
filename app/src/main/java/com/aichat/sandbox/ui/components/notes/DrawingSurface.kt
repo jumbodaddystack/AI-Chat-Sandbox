@@ -138,7 +138,7 @@ class DrawingSurface(context: Context) : View(context) {
      * Not default until the I2 parity checklist passes (see
      * `docs/ANDROIDX_INK_MIGRATION_PLAN.md`).
      */
-    var inkAuthoringEnabled: Boolean = false
+    var inkAuthoringEnabled: Boolean = InkInterop.INK_AUTHORING_DEFAULT_ENABLED
 
     /**
      * The attached ink front-buffer view, or null when ink authoring is off.
@@ -3251,7 +3251,7 @@ fun DrawingSurfaceView(
     // strokes are authored by AndroidX Ink; when false (the default, and the
     // current parity-gated behaviour) the custom quad-Bézier path is used and
     // no ink view exists. See `docs/ANDROIDX_INK_MIGRATION_PLAN.md` (I1/I2).
-    inkAuthoringEnabled: Boolean = false,
+    inkAuthoringEnabled: Boolean = InkInterop.INK_AUTHORING_DEFAULT_ENABLED,
     // Phase I8 — tutor "draw with me": guide-layer items not yet revealed by the
     // current teaching step. Default-empty, so non-tutor sessions are unaffected.
     tutorHiddenIds: Set<String> = emptySet(),
