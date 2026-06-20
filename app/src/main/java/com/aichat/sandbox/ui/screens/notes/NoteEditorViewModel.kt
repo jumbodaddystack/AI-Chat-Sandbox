@@ -4975,6 +4975,7 @@ class NoteEditorViewModel @Inject constructor(
                 }
                 mutateTurn(turnId) { turn ->
                     when (chunk) {
+                        is AiChunk.Preflight -> turn.copy(preflightWarning = chunk.result.describe().takeIf { it.isNotBlank() })
                         is AiChunk.Delta -> turn.copy(replyBuffer = turn.replyBuffer + chunk.text)
                         is AiChunk.Complete -> turn.copy(state = TurnState.Done)
                         is AiChunk.Error -> turn.copy(state = TurnState.Error(chunk.message))

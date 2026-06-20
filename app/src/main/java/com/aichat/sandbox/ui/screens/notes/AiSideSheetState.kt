@@ -293,6 +293,8 @@ data class AskTurn(
      * rather than the old single "Insert as text box" call to action.
      */
     val convertInserted: Boolean = false,
+    /** Pre-dispatch payload warning, e.g. editable JSON omissions. */
+    val preflightWarning: String? = null,
 )
 
 sealed interface TurnState {

@@ -773,6 +773,14 @@ private fun ReplyBubble(turn: AskTurn) {
             modifier = Modifier.widthIn(max = 320.dp),
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                turn.preflightWarning?.takeIf { it.isNotBlank() }?.let { warning ->
+                    Text(
+                        text = warning,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
                 when (turn.state) {
                     is TurnState.Streaming -> {
                         if (turn.replyBuffer.isEmpty()) {
