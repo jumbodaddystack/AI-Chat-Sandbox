@@ -19,12 +19,19 @@ import kotlin.random.Random
  *
  * [drawStrokePath] is shared by live, predicted, and replay rendering so a
  * stroke looks identical on commit as it did while being drawn.
+ *
+ * Ink-authoring parity note: [ToolDynamics] is the committed renderer source of
+ * truth. AndroidX Ink can now match the pen/pencil/highlighter/marker geometry
+ * curves closely enough for pen-lift deltas; remaining intentional differences
+ * are texture/pixel-compositing details (pencil grain, marker fibre, AA/blend),
+ * which are appearance-only and stay out of the canonical stroke payload.
  */
 object StrokeRenderer {
 
     const val TOOL_PEN = "pen"
     const val TOOL_HIGHLIGHTER = "highlighter"
     const val TOOL_PENCIL = "pencil"
+    const val TOOL_MARKER = "marker"
 
     private const val PENCIL_GRAIN_ALPHA = 200    // grain shader handles the rest
 

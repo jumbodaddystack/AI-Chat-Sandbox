@@ -99,13 +99,14 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
         val upstream = if (supportsVision) {
-            buildEditVisionStream(request, serialized.json)
+            buildEditVisionStream(request, scopedItems, serialized.json)
         } else {
             buildEditOcrStream(request, serialized.json)
         }
@@ -129,7 +130,7 @@ class NoteAiService @Inject constructor(
         }
         val mode = if (request.isIcon) "ICON_EDIT" else "EDIT"
         if (errored) {
-            aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         val parseResult = EditOpsParser.parse(
@@ -146,6 +147,7 @@ class NoteAiService @Inject constructor(
                     rawReply = buffer.toString(),
                     outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
                     rejections = doc.rejected.map { it.reason },
+                    containsUserCanvasText = true,
                 )
                 emit(AiChunk.EditPreview(
                     doc = doc,
@@ -156,7 +158,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "edit-ops parse failed: ${t.message}")
-                aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record(mode, request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -174,8 +176,9 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
@@ -186,7 +189,7 @@ class NoteAiService @Inject constructor(
             systemMessage = PaletteParser.SYSTEM_MESSAGE,
         )
         val promptBody = buildPalettePromptBody(request.userPrompt, serialized.json)
-        val items = request.selection ?: request.allItems
+        val items = scopedItems
         val userMessage = if (supportsVision && items.isNotEmpty()) {
             withContext(Dispatchers.Default) {
                 val pngBytes = try {
@@ -194,6 +197,7 @@ class NoteAiService @Inject constructor(
                         items = items,
                         backgroundStyle = request.note.backgroundStyle,
                         maxEdgePx = MAX_EDGE_PX,
+                        filesDir = request.filesDir,
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "Failed to rasterize note ${request.note.id} for palette", t)
@@ -239,12 +243,12 @@ class NoteAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         PaletteParser.parse(buffer.toString(), knownIds = serialized.idMap.keys).fold(
             onSuccess = { suggestion ->
-                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "palette parsed")
+                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "palette parsed", containsUserCanvasText = true)
                 emit(AiChunk.PaletteResult(
                     suggestion = suggestion,
                     idMap = serialized.idMap,
@@ -253,7 +257,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "palette parse failed: ${t.message}")
-                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("PALETTE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -297,8 +301,9 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
@@ -308,7 +313,7 @@ class NoteAiService @Inject constructor(
             model = request.modelId,
             systemMessage = CritiqueParser.SYSTEM_MESSAGE,
         )
-        val items = request.selection ?: request.allItems
+        val items = scopedItems
         // Fall back to OCR text only when we can't show the model the image; a
         // vision model reads the drawing directly.
         val ocrText = if (supportsVision) null
@@ -321,6 +326,7 @@ class NoteAiService @Inject constructor(
                         items = items,
                         backgroundStyle = request.note.backgroundStyle,
                         maxEdgePx = MAX_EDGE_PX,
+                        filesDir = request.filesDir,
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "Failed to rasterize note ${request.note.id} for critique", t)
@@ -366,7 +372,7 @@ class NoteAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         CritiqueParser.parse(
@@ -375,7 +381,7 @@ class NoteAiService @Inject constructor(
             knownLayers = serialized.layerMap.keys,
         ).fold(
             onSuccess = { critique ->
-                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "critique parsed")
+                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "critique parsed", containsUserCanvasText = true)
                 emit(AiChunk.CritiqueResult(
                     critique = critique,
                     idMap = serialized.idMap,
@@ -385,7 +391,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "critique parse failed: ${t.message}")
-                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("CRITIQUE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -432,8 +438,9 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
@@ -443,7 +450,7 @@ class NoteAiService @Inject constructor(
             model = request.modelId,
             systemMessage = MetadataParser.SYSTEM_MESSAGE,
         )
-        val items = request.selection ?: request.allItems
+        val items = scopedItems
         // OCR transcription helps a non-vision model title/tag a handwritten
         // note; a vision model reads the image directly.
         val ocrText = if (supportsVision) null
@@ -456,6 +463,7 @@ class NoteAiService @Inject constructor(
                         items = items,
                         backgroundStyle = request.note.backgroundStyle,
                         maxEdgePx = MAX_EDGE_PX,
+                        filesDir = request.filesDir,
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "Failed to rasterize note ${request.note.id} for metadata", t)
@@ -501,17 +509,17 @@ class NoteAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         MetadataParser.parse(buffer.toString()).fold(
             onSuccess = { suggestion ->
-                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "metadata parsed")
+                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "metadata parsed", containsUserCanvasText = true)
                 emit(AiChunk.MetadataResult(suggestion = suggestion, usage = lastUsage))
             },
             onFailure = { t ->
                 Log.w(TAG, "metadata parse failed: ${t.message}")
-                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("METADATA", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -553,8 +561,9 @@ class NoteAiService @Inject constructor(
         request: AskRequest,
         supportsVision: Boolean,
     ) {
+        val scopedItems = VectorCanvasJson.editableItems(request.selection ?: request.allItems, request.layers)
         val serialized = VectorCanvasJson.serialize(
-            items = request.selection ?: request.allItems,
+            items = scopedItems,
             bounds = null,
             layers = request.layers,
         )
@@ -564,7 +573,7 @@ class NoteAiService @Inject constructor(
             model = request.modelId,
             systemMessage = RestyleParser.SYSTEM_MESSAGE,
         )
-        val items = request.selection ?: request.allItems
+        val items = scopedItems
         val ocrText = if (supportsVision) null
             else resolveOcrText(request).takeIf { it.isNotBlank() }
         val promptBody = buildRestylePromptBody(request.userPrompt, serialized.json, ocrText)
@@ -575,6 +584,7 @@ class NoteAiService @Inject constructor(
                         items = items,
                         backgroundStyle = request.note.backgroundStyle,
                         maxEdgePx = MAX_EDGE_PX,
+                        filesDir = request.filesDir,
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "Failed to rasterize note ${request.note.id} for restyle", t)
@@ -620,7 +630,7 @@ class NoteAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "stream error")
+            aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         RestyleParser.parse(
@@ -636,6 +646,7 @@ class NoteAiService @Inject constructor(
                     rawReply = buffer.toString(),
                     outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
                     rejections = doc.rejected.map { it.reason },
+                    containsUserCanvasText = true,
                 )
                 emit(AiChunk.EditPreview(
                     doc = doc,
@@ -646,7 +657,7 @@ class NoteAiService @Inject constructor(
             },
             onFailure = { t ->
                 Log.w(TAG, "restyle parse failed: ${t.message}")
-                aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("RESTYLE", request.modelId, serialized.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -756,7 +767,7 @@ class NoteAiService @Inject constructor(
             else -> "GENERATE"
         }
         if (errored) {
-            aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "stream error")
+            aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "stream error", containsUserCanvasText = true)
             return
         }
         EditOpsParser.parse(raw = buffer.toString(), knownIds = emptySet(), knownLayers = emptySet())
@@ -776,6 +787,7 @@ class NoteAiService @Inject constructor(
                         rawReply = buffer.toString(),
                         outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
                         rejections = doc.rejected.map { it.reason },
+                        containsUserCanvasText = true,
                     )
                     emit(AiChunk.EditPreview(
                         doc = doc,
@@ -786,7 +798,7 @@ class NoteAiService @Inject constructor(
                 },
                 onFailure = { t ->
                     Log.w(TAG, "icon-generate parse failed: ${t.message}")
-                    aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "parse failed: ${t.message}")
+                    aiDebugLog.record(mode, request.modelId, systemMessage, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                     emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
                 },
             )
@@ -836,17 +848,17 @@ class NoteAiService @Inject constructor(
         }
         val brushReq = buildDesignBrushPromptBody(request.userPrompt)
         if (errored) {
-            aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "stream error")
+            aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "stream error", containsUserCanvasText = false)
             return
         }
         BrushSpecParser.parse(buffer.toString()).fold(
             onSuccess = { spec ->
-                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "brush spec parsed")
+                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "brush spec parsed", containsUserCanvasText = false)
                 emit(AiChunk.BrushDesign(spec = spec, usage = lastUsage))
             },
             onFailure = { t ->
                 Log.w(TAG, "brush-spec parse failed: ${t.message}")
-                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("DESIGN_BRUSH", request.modelId, brushReq, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = false)
                 emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
             },
         )
@@ -912,6 +924,7 @@ class NoteAiService @Inject constructor(
                 items = items,
                 backgroundStyle = request.note.backgroundStyle,
                 maxEdgePx = MAX_EDGE_PX,
+                filesDir = request.filesDir,
             )
         } catch (t: Throwable) {
             Log.w(TAG, "Failed to rasterize sketch for refine", t)
@@ -955,6 +968,7 @@ class NoteAiService @Inject constructor(
                     items = items,
                     backgroundStyle = request.note.backgroundStyle,
                     maxEdgePx = MAX_EDGE_PX,
+                    filesDir = request.filesDir,
                 )
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to rasterize note ${request.note.id}", t)
@@ -1041,9 +1055,9 @@ class NoteAiService @Inject constructor(
      */
     private suspend fun buildEditVisionStream(
         request: AskRequest,
+        items: List<NoteItem>,
         vectorJson: String,
     ): Flow<StreamEvent> {
-        val items = request.selection ?: request.allItems
         if (items.isEmpty()) return errorFlow(EMPTY_NOTE_MESSAGE)
         val userMessage = withContext(Dispatchers.Default) {
             val pngBytes = try {
@@ -1051,6 +1065,7 @@ class NoteAiService @Inject constructor(
                     items = items,
                     backgroundStyle = request.note.backgroundStyle,
                     maxEdgePx = MAX_EDGE_PX,
+                    filesDir = request.filesDir,
                 )
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to rasterize note ${request.note.id} for EDIT", t)
@@ -1228,6 +1243,7 @@ interface NoteImageRenderer {
         items: List<NoteItem>,
         backgroundStyle: String,
         maxEdgePx: Int,
+        filesDir: java.io.File? = null,
     ): ByteArray?
 }
 
@@ -1236,6 +1252,7 @@ object NoteRasterizerImageRenderer : NoteImageRenderer {
         items: List<NoteItem>,
         backgroundStyle: String,
         maxEdgePx: Int,
+        filesDir: java.io.File?,
     ): ByteArray? {
         val bounds = NoteRasterizer.computeBounds(items) ?: return null
         val bitmap = NoteRasterizer.render(
@@ -1243,6 +1260,7 @@ object NoteRasterizerImageRenderer : NoteImageRenderer {
             bounds = bounds,
             maxEdgePx = maxEdgePx,
             backgroundStyle = backgroundStyle,
+            filesDir = filesDir,
         )
         return try {
             NoteRasterizer.toPng(bitmap)

@@ -57,6 +57,17 @@ import kotlin.math.roundToLong
  */
 object InkInterop {
 
+    /**
+     * Live AndroidX Ink authoring remains default-off until the full parity
+     * checklist is green. Headless geometry parity is covered by JVM tests;
+     * pixel-level texture/blend checks and device feel (latency, pen-lift
+     * deltas, AA/compositing) are still intentional checklist blockers.
+     *
+     * UI entry points must use this value for their default instead of spelling
+     * `false` so flipping the default is a single, reviewed parity-gate change.
+     */
+    const val INK_AUTHORING_DEFAULT_ENABLED: Boolean = false
+
     /** Upper bound ink enforces on [StrokeInput.tiltRadians] (perpendicular). */
     private val MAX_TILT_RADIANS = (PI / 2.0).toFloat()
 
@@ -217,7 +228,10 @@ object InkInterop {
      * phase I4 carries the pressure-taper / tilt-width / highlighter-width
      * behaviors), the preset colour with [BrushPreset.opacity] folded into the
      * alpha channel, and [BrushPreset.baseWidthPx] as the brush size. (Procedural
-     * texture and jitter remain deferred — see the class KDoc.)
+     * texture and jitter remain deferred — see the class KDoc. Marker geometry
+     * is compared against [com.aichat.sandbox.ui.components.notes.ToolDynamics];
+     * its committed renderer still owns the slight pressure→alpha ramp because
+     * stable ink mesh APIs do not expose per-sample output alpha for a JVM gate.)
      */
     fun toBrush(preset: BrushPreset): Brush =
         brushForTool(
@@ -246,8 +260,9 @@ object InkInterop {
     /**
      * Choose the [BrushFamily] for a tool id. Phase I4 moved this to
      * [InkBrushFamilies], which builds custom pressure-taper (pen),
-     * tilt-width (pencil), and width-calibrated (highlighter) families on stable
-     * 1.0.0 APIs, while `marker` / unknown tools keep the stock round family.
+     * tilt-width (pencil), width-calibrated (highlighter), and
+     * pressure-width/opacity (marker) families on stable 1.0.0 APIs, while
+     * unknown tools keep the stock round family.
      */
     fun brushFamilyForTool(tool: String): BrushFamily = InkBrushFamilies.familyForTool(tool)
 
