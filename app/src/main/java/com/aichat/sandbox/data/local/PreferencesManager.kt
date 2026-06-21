@@ -259,11 +259,12 @@ class PreferencesManager @Inject constructor(
      */
     suspend fun validateCredentialsFor(
         modelId: String,
-        credentials: ProviderCredentials = credentialsFor(modelId),
+        credentials: ProviderCredentials? = null,
     ): ProviderCredentialValidation {
         val prefs = dataStore.data.first()
         val provider = ApiProvider.providerNameFor(modelId, readCustomModelsMap(prefs))
-        return validateProviderCredentials(provider, credentials)
+        val resolvedCredentials = credentials ?: credentialsFor(modelId)
+        return validateProviderCredentials(provider, resolvedCredentials)
     }
 
     private fun validateProviderCredentials(
