@@ -750,6 +750,7 @@ class NoteAiServiceTest {
             items: List<NoteItem>,
             backgroundStyle: String,
             maxEdgePx: Int,
+            filesDir: File?,
         ): ByteArray {
             lastItems = items
             return bytes
