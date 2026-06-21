@@ -1148,11 +1148,13 @@ class DrawingSurface(context: Context) : View(context) {
                     appendLassoVertex(event, idx)
                 } else if (inkAuthoringEnabled && strokeTool.isInk && inkAuthoringView != null) {
                     // Ink-first authoring: hand the live stroke to ink's
-                    // front buffer. On failure [startInkStroke] resets
-                    // [inkStrokeActive] so the stroke is simply dropped rather
-                    // than half-drawn through two engines.
-                    inkStrokeActive = true
-                    startInkStroke(event, idx)
+                    // front buffer. If ink declines the stroke, immediately
+                    // seed the legacy path with this down sample so stylus and
+                    // finger-ink routes continue normally.
+                    if (!startInkStroke(event, idx)) {
+                        motionPredictor?.record(event)
+                        if (strokeTool.isEraser) eraseAtLastSample()
+                    }
                 } else {
                     appendStylusSample(event, idx)
                     motionPredictor?.record(event)
@@ -1700,9 +1702,12 @@ class DrawingSurface(context: Context) : View(context) {
         }
     }
 
-    private fun startInkStroke(event: MotionEvent, idx: Int) {
+    private fun startInkStroke(event: MotionEvent, idx: Int): Boolean {
         appendStylusSample(event, idx)
-        val view = inkAuthoringView ?: run { inkStrokeActive = false; return }
+        val view = inkAuthoringView ?: run {
+            inkStrokeActive = false
+            return false
+        }
         val brush = InkInterop.brushForTool(strokeTool.id, strokeColor, strokeEffectiveWidthPx)
         val pointerId = event.getPointerId(idx)
         val id = try {
@@ -1713,7 +1718,7 @@ class DrawingSurface(context: Context) : View(context) {
         } catch (e: Exception) {
             android.util.Log.w(TAG, "ink startStroke failed; preserving canonical fallback samples", e)
             inkStrokeActive = false
-            return
+            return false
         }
         val origin = if (recordingStartedAt != 0L) {
             android.os.SystemClock.elapsedRealtime() - recordingStartedAt
@@ -1729,6 +1734,8 @@ class DrawingSurface(context: Context) : View(context) {
             holdRecognition = false,
         )
         activeInkStrokeId = id
+        inkStrokeActive = true
+        return true
     }
 
     private fun addInkStroke(event: MotionEvent, idx: Int) {
