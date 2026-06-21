@@ -149,6 +149,23 @@ class VectorCanvasJsonTest {
         assertFalse(out.includedItemIds.isEmpty())
     }
 
+
+    @Test
+    fun largeStrokeSetReportsDroppedItemIdsAndJsonByteSize() {
+        val strokes = (0 until 900).map { idx ->
+            val samples = FloatArray(160 * StrokeCodec.FLOATS_PER_SAMPLE) { sample ->
+                ((idx * 17 + sample) % 1000).toFloat()
+            }
+            strokeItem("n1", "pen", samples).copy(zIndex = idx)
+        }
+
+        val out = VectorCanvasJson.serialize(strokes, bounds = null, layers = emptyList())
+
+        assertTrue(out.jsonByteSize <= VectorCanvasJson.MAX_JSON_BYTES)
+        assertTrue("expected JSON cap to omit editable items", out.droppedItemIds.isNotEmpty())
+        assertEquals(out.json.toByteArray(Charsets.UTF_8).size, out.jsonByteSize)
+    }
+
     @Test
     fun serializeIsByteIdenticalAcrossRuns() {
         val s1 = strokeItem("n1", "pen", floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 1f, 0f))

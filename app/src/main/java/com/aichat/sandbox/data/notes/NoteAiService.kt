@@ -105,6 +105,14 @@ class NoteAiService @Inject constructor(
             bounds = null,
             layers = request.layers,
         )
+        val preflight = buildPreflight(scopedItems, serialized, pngByteSizeActual = null)
+        if (preflight.describe().isNotBlank()) {
+            emit(AiChunk.Preflight(preflight))
+        }
+        if (preflight.requiresExplicitConfirmation && !request.confirmLargeScope) {
+            emit(AiChunk.Error(LARGE_SCOPE_CONFIRMATION_MESSAGE))
+            return
+        }
         val upstream = if (supportsVision) {
             buildEditVisionStream(request, scopedItems, serialized.json)
         } else {
@@ -1165,6 +1173,24 @@ class NoteAiService @Inject constructor(
         is StreamEvent.ToolCallDelta -> AiChunk.Delta("")
     }
 
+    private fun buildPreflight(
+        items: List<NoteItem>,
+        serialized: VectorCanvasJson.SerializedCanvas?,
+        pngByteSizeActual: Int?,
+    ): NoteAiPreflightResult {
+        val pixels = MAX_EDGE_PX * MAX_EDGE_PX
+        return NoteAiPreflightResult(
+            itemCount = items.size,
+            rasterPixelSize = pixels,
+            // Conservative RGBA upper-bound estimate; actual PNG size is filled
+            // when a raster has already been produced by a caller.
+            pngByteSizeEstimate = pixels * 4,
+            pngByteSizeActual = pngByteSizeActual,
+            jsonByteSize = serialized?.jsonByteSize ?: 0,
+            droppedItemIds = serialized?.droppedItemIds.orEmpty(),
+        )
+    }
+
     private fun errorFlow(message: String): Flow<StreamEvent> = flow {
         emit(StreamEvent.Error(message))
     }
@@ -1178,6 +1204,9 @@ class NoteAiService @Inject constructor(
          * rejecting requests; see Phase 2.5 risks.
          */
         const val MAX_EDGE_PX: Int = 1536
+
+        const val LARGE_SCOPE_CONFIRMATION_MESSAGE: String =
+            "This AI scope is very large. Confirm that you want to send it before trying again."
 
         /**
          * Icon artboard edge in world units, mirroring the editor's

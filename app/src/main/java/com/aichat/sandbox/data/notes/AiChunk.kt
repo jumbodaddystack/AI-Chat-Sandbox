@@ -10,6 +10,13 @@ import com.aichat.sandbox.data.model.Usage
  * deltas are intentionally absent: the note pipeline never asks for tools.
  */
 sealed interface AiChunk {
+    /**
+     * Emitted before a note AI request is dispatched so UI can surface scope
+     * size, payload estimates, and JSON omissions instead of silently sending
+     * a huge/partial editable context.
+     */
+    data class Preflight(val result: NoteAiPreflightResult) : AiChunk
+
     data class Delta(val text: String) : AiChunk
     data class Complete(val usage: Usage?) : AiChunk
     data class Error(val message: String) : AiChunk
@@ -74,4 +81,39 @@ sealed interface AiChunk {
         val suggestion: NoteMetadataSuggestion,
         val usage: Usage? = null,
     ) : AiChunk
+}
+
+
+/** Size/scope summary computed before dispatching a note AI request. */
+data class NoteAiPreflightResult(
+    val itemCount: Int,
+    val rasterPixelSize: Int,
+    val pngByteSizeEstimate: Int,
+    val pngByteSizeActual: Int?,
+    val jsonByteSize: Int,
+    val droppedItemIds: List<String>,
+) {
+    val omittedJsonItemCount: Int get() = droppedItemIds.size
+
+    val omissionMessage: String? get() = if (droppedItemIds.isEmpty()) null
+        else "${droppedItemIds.size} items omitted from editable JSON; AI can still see them in the image."
+
+    val requiresExplicitConfirmation: Boolean get() =
+        itemCount > EXTREME_ITEM_COUNT ||
+            rasterPixelSize > EXTREME_RASTER_PIXELS ||
+            (pngByteSizeActual ?: pngByteSizeEstimate) > EXTREME_PNG_BYTES
+
+    fun describe(): String = buildString {
+        omissionMessage?.let { append(it) }
+        if (requiresExplicitConfirmation) {
+            if (isNotEmpty()) append(' ')
+            append("This AI scope is very large; confirm before sending.")
+        }
+    }
+
+    companion object {
+        const val EXTREME_ITEM_COUNT: Int = 750
+        const val EXTREME_RASTER_PIXELS: Int = 1536 * 1536
+        const val EXTREME_PNG_BYTES: Int = 12 * 1024 * 1024
+    }
 }

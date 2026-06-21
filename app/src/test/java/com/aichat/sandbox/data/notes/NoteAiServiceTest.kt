@@ -393,6 +393,70 @@ class NoteAiServiceTest {
     }
 
     @Test
+    fun editModePreflightWarnsWhenCanvasJsonOmitsItems() = runTest {
+        val streamer = RecordingChatStreamer(
+            flow = flowOf(
+                StreamEvent.Delta("```edit-ops\n{ \"schema\": 1, \"summary\": \"ok\", \"ops\": [] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = FakeImageRenderer(ByteArray(4)),
+        )
+        val strokes = largeStrokeSet(900)
+
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = strokes,
+                selection = null,
+                userPrompt = "clean up",
+                modelId = "gpt-4o",
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.EDIT,
+                confirmLargeScope = true,
+            )
+        ).toList()
+
+        val preflight = chunks.filterIsInstance<AiChunk.Preflight>().single().result
+        assertEquals(strokes.size, preflight.itemCount)
+        assertTrue(preflight.jsonByteSize <= VectorCanvasJson.MAX_JSON_BYTES)
+        assertTrue("expected omitted item warning", preflight.droppedItemIds.isNotEmpty())
+        assertTrue(preflight.describe().contains("items omitted from editable JSON"))
+        assertTrue("request should still dispatch after explicit confirmation", streamer.lastMessages.isNotEmpty())
+    }
+
+    @Test
+    fun editModeBlocksExtremeScopeWithoutConfirmation() = runTest {
+        val streamer = RecordingChatStreamer(flow = flowOf(StreamEvent.Complete(null)))
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = FakeImageRenderer(ByteArray(4)),
+        )
+
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = largeStrokeSet(900),
+                selection = null,
+                userPrompt = "clean up",
+                modelId = "gpt-4o",
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.EDIT,
+            )
+        ).toList()
+
+        assertTrue(chunks.any { it is AiChunk.Preflight })
+        assertEquals(NoteAiService.LARGE_SCOPE_CONFIRMATION_MESSAGE, chunks.filterIsInstance<AiChunk.Error>().single().message)
+        assertTrue("blocked requests must not dispatch upstream", streamer.lastMessages.isEmpty())
+    }
+
+    @Test
     fun jsonDrivenVisionModesRasterizeOnlyUnlockedSerializedScope() = runTest {
         val lockedLayer = NoteLayer(
             id = "L_LOCK", noteId = "n", name = "Locked",
@@ -629,6 +693,13 @@ class NoteAiServiceTest {
         baseWidthPx = 2f,
         payload = StrokeCodec.encode(floatArrayOf(10f, 10f, 1f, 0f, 20f, 20f, 1f, 0f)),
     )
+
+    private fun largeStrokeSet(count: Int): List<NoteItem> = (0 until count).map { idx ->
+        val samples = FloatArray(160 * StrokeCodec.FLOATS_PER_SAMPLE) { sample ->
+            ((idx * 17 + sample) % 1000).toFloat()
+        }
+        strokeItem().copy(zIndex = idx, payload = StrokeCodec.encode(samples))
+    }
 
     companion object {
         private const val VISION_PROMPT = "What does this note say?"

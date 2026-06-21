@@ -68,6 +68,8 @@ data class AskRequest(
     val scene: Boolean = false,
     /** Phase 8 — requested scene density. Ignored unless [scene] is true. */
     val sceneComplexity: SceneComplexity = SceneComplexity.DEFAULT,
+    /** Explicit user opt-in for extreme note AI payload scopes. */
+    val confirmLargeScope: Boolean = false,
 )
 
 /**

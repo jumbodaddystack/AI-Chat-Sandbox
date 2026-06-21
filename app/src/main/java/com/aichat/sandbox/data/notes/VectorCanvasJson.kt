@@ -57,6 +57,8 @@ object VectorCanvasJson {
         val includedItemIds: List<String>,
         /** Items that were dropped by the size cap (their on-disk ids). */
         val droppedItemIds: List<String>,
+        /** UTF-8 byte size of [json], after any soft-cap omissions. */
+        val jsonByteSize: Int = json.toByteArray(Charsets.UTF_8).size,
     )
 
     /**
