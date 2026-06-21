@@ -2,6 +2,7 @@ package com.aichat.sandbox.data.notes
 
 import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.data.model.Message
+import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.data.model.NoteLayer
@@ -297,6 +298,10 @@ class NoteAiServiceTest {
                 isIcon = true,
                 generate = true,
                 styleReferences = listOf("{\"schema\":1,\"items\":[]}"),
+                // Isolate the from-scratch generation contract: no self-refine
+                // second turn, so the ExplodingImageRenderer proves the *first*
+                // turn never rasterizes. (Self-refine has dedicated tests.)
+                selfRefineIterations = 0,
             )
         ).toList()
 
@@ -349,12 +354,17 @@ class NoteAiServiceTest {
 
         val preview = chunks.filterIsInstance<AiChunk.EditPreview>().single()
         assertTrue(preview.doc.ops.single() is EditOp.AddPath)
-        assertEquals(EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE, streamer.lastChat!!.systemMessage)
-        val sent = streamer.lastMessages.single()
-        // Vision refine: the sketch raster rides as a multimodal image.
+        // First turn: the refine system message + the sketch raster as a
+        // multimodal image. (The reused streamer flow makes the self-refine
+        // second turn return the same add_path, so the staged doc is unchanged.)
+        assertEquals(EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE, streamer.chats.first().systemMessage)
+        val sent = streamer.messageLists.first().single()
         assertEquals("multimodal", sent.contentType)
         assertTrue(sent.metadata!!.contains("data:image/png;base64,"))
         assertTrue(sent.content.contains("make the corners sharper"))
+        // A vision refine always runs one self-refine critique turn.
+        assertEquals(2, streamer.callCount)
+        assertEquals(EditOpsParser.ICON_CRITIQUE_REFINE_SYSTEM_MESSAGE, streamer.chats[1].systemMessage)
     }
 
     @Test
@@ -390,6 +400,116 @@ class NoteAiServiceTest {
         val sent = streamer.lastMessages.single()
         assertEquals("text", sent.contentType)
         assertEquals(EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE, streamer.lastChat!!.systemMessage)
+        // Non-vision models can't see the rendered candidate, so self-refine
+        // is skipped — exactly one turn.
+        assertEquals(1, streamer.callCount)
+    }
+
+    @Test
+    fun selfRefineSecondTurnSendsCandidateAndAdoptsCorrection() = runTest {
+        // Turn 1: a rough first draft. Turn 2 (critique): a corrected doc the
+        // service should adopt over the first draft.
+        val streamer = RecordingChatStreamer.ofTurns(
+            flowOf(
+                StreamEvent.Delta("```edit-ops\n{ \"schema\": 1, \"summary\": \"draft\", "),
+                StreamEvent.Delta("\"ops\": [ { \"op\": \"add_path\", \"closed\": true, "),
+                StreamEvent.Delta("\"anchors\": [ [0,0], [10,0], [10,10] ] } ] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+            flowOf(
+                StreamEvent.Delta("```edit-ops\n{ \"schema\": 1, \"summary\": \"refined\", "),
+                StreamEvent.Delta("\"ops\": [ { \"op\": \"add_shape\", \"shape\": "),
+                StreamEvent.Delta("{ \"type\": \"ellipse\", \"cx\": 5, \"cy\": 5, \"r\": 4 } } ] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = FakeImageRenderer(ByteArray(8) { 3 }),
+        )
+        val sketch = strokeItem()
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = listOf(sketch),
+                selection = listOf(sketch),
+                userPrompt = "tidy it",
+                modelId = "gpt-4o", // vision
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.EDIT,
+                isIcon = true,
+                generate = true,
+                refine = true,
+            )
+        ).toList()
+
+        val preview = chunks.filterIsInstance<AiChunk.EditPreview>().single()
+        // The corrected (second-turn) doc was adopted.
+        assertEquals("refined", preview.doc.summary)
+        assertTrue(preview.doc.ops.single() is EditOp.AddShape)
+        // The critique turn carried the prior assistant reply + a rendered image.
+        assertEquals(2, streamer.callCount)
+        val critiqueMsgs = streamer.messageLists[1]
+        assertEquals(2, critiqueMsgs.size)
+        assertEquals(MessageRole.ASSISTANT.value, critiqueMsgs[0].role)
+        assertTrue(critiqueMsgs[0].content.contains("draft"))
+        assertEquals("multimodal", critiqueMsgs[1].contentType)
+        // Refine sends two images (the sketch + the rendered candidate).
+        assertEquals(2, countOccurrences(critiqueMsgs[1].metadata!!, "data:image/png;base64,"))
+    }
+
+    @Test
+    fun selfRefineEmptyCritiqueKeepsFirstDoc() = runTest {
+        // Turn 2 returns an empty ops array → the model judged the render good,
+        // so the first-turn doc is kept unchanged.
+        val streamer = RecordingChatStreamer.ofTurns(
+            flowOf(
+                StreamEvent.Delta("```edit-ops\n{ \"schema\": 1, \"summary\": \"draft\", "),
+                StreamEvent.Delta("\"ops\": [ { \"op\": \"add_path\", \"closed\": true, "),
+                StreamEvent.Delta("\"anchors\": [ [0,0], [10,0], [10,10] ] } ] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+            flowOf(
+                StreamEvent.Delta("```edit-ops\n{ \"schema\": 1, \"summary\": \"good\", \"ops\": [] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = FakeImageRenderer(ByteArray(8) { 9 }),
+        )
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = emptyList(),
+                selection = null,
+                userPrompt = "a gear",
+                modelId = "gpt-4o",
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.EDIT,
+                isIcon = true,
+                generate = true,
+            )
+        ).toList()
+
+        val preview = chunks.filterIsInstance<AiChunk.EditPreview>().single()
+        assertEquals("draft", preview.doc.summary)
+        assertTrue(preview.doc.ops.single() is EditOp.AddPath)
+        assertEquals(2, streamer.callCount)
+    }
+
+    private fun countOccurrences(haystack: String, needle: String): Int {
+        var count = 0
+        var idx = haystack.indexOf(needle)
+        while (idx >= 0) {
+            count++
+            idx = haystack.indexOf(needle, idx + needle.length)
+        }
+        return count
     }
 
     @Test
@@ -708,13 +828,20 @@ class NoteAiServiceTest {
 
     // ---- fakes ----
 
-    private class RecordingChatStreamer(
-        private val flow: Flow<StreamEvent>,
+    private class RecordingChatStreamer private constructor(
+        private val flows: List<Flow<StreamEvent>>,
     ) : ChatStreamer {
-        var lastChat: Chat? = null
+        /** Single reused flow (back-compat: every turn returns the same stream). */
+        constructor(flow: Flow<StreamEvent>) : this(listOf(flow))
+
+        /** Full per-turn history, in call order. */
+        val chats = mutableListOf<Chat>()
+        val messageLists = mutableListOf<List<Message>>()
+        var callCount: Int = 0
             private set
-        var lastMessages: List<Message> = emptyList()
-            private set
+
+        val lastChat: Chat? get() = chats.lastOrNull()
+        val lastMessages: List<Message> get() = messageLists.lastOrNull() ?: emptyList()
 
         override fun sendMessageStream(
             baseUrl: String,
@@ -726,9 +853,18 @@ class NoteAiServiceTest {
             extraImageOnLastUserTurn: ByteArray?,
             extraSystemSuffix: String?,
         ): Flow<StreamEvent> {
-            lastChat = chat
-            lastMessages = messages
-            return flow
+            chats += chat
+            messageLists += messages
+            // Turn i returns flows[i]; once exhausted, the last flow is reused.
+            val f = flows[minOf(callCount, flows.size - 1)]
+            callCount++
+            return f
+        }
+
+        companion object {
+            /** A streamer that returns a distinct flow for each successive turn. */
+            fun ofTurns(vararg turnFlows: Flow<StreamEvent>) =
+                RecordingChatStreamer(turnFlows.toList())
         }
     }
 

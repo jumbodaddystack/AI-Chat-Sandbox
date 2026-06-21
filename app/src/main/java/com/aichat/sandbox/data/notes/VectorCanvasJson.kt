@@ -43,6 +43,15 @@ object VectorCanvasJson {
     /** Downsample threshold per stroke. */
     const val MAX_POINTS_PER_STROKE: Int = 64
 
+    /**
+     * Phase 19 (Stage 5) — higher per-stroke point budget for icon EDIT, where
+     * the model reads the stroke JSON to clean a wobbly sketch into crisp
+     * geometry. The default 64 over-decimates a detailed sketch centerline; 128
+     * keeps enough fidelity for a faithful clean-up while staying well under
+     * [MAX_JSON_BYTES] for the small item counts an icon carries.
+     */
+    const val ICON_MAX_POINTS_PER_STROKE: Int = 128
+
     /** Soft cap on the encoded JSON size. ~ 180 KB. */
     const val MAX_JSON_BYTES: Int = 180 * 1024
 
@@ -90,6 +99,12 @@ object VectorCanvasJson {
         items: List<NoteItem>,
         bounds: FloatArray?,
         layers: List<NoteLayer>,
+        /**
+         * Per-stroke point budget before downsampling (Stage 5). Icon EDIT
+         * passes [ICON_MAX_POINTS_PER_STROKE] for higher-fidelity clean-up;
+         * everything else keeps the compact [MAX_POINTS_PER_STROKE] default.
+         */
+        maxPointsPerStroke: Int = MAX_POINTS_PER_STROKE,
     ): SerializedCanvas {
         // Drop locked layers and any items that reference them. Keep this path
         // delegated to [editableItems] so JSON scope and AI raster scope cannot
@@ -132,7 +147,7 @@ object VectorCanvasJson {
 
         // Encode every item into a JsonObject.
         val encoded: List<EncodedItem> = visibleItems.mapNotNull { item ->
-            encodeItem(item, reverseMap, reverseLayerMap)
+            encodeItem(item, reverseMap, reverseLayerMap, maxPointsPerStroke)
         }
 
         // Build the doc, then drop items until under the soft cap.
@@ -215,6 +230,7 @@ object VectorCanvasJson {
         item: NoteItem,
         idMap: Map<String, String>,
         layerMap: Map<String, String>,
+        maxPointsPerStroke: Int = MAX_POINTS_PER_STROKE,
     ): EncodedItem? {
         val shortId = idMap[item.id] ?: return null
         val obj = JsonObject().apply {
@@ -241,7 +257,7 @@ object VectorCanvasJson {
                 } catch (_: Throwable) {
                     return null
                 }
-                val (pointsJson, downsampled) = encodeStrokePoints(samples)
+                val (pointsJson, downsampled) = encodeStrokePoints(samples, maxPointsPerStroke)
                 obj.add("points", pointsJson)
                 if (downsampled) obj.addProperty("pointsDownsampled", true)
                 sizeHint = samples.size
@@ -373,11 +389,14 @@ object VectorCanvasJson {
         return if (idx < 0) -1L else idx.toLong()
     }
 
-    private fun encodeStrokePoints(samples: FloatArray): Pair<JsonArray, Boolean> {
+    private fun encodeStrokePoints(
+        samples: FloatArray,
+        maxPointsPerStroke: Int = MAX_POINTS_PER_STROKE,
+    ): Pair<JsonArray, Boolean> {
         val stride = StrokeCodec.FLOATS_PER_SAMPLE
         val count = samples.size / stride
         if (count == 0) return JsonArray() to false
-        val (indices, downsampled) = pickSampleIndices(count)
+        val (indices, downsampled) = pickSampleIndices(count, maxPointsPerStroke)
         val arr = JsonArray(indices.size)
         for (i in indices) {
             val base = i * stride
@@ -391,17 +410,21 @@ object VectorCanvasJson {
         return arr to downsampled
     }
 
-    private fun pickSampleIndices(count: Int): Pair<IntArray, Boolean> {
-        if (count <= MAX_POINTS_PER_STROKE) {
+    private fun pickSampleIndices(
+        count: Int,
+        maxPointsPerStroke: Int = MAX_POINTS_PER_STROKE,
+    ): Pair<IntArray, Boolean> {
+        val cap = maxPointsPerStroke.coerceAtLeast(2)
+        if (count <= cap) {
             return IntArray(count) { it } to false
         }
         // Even spacing, always keep first + last.
-        val out = IntArray(MAX_POINTS_PER_STROKE)
-        val step = (count - 1).toDouble() / (MAX_POINTS_PER_STROKE - 1).toDouble()
-        for (i in 0 until MAX_POINTS_PER_STROKE) {
+        val out = IntArray(cap)
+        val step = (count - 1).toDouble() / (cap - 1).toDouble()
+        for (i in 0 until cap) {
             out[i] = (i * step).toInt().coerceIn(0, count - 1)
         }
-        out[MAX_POINTS_PER_STROKE - 1] = count - 1
+        out[cap - 1] = count - 1
         return out to true
     }
 

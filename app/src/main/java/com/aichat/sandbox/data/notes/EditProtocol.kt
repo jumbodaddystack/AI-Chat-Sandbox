@@ -236,6 +236,15 @@ data class EditOpsDoc(
     val ops: List<EditOp>,
     /** Any ops the parser saw but couldn't accept, with their rejection reasons. */
     val rejected: List<RejectedOp> = emptyList(),
+    /**
+     * Phase 19 — optional "plan-then-draw" decomposition. The icon prompts ask
+     * the model to name the icon's parts in a short `"plan"` string *before*
+     * emitting geometry, which measurably improves layout. Purely advisory:
+     * the applier never reads it, but it is surfaced in the debug log and can
+     * feed the self-refine critique turn. Empty when the model omits it (older
+     * prompts / non-icon modes).
+     */
+    val plan: String = "",
 ) {
     data class RejectedOp(
         val raw: String,
