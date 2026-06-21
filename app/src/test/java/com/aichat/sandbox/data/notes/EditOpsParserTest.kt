@@ -404,4 +404,56 @@ class EditOpsParserTest {
         assertEquals(0, doc.ops.size)
         assertFalse(doc.rejected.isEmpty())
     }
+
+    // ---- Phase 19 ----
+
+    @Test
+    fun planKeyIsParsedAndDoesNotAffectOps() {
+        val raw = """{ "schema": 1, "plan": "circle + 12 teeth", "summary": "gear",
+            "ops": [ { "op": "delete", "ids": ["s_1"] } ] }"""
+        val doc = EditOpsParser.parse(raw).getOrThrow()
+        assertEquals("circle + 12 teeth", doc.plan)
+        assertEquals(1, doc.ops.size)
+        assertTrue(doc.ops.single() is EditOp.Delete)
+    }
+
+    @Test
+    fun missingPlanKeyDefaultsToEmpty() {
+        val doc = EditOpsParser.parse("""{ "summary": "x", "ops": [] }""").getOrThrow()
+        assertEquals("", doc.plan)
+    }
+
+    @Test
+    fun iconMessagesCarryDesignPrinciplesAndPlanKey() {
+        for (msg in listOf(
+            EditOpsParser.ICON_SYSTEM_MESSAGE,
+            EditOpsParser.ICON_GENERATE_SYSTEM_MESSAGE,
+            EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE,
+            EditOpsParser.ICON_CRITIQUE_REFINE_SYSTEM_MESSAGE,
+        )) {
+            assertTrue("design principles present", msg.contains("Optical centering"))
+            assertTrue("plan key advertised", msg.contains("\"plan\""))
+        }
+    }
+
+    @Test
+    fun refineAndEditBuildersEmbedStyleReferences() {
+        val refs = listOf("{\"schema\":1,\"items\":[]}")
+        for (msg in listOf(
+            EditOpsParser.buildIconRefineSystemMessage(refs),
+            EditOpsParser.buildIconEditSystemMessage(refs),
+        )) {
+            assertTrue("reference block present", msg.contains("Reference 1:"))
+            assertTrue(msg.contains("{\"schema\":1,\"items\":[]}"))
+        }
+        // With no references the base message is returned unchanged.
+        assertEquals(
+            EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE,
+            EditOpsParser.buildIconRefineSystemMessage(emptyList()),
+        )
+        assertEquals(
+            EditOpsParser.ICON_SYSTEM_MESSAGE,
+            EditOpsParser.buildIconEditSystemMessage(emptyList()),
+        )
+    }
 }

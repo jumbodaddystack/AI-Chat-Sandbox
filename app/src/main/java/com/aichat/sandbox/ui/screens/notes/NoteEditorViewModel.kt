@@ -4965,8 +4965,16 @@ class NoteEditorViewModel @Inject constructor(
         // invisible — so we fit the result onto the sketch's own footprint and
         // replace it (Undo restores the sketch to compare). A regular note has
         // an infinite canvas, so the side-by-side comparison still works.
-        val styleReferences = if (generate && !refine && !scene) loadStyleReferenceIcons() else emptyList()
         val isIcon = _note.value.isIcon
+        // Stage 2 — anchor the model to gallery style references for from-scratch
+        // generation, "Make real" refine, AND icon edits (was generation only).
+        // A multi-object scene keeps its own scene system message, so it opts out.
+        val styleReferences =
+            if (!scene && (generate || refine || (mode == AskMode.EDIT && isIcon))) {
+                loadStyleReferenceIcons()
+            } else {
+                emptyList()
+            }
         // Phase 8 — a scene always fits into the chosen placement rect so its
         // grouped geometry is bounded and lands on-canvas; otherwise fall back
         // to the refine placement logic.

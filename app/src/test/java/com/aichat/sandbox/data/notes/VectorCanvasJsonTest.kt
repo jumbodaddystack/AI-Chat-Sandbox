@@ -130,6 +130,35 @@ class VectorCanvasJsonTest {
     }
 
     @Test
+    fun iconPointBudgetRetainsMoreDetailThanDefault() {
+        // A stroke between the default and icon caps is downsampled at the
+        // default budget but preserved verbatim at the icon budget (Stage 5).
+        val n = (VectorCanvasJson.MAX_POINTS_PER_STROKE + VectorCanvasJson.ICON_MAX_POINTS_PER_STROKE) / 2
+        val samples = FloatArray(n * StrokeCodec.FLOATS_PER_SAMPLE)
+        for (i in 0 until n) {
+            val base = i * StrokeCodec.FLOATS_PER_SAMPLE
+            samples[base] = i.toFloat()
+            samples[base + 1] = (i * 2).toFloat()
+            samples[base + 2] = 1f
+            samples[base + 3] = 0f
+        }
+        val item = strokeItem("n1", "pen", samples)
+
+        val def = VectorCanvasJson.serialize(listOf(item), bounds = null, layers = emptyList())
+        val icon = VectorCanvasJson.serialize(
+            listOf(item), bounds = null, layers = emptyList(),
+            maxPointsPerStroke = VectorCanvasJson.ICON_MAX_POINTS_PER_STROKE,
+        )
+        val defPts = JsonParser.parseString(def.json).asJsonObject
+            .getAsJsonArray("items")[0].asJsonObject.getAsJsonArray("points")
+        val iconPts = JsonParser.parseString(icon.json).asJsonObject
+            .getAsJsonArray("items")[0].asJsonObject.getAsJsonArray("points")
+
+        assertTrue("default budget should downsample", defPts.size() <= VectorCanvasJson.MAX_POINTS_PER_STROKE)
+        assertEquals("icon budget should keep every sample", n, iconPts.size())
+    }
+
+    @Test
     fun softCapDropsLargestItemsUntilUnderBudget() {
         // Build 50 strokes; force a tiny cap by setting the soft cap to the
         // size of a few strokes by counting actual encoded bytes — easier:

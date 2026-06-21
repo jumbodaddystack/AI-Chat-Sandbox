@@ -94,6 +94,9 @@ object EditOpsParser {
     ): EditOpsDoc {
         val schema = root.get("schema")?.takeIf { it.isJsonPrimitive }?.asInt ?: EditOpsDoc.SCHEMA
         val summary = root.get("summary")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
+        // Phase 19 — optional plan-then-draw decomposition. Unknown to older
+        // prompts; harmless when absent.
+        val plan = root.get("plan")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
         val opsArr = root.get("ops") as? JsonArray ?: JsonArray()
         val accepted = ArrayList<EditOp>(opsArr.size())
         val rejected = ArrayList<EditOpsDoc.RejectedOp>()
@@ -116,6 +119,7 @@ object EditOpsParser {
             summary = summary,
             ops = accepted,
             rejected = rejected,
+            plan = plan,
         )
     }
 
@@ -441,6 +445,39 @@ object EditOpsParser {
         if (i < size()) this[i]?.takeIf { it.isJsonPrimitive }?.asFloat else null
 
     /**
+     * Phase 19 — concrete icon-design rules shared by every icon prompt
+     * (generate / refine / edit / critique). LLMs author vector geometry
+     * "blind" — without these rules they centre geometrically, drift in stroke
+     * weight, and leave wobble. Appended to each icon system message by the
+     * `buildIcon*SystemMessage` helpers and the critique message.
+     */
+    const val ICON_DESIGN_PRINCIPLES: String =
+        "Icon design principles — follow these:\n" +
+            "- Plan first: in a short `plan` string, name the icon's main parts " +
+            "and how they sit together before you emit any geometry.\n" +
+            "- Optical centering: balance the icon by visual weight, not just by " +
+            "the bounding box — nudge so it *looks* centred on the artboard.\n" +
+            "- Consistent stroke weight: use one `width` for all outline strokes " +
+            "unless the user asks for contrast.\n" +
+            "- Align to a coarse keyline grid: snap key edges/centres to clean " +
+            "round coordinates so parts line up.\n" +
+            "- Uniform corner radius and even padding from the artboard edge.\n" +
+            "- Favour symmetry when the subject is symmetric (mirror left/right " +
+            "or top/bottom so the halves match).\n" +
+            "- Prefer a few clean, closed paths over many tiny fragments."
+
+    /**
+     * Phase 19 — the response-schema snippet for icon authoring/edit prompts,
+     * including the optional `plan` key (plan-then-draw). The parser ignores
+     * unknown keys, so `plan` is backward-compatible.
+     */
+    private const val ICON_SCHEMA_BLOCK: String =
+        "Reply with ONLY a fenced ```edit-ops block matching this schema:\n\n" +
+            "{ \"schema\": 1, \"plan\": \"<short part decomposition>\",\n" +
+            "  \"summary\": \"<one short sentence>\",\n" +
+            "  \"ops\": [ /* operations */ ] }\n\n"
+
+    /**
      * The Phase 7.2 system message the EDIT request injects. Kept here so
      * tests can assert the prompt content without reaching into
      * [NoteAiService].
@@ -475,9 +512,7 @@ object EditOpsParser {
             "clean paths with `replace_with_path`, align " +
             "edges, and keep the icon monochrome unless the user asks for " +
             "colour.\n\n" +
-            "Reply with ONLY a fenced ```edit-ops block matching this schema:\n\n" +
-            "{ \"schema\": 1, \"summary\": \"<one short sentence>\",\n" +
-            "  \"ops\": [ /* operations referencing items by ID */ ] }\n\n" +
+            ICON_SCHEMA_BLOCK +
             "Rules:\n" +
             "- Modify only items that appear in the provided JSON.\n" +
             "- Do not invent new strokes from scratch. To turn a freehand stroke " +
@@ -485,7 +520,8 @@ object EditOpsParser {
             "referencing the original ID.\n" +
             "- Do not target items on locked or hidden layers.\n" +
             "- If you can't fulfil the request, return an empty ops array and " +
-            "explain in `summary`. Never reply outside the fenced block."
+            "explain in `summary`. Never reply outside the fenced block.\n\n" +
+            ICON_DESIGN_PRINCIPLES
 
     /**
      * Phase 17.5 #1 — base system message for *generating* a new icon from
@@ -502,9 +538,7 @@ object EditOpsParser {
             "geometry inside it with a little padding and aim for a balanced, " +
             "centred composition. Match the references' stroke weight, corner " +
             "treatment, fill-vs-outline choice, and level of detail.\n\n" +
-            "Reply with ONLY a fenced ```edit-ops block matching this schema:\n\n" +
-            "{ \"schema\": 1, \"summary\": \"<one short sentence>\",\n" +
-            "  \"ops\": [ /* add_path / add_shape operations */ ] }\n\n" +
+            ICON_SCHEMA_BLOCK +
             "Author geometry with these ops:\n" +
             "- add_path: { \"op\": \"add_path\", \"subpaths\": [ { \"closed\": " +
             "true, \"anchors\": [ [x,y,inDx,inDy,outDx,outDy], … ] } ], " +
@@ -518,7 +552,8 @@ object EditOpsParser {
             "Rules:\n" +
             "- Keep it monochrome unless the user asks for colour.\n" +
             "- Prefer a few clean paths over many tiny ones.\n" +
-            "- Never reply outside the fenced block."
+            "- Never reply outside the fenced block.\n\n" +
+            ICON_DESIGN_PRINCIPLES
 
     /**
      * Phase 17.5 #2 — system message for the annotate-and-iterate "Make real"
@@ -534,9 +569,7 @@ object EditOpsParser {
             "and placement, but straighten wobbly lines, regularise curves, and " +
             "close shapes that were meant to be closed. Draw at roughly the " +
             "same coordinates as the sketch.\n\n" +
-            "Reply with ONLY a fenced ```edit-ops block matching this schema:\n\n" +
-            "{ \"schema\": 1, \"summary\": \"<one short sentence>\",\n" +
-            "  \"ops\": [ /* add_path / add_shape operations */ ] }\n\n" +
+            ICON_SCHEMA_BLOCK +
             "Author geometry with these ops:\n" +
             "- add_path: { \"op\": \"add_path\", \"subpaths\": [ { \"closed\": " +
             "true, \"anchors\": [ [x,y,inDx,inDy,outDx,outDy], … ] } ], " +
@@ -548,7 +581,8 @@ object EditOpsParser {
             "Rules:\n" +
             "- Keep it monochrome unless the sketch is clearly coloured.\n" +
             "- Prefer a few clean paths over many tiny ones.\n" +
-            "- Never reply outside the fenced block."
+            "- Never reply outside the fenced block.\n\n" +
+            ICON_DESIGN_PRINCIPLES
 
     /**
      * Phase 8 — system message for generating a compact, editable **scene** of
@@ -595,11 +629,39 @@ object EditOpsParser {
      * is returned unchanged, so the model still generates (just without a
      * concrete style anchor).
      */
-    fun buildIconGenerateSystemMessage(styleReferences: List<String>): String {
+    fun buildIconGenerateSystemMessage(styleReferences: List<String>): String =
+        appendStyleReferences(ICON_GENERATE_SYSTEM_MESSAGE, styleReferences)
+
+    /**
+     * Phase 19 (Stage 2) — refine-mode system message with optional style
+     * references. Mirrors [buildIconGenerateSystemMessage] so the "Make real"
+     * loop anchors the cleaned vector to the user's gallery style. With no
+     * references the base [ICON_REFINE_SYSTEM_MESSAGE] is returned unchanged.
+     */
+    fun buildIconRefineSystemMessage(styleReferences: List<String>): String =
+        appendStyleReferences(ICON_REFINE_SYSTEM_MESSAGE, styleReferences)
+
+    /**
+     * Phase 19 (Stage 2) — icon-EDIT system message with optional style
+     * references. The references are purely stylistic anchors (fenced JSON, not
+     * part of the editable id map), so they never collide with the existing
+     * item ids the edit ops target. With no references the base
+     * [ICON_SYSTEM_MESSAGE] is returned unchanged.
+     */
+    fun buildIconEditSystemMessage(styleReferences: List<String>): String =
+        appendStyleReferences(ICON_SYSTEM_MESSAGE, styleReferences)
+
+    /**
+     * Append up to three [styleReferences] (each a [VectorCanvasJson] string of
+     * one gallery icon) to [base] as a fenced reference block. Shared by the
+     * generate / refine / edit icon builders. With no references [base] is
+     * returned unchanged.
+     */
+    private fun appendStyleReferences(base: String, styleReferences: List<String>): String {
         val refs = styleReferences.filter { it.isNotBlank() }.take(3)
-        if (refs.isEmpty()) return ICON_GENERATE_SYSTEM_MESSAGE
+        if (refs.isEmpty()) return base
         return buildString {
-            append(ICON_GENERATE_SYSTEM_MESSAGE)
+            append(base)
             append("\n\nStyle reference icons (JSON, same anchor format as ")
             append("`add_path`):\n")
             refs.forEachIndexed { i, json ->
@@ -609,4 +671,35 @@ object EditOpsParser {
             }
         }
     }
+
+    /**
+     * Phase 19 (Stage 1) — system message for the render-in-the-loop self-refine
+     * critique turn. The model is shown its own previous `edit-ops` reply plus a
+     * render of that output (and, for "Make real", the original sketch), and is
+     * asked to judge the *rendered* result and return a COMPLETE corrected
+     * document. Reuses the icon authoring-op schema + design principles so the
+     * format and quality bar match the first turn.
+     */
+    const val ICON_CRITIQUE_REFINE_SYSTEM_MESSAGE: String =
+        "You previously authored a vector icon as an `edit-ops` document. You " +
+            "are now shown that output rendered exactly as the app draws it. " +
+            "When a sketch is present it is labelled Image 1 (the user's " +
+            "intent) and your rendered output is Image 2; otherwise the single " +
+            "image is your rendered output. Critique the RENDERED result for " +
+            "proportion, balance, optical centering, stroke-weight consistency, " +
+            "edge alignment, and any wobble or gaps, then return a COMPLETE " +
+            "corrected `edit-ops` document that re-authors the whole icon (do " +
+            "not reply with a partial diff).\n\n" +
+            ICON_SCHEMA_BLOCK +
+            "Author geometry with add_path / add_shape ops, exactly as before " +
+            "(each anchor is [x,y,inDx,inDy,outDx,outDy]; use [x,y] for a " +
+            "corner).\n\n" +
+            "Rules:\n" +
+            "- If the rendered icon is already good, reply with an empty ops " +
+            "array (and say so in `summary`) — do not change it for its own " +
+            "sake.\n" +
+            "- Keep the same subject, colours and overall composition; only " +
+            "fix what's visibly off.\n" +
+            "- Never reply outside the fenced block.\n\n" +
+            ICON_DESIGN_PRINCIPLES
 }

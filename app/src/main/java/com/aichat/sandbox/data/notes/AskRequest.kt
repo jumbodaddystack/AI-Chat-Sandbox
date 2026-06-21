@@ -70,6 +70,15 @@ data class AskRequest(
     val sceneComplexity: SceneComplexity = SceneComplexity.DEFAULT,
     /** Explicit user opt-in for extreme note AI payload scopes. */
     val confirmLargeScope: Boolean = false,
+    /**
+     * Phase 19 (Stage 1) — render-in-the-loop self-refine passes for icon
+     * authoring (GENERATE / "Make real" REFINE). After the model emits geometry,
+     * the service renders it and sends a second vision turn asking the model to
+     * critique its own rendered output and re-author. Default 1 ("always on"
+     * for vision models); the service zeroes it for non-vision models and for
+     * scene generation. Hard-capped at [NoteAiService.MAX_SELF_REFINE_ITERS].
+     */
+    val selfRefineIterations: Int = 1,
 )
 
 /**

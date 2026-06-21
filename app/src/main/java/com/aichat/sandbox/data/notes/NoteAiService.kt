@@ -104,6 +104,13 @@ class NoteAiService @Inject constructor(
             items = scopedItems,
             bounds = null,
             layers = request.layers,
+            // Stage 5 — icons get a higher per-stroke fidelity so the model can
+            // clean a wobbly sketch faithfully rather than from a decimated path.
+            maxPointsPerStroke = if (request.isIcon) {
+                VectorCanvasJson.ICON_MAX_POINTS_PER_STROKE
+            } else {
+                VectorCanvasJson.MAX_POINTS_PER_STROKE
+            },
         )
         val preflight = buildPreflight(scopedItems, serialized, pngByteSizeActual = null)
         if (preflight.describe().isNotBlank()) {
@@ -720,7 +727,9 @@ class NoteAiService @Inject constructor(
         // Phase 8 — a scene generates several grouped objects (never a refine).
         val scene = request.scene && !refining
         val systemMessage = when {
-            refining -> EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE
+            // Stage 2 — refine now also anchors to gallery style references
+            // (was a bare message), mirroring from-scratch generation.
+            refining -> EditOpsParser.buildIconRefineSystemMessage(request.styleReferences)
             scene -> EditOpsParser.SCENE_GENERATE_SYSTEM_MESSAGE
             else -> EditOpsParser.buildIconGenerateSystemMessage(request.styleReferences)
         }
@@ -783,10 +792,29 @@ class NoteAiService @Inject constructor(
                 onSuccess = { parsed ->
                     // Phase 8 — bound a scene's object count so a runaway reply
                     // stays compact (extras land in `rejected`, not on canvas).
-                    val doc = if (scene) {
+                    val capped = if (scene) {
                         SceneGen.capSceneAddOps(parsed, request.sceneComplexity.maxObjects)
                     } else {
                         parsed
+                    }
+                    // Phase 19 (Stage 1) — render-in-the-loop self-refine for
+                    // single-icon authoring (generate / "Make real" refine).
+                    // Never for scene (cost) — and the loop itself no-ops for
+                    // non-vision models.
+                    val refined = if (scene) capped else refineLoop(
+                        request = request,
+                        supportsVision = supportsVision,
+                        firstDoc = capped,
+                        firstRawReply = buffer.toString(),
+                        refineSketchItems = if (refining) refineItems else null,
+                    )
+                    // Phase 19 (Stage 4) — unify authored outline weight for a
+                    // single icon (never a multi-object scene, where varied
+                    // weights may be intentional).
+                    val doc = if (scene || !request.isIcon) {
+                        refined
+                    } else {
+                        AuthoredNormalizer.unifyAuthoredStrokeWidths(refined)
                     }
                     aiDebugLog.record(
                         mode = mode,
@@ -810,6 +838,190 @@ class NoteAiService @Inject constructor(
                     emit(AiChunk.Error(PARSE_FAILED_MESSAGE))
                 },
             )
+    }
+
+    /**
+     * Phase 19 (Stage 1) — render-in-the-loop self-refinement.
+     *
+     * LLMs author vector geometry "blind" — they emit bezier coordinates
+     * without ever seeing the result, so icons come out misproportioned and
+     * unbalanced. After the first authoring turn we apply the ops, rasterize
+     * the candidate exactly as the canvas draws it, and send a *second* vision
+     * turn ([EditOpsParser.ICON_CRITIQUE_REFINE_SYSTEM_MESSAGE]) showing the
+     * model its own rendered output (and, for "Make real", the original sketch)
+     * so it can critique and re-author. This is the single biggest quality
+     * lever for blind vector generation.
+     *
+     * Robustness: any rasterization / stream / parse failure, or an empty
+     * candidate, keeps the **last good doc** — the result is never worse than
+     * the single-shot output. The loop no-ops for non-vision models and is
+     * hard-capped at [MAX_SELF_REFINE_ITERS]. An empty `ops` reply is the
+     * model's "it's already good" signal and stops the loop early.
+     */
+    private suspend fun refineLoop(
+        request: AskRequest,
+        supportsVision: Boolean,
+        firstDoc: EditOpsDoc,
+        firstRawReply: String,
+        refineSketchItems: List<NoteItem>?,
+    ): EditOpsDoc {
+        val iterations =
+            if (supportsVision) request.selfRefineIterations.coerceIn(0, MAX_SELF_REFINE_ITERS)
+            else 0
+        if (iterations == 0) return firstDoc
+        var doc = firstDoc
+        var priorReply = firstRawReply
+        repeat(iterations) {
+            // Authoring ops only — nothing to render means nothing to critique.
+            if (doc.ops.isEmpty()) return doc
+            val candidate = EditOpsApplier.apply(
+                baselineItems = emptyList(),
+                doc = doc,
+                idMap = emptyMap(),
+                layerMap = emptyMap(),
+                layers = request.layers,
+                newItemNoteId = request.note.id,
+            )
+            if (candidate.isEmpty()) return doc
+            val messages = buildCritiqueTurn(request, priorReply, candidate, refineSketchItems)
+                ?: return doc
+            val (nextDoc, nextRaw) = streamCritiqueDoc(request, messages) ?: return doc
+            // Empty ops = the model judged the render good; keep what we have.
+            if (nextDoc.ops.isEmpty()) return doc
+            doc = nextDoc
+            priorReply = nextRaw
+        }
+        return doc
+    }
+
+    /**
+     * Build the second (critique) turn's message list: the model's prior
+     * `edit-ops` reply as an assistant message, followed by a multimodal user
+     * message carrying the rendered candidate (and, for refine, the original
+     * sketch as a second image). Returns null when the candidate can't be
+     * rasterized so the caller keeps the last good doc.
+     */
+    private suspend fun buildCritiqueTurn(
+        request: AskRequest,
+        priorReply: String,
+        candidateItems: List<NoteItem>,
+        refineSketchItems: List<NoteItem>?,
+    ): List<Message>? = withContext(Dispatchers.Default) {
+        val candidatePng = renderRefinePng(request, candidateItems) ?: return@withContext null
+        val images = ArrayList<ImageAttachment>(2)
+        // Image 1 (refine only): the user's original sketch, so the model can
+        // judge fidelity. Best-effort — a sketch that fails to render just
+        // drops to the single-image (candidate-only) critique.
+        val hasSketch = if (refineSketchItems != null) {
+            val sketchPng = renderRefinePng(request, refineSketchItems)
+            if (sketchPng != null) { images += ImageAttachment(dataUri = toDataUri(sketchPng)); true } else false
+        } else {
+            false
+        }
+        images += ImageAttachment(dataUri = toDataUri(candidatePng))
+        val assistant = Message(
+            chatId = SYNTHETIC_CHAT_ID,
+            role = MessageRole.ASSISTANT.value,
+            content = priorReply,
+            contentType = "text",
+            metadata = null,
+        )
+        val critique = Message(
+            chatId = SYNTHETIC_CHAT_ID,
+            role = MessageRole.USER.value,
+            content = buildCritiquePromptBody(request.userPrompt, hasSketch),
+            contentType = "multimodal",
+            metadata = gson.toJson(ImageMetadata(images = images)),
+        )
+        listOf(assistant, critique)
+    }
+
+    /** Stream the critique turn and parse it; null on stream error / parse failure. */
+    private suspend fun streamCritiqueDoc(
+        request: AskRequest,
+        messages: List<Message>,
+    ): Pair<EditOpsDoc, String>? {
+        val chat = Chat(
+            id = SYNTHETIC_CHAT_ID,
+            title = "Icon Refine Critique",
+            model = request.modelId,
+            systemMessage = EditOpsParser.ICON_CRITIQUE_REFINE_SYSTEM_MESSAGE,
+        )
+        val upstream = chatStreamer.sendMessageStream(
+            baseUrl = request.baseUrl,
+            apiKey = request.apiKey,
+            chat = chat,
+            messages = messages,
+        )
+        val buffer = StringBuilder()
+        var errored = false
+        upstream.collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> buffer.append(event.content)
+                is StreamEvent.Complete -> { /* usage rolled into the first turn's report */ }
+                is StreamEvent.Error -> { errored = true }
+                is StreamEvent.ToolCallDelta -> { /* impossible in this flow */ }
+            }
+        }
+        val raw = buffer.toString()
+        if (errored) {
+            aiDebugLog.record("REFINE_CRITIQUE", request.modelId, chat.systemMessage.orEmpty(), raw, "stream error", containsUserCanvasText = true)
+            return null
+        }
+        return EditOpsParser.parse(raw, knownIds = emptySet(), knownLayers = emptySet()).fold(
+            onSuccess = { doc ->
+                aiDebugLog.record(
+                    mode = "REFINE_CRITIQUE",
+                    modelId = request.modelId,
+                    request = chat.systemMessage.orEmpty(),
+                    rawReply = raw,
+                    outcome = "${doc.ops.size} ops accepted, ${doc.rejected.size} rejected",
+                    rejections = doc.rejected.map { it.reason },
+                    containsUserCanvasText = true,
+                )
+                doc to raw
+            },
+            onFailure = { t ->
+                Log.w(TAG, "refine-critique parse failed: ${t.message}")
+                aiDebugLog.record("REFINE_CRITIQUE", request.modelId, chat.systemMessage.orEmpty(), raw, "parse failed: ${t.message}", containsUserCanvasText = true)
+                null
+            },
+        )
+    }
+
+    /** Rasterize [items] for the self-refine critique at [REFINE_MAX_EDGE_PX]. */
+    private fun renderRefinePng(request: AskRequest, items: List<NoteItem>): ByteArray? = try {
+        imageRenderer.renderToPng(
+            items = items,
+            backgroundStyle = request.note.backgroundStyle,
+            maxEdgePx = REFINE_MAX_EDGE_PX,
+            filesDir = request.filesDir,
+        )
+    } catch (t: Throwable) {
+        Log.w(TAG, "Failed to rasterize candidate for self-refine", t)
+        null
+    }
+
+    private fun toDataUri(png: ByteArray): String =
+        "data:image/png;base64,${Base64.getEncoder().encodeToString(png)}"
+
+    /** Critique-turn user prompt. Exposed `internal` so a unit test can pin it. */
+    internal fun buildCritiquePromptBody(userPrompt: String, hasSketch: Boolean): String = buildString {
+        if (hasSketch) {
+            append("Image 1 is the user's original sketch (their intent); Image 2 is your ")
+            append("current output rendered exactly as the app draws it. Compare them: keep ")
+            append("Image 1's shapes and proportions, but fix anything in Image 2 that looks ")
+            append("off.")
+        } else {
+            append("The image is your current output rendered exactly as the app draws it. ")
+            append("Judge it as a finished icon and fix anything that looks off.")
+        }
+        append(" Reply with a complete corrected edit-ops document, or an empty ops array ")
+        append("if it is already good.")
+        if (userPrompt.isNotBlank()) {
+            append("\n\nThe user's request was: ")
+            append(userPrompt)
+        }
     }
 
     /**
@@ -1161,7 +1373,7 @@ class NoteAiService @Inject constructor(
         id = SYNTHETIC_CHAT_ID,
         title = "Note Edit",
         model = request.modelId,
-        systemMessage = if (request.isIcon) EditOpsParser.ICON_SYSTEM_MESSAGE
+        systemMessage = if (request.isIcon) EditOpsParser.buildIconEditSystemMessage(request.styleReferences)
         else EditOpsParser.SYSTEM_MESSAGE,
     )
 
@@ -1214,6 +1426,21 @@ class NoteAiService @Inject constructor(
          * tell the model where to lay generated geometry (17.5 #1).
          */
         const val ICON_ARTBOARD_WORLD: Float = 768f
+
+        /**
+         * Phase 19 (Stage 1) — longest-edge in px for the self-refine candidate
+         * re-render. Smaller than [MAX_EDGE_PX] because the critique only needs
+         * the gestalt (proportion / balance / alignment), not fine text, and a
+         * smaller raster keeps the extra turn cheap.
+         */
+        const val REFINE_MAX_EDGE_PX: Int = 1024
+
+        /**
+         * Phase 19 (Stage 1) — hard cap on render-in-the-loop self-refine passes,
+         * regardless of [AskRequest.selfRefineIterations], so a request can never
+         * fan out into an unbounded chain of paid vision turns.
+         */
+        const val MAX_SELF_REFINE_ITERS: Int = 2
 
         internal const val SYSTEM_INSTRUCTION: String =
             "You are helping the user with a handwritten note. Be concise. " +
