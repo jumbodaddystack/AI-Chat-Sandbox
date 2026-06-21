@@ -1,5 +1,6 @@
 package com.aichat.sandbox.data.ink.parity
 
+import com.aichat.sandbox.data.ink.InkToolSampleFixtures
 import com.aichat.sandbox.data.ink.spike.RenderingFidelitySpike
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -137,6 +138,28 @@ class InkRenderParityTest {
         val r = correlation(curV, inkV)
         assertTrue("ink/current pencil-tilt correlation $r should be high", r > 0.9f)
         println("[I4 pencil tilt] curRatio=${cur[n - 1] / cur[0]} inkRatio=$inkRatio corr=$r cv=$cv")
+    }
+
+
+    /**
+     * Marker now has a live ink family for its slight pressure-width ramp. Stable
+     * ink can also carry an opacity multiplier, but the JVM mesh exposes geometry
+     * only; pixel alpha remains an intentional device/pixel-diff checklist item.
+     */
+    @Test
+    fun markerPressureWidthMatchesCommittedRenderer() {
+        val fixture = InkToolSampleFixtures.marker
+        val cur = InkRenderParityHarness.widthProfileCurrent(fixture.samples, fixture.tool, fixture.baseWidthPx)
+        val ink = InkRenderParityHarness.widthProfileInk(fixture.samples, fixture.tool, fixture.baseWidthPx)
+
+        assertTrue("current marker widens with pressure", cur.last() / cur.first() > 1.15f)
+        val inkV = interiorInk(ink)
+        assertTrue("enough interior cross-sections (${inkV.size})", inkV.size >= cur.size / 2)
+        val inkRatio = inkV.last() / inkV.first()
+        assertTrue("ink marker pressure ratio $inkRatio should track the renderer", inkRatio in 1.10f..1.45f)
+        val curV = cur.copyOfRange(0, inkV.size).toList()
+        val r = correlation(curV, inkV)
+        assertTrue("ink/current marker-width correlation $r should be high", r > 0.85f)
     }
 
     /**

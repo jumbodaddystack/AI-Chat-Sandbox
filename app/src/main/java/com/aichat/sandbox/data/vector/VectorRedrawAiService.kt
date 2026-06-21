@@ -123,14 +123,14 @@ class VectorRedrawAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "stream error")
+            aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return@flow
         }
 
         val scene = VectorSceneParser.parse(buffer.toString(), request.document.viewport)
             .getOrElse { t ->
                 logWarn("redraw scene parse failed: ${t.message}")
-                aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(VectorRedrawAiChunk.Error(PARSE_FAILED_MESSAGE))
                 return@flow
             }
@@ -139,12 +139,12 @@ class VectorRedrawAiService @Inject constructor(
             VectorSceneCompiler.compile(scene)
         }.getOrElse { t ->
             logWarn("redraw scene compile failed", t)
-            aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "compile failed: ${t.message}")
+            aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "compile failed: ${t.message}", containsUserCanvasText = true)
             emit(VectorRedrawAiChunk.Error(COMPILE_FAILED_MESSAGE))
             return@flow
         }
 
-        aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "scene compiled")
+        aiDebugLog.record("VECTOR_REDRAW", request.modelId, summary.json, buffer.toString(), "scene compiled", containsUserCanvasText = true)
         emit(
             VectorRedrawAiChunk.Complete(
                 VectorRedrawAiResult(

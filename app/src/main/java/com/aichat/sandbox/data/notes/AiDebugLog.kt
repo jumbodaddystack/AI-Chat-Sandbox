@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -24,6 +25,10 @@ data class AiDebugTrace(
     val epochMillis: Long,
     /** Short mode tag, e.g. "EDIT", "GENERATE", "PALETTE", "VECTOR_TUNEUP". */
     val mode: String,
+    /** Human-readable mode label for UI warnings, e.g. "Edit canvas". */
+    val modeLabel: String,
+    /** True when the retained request may include text authored on the canvas. */
+    val containsUserCanvasText: Boolean,
     val modelId: String,
     /** The prompt / canvas-JSON payload sent to the model (best-effort). */
     val request: String,
@@ -36,7 +41,8 @@ data class AiDebugTrace(
 ) {
     /** A copy-friendly plain-text dump of the whole exchange. */
     fun toShareText(): String = buildString {
-        append("mode: ").append(mode).append('\n')
+        append("mode: ").append(mode).append(" (").append(modeLabel).append(")\n")
+        append("contains user canvas text: ").append(containsUserCanvasText).append('\n')
         append("model: ").append(modelId).append('\n')
         append("outcome: ").append(outcome).append('\n')
         if (rejections.isNotEmpty()) {
@@ -74,8 +80,9 @@ class AiDebugLog @Inject constructor() {
 
     /**
      * Append one exchange. No-op when [enabled] is false. Oversized request /
-     * reply payloads are clamped so a runaway model reply can't grow the buffer
-     * without bound. Newest entries sort first; the list is capped at [CAP].
+     * reply payloads are redacted and clamped so data URIs, OCR/text bodies,
+     * and runaway model replies cannot grow the buffer without bound. Newest
+     * entries sort first; the list is capped at [CAP] and [MAX_RETAINED_BYTES].
      */
     fun record(
         mode: String,
@@ -84,19 +91,24 @@ class AiDebugLog @Inject constructor() {
         rawReply: String,
         outcome: String,
         rejections: List<String> = emptyList(),
+        modeLabel: String = labelForMode(mode),
+        containsUserCanvasText: Boolean = false,
+        stripTextItemBodies: Boolean = false,
     ) {
         if (!enabled) return
         val trace = AiDebugTrace(
             id = UUID.randomUUID().toString(),
             epochMillis = System.currentTimeMillis(),
             mode = mode,
+            modeLabel = modeLabel,
+            containsUserCanvasText = containsUserCanvasText,
             modelId = modelId,
-            request = request.clampForLog(),
-            rawReply = rawReply.clampForLog(),
+            request = request.redactForLog(stripTextItemBodies),
+            rawReply = rawReply.redactForLog(stripTextItemBodies = false),
             outcome = outcome,
             rejections = rejections,
         )
-        _traces.update { old -> (listOf(trace) + old).take(CAP) }
+        _traces.update { old -> trimToRetentionLimits(listOf(trace) + old) }
     }
 
     /** Drop every captured exchange (the log screen's "Clear" action). */
@@ -104,15 +116,88 @@ class AiDebugLog @Inject constructor() {
         _traces.value = emptyList()
     }
 
+    private fun trimToRetentionLimits(candidates: List<AiDebugTrace>): List<AiDebugTrace> {
+        val kept = ArrayList<AiDebugTrace>(CAP)
+        var bytes = 0
+        for (trace in candidates.take(CAP)) {
+            val traceBytes = trace.retainedBytes()
+            if (kept.isNotEmpty() && bytes + traceBytes > MAX_RETAINED_BYTES) break
+            kept += trace
+            bytes += traceBytes
+        }
+        return kept
+    }
+
+    private fun AiDebugTrace.retainedBytes(): Int =
+        request.toByteArray(Charsets.UTF_8).size +
+            rawReply.toByteArray(Charsets.UTF_8).size +
+            outcome.toByteArray(Charsets.UTF_8).size +
+            rejections.sumOf { it.toByteArray(Charsets.UTF_8).size }
+
+    private fun String.redactForLog(stripTextItemBodies: Boolean): String {
+        val withoutImages = DATA_URI_REGEX.replace(this) { match ->
+            val value = match.value
+            "data:${match.groupValues[1]};base64,[redacted sha256=${value.sha256Prefix()} bytes=${value.toByteArray(Charsets.UTF_8).size}]"
+        }
+        val withoutText = if (stripTextItemBodies) {
+            TEXT_BODY_REGEX.replace(withoutImages) { match ->
+                "${match.groupValues[1]}[redacted canvas text body]${match.groupValues[2]}"
+            }
+        } else {
+            withoutImages
+        }
+        return withoutText.clampForLog()
+    }
+
     private fun String.clampForLog(): String =
-        if (length <= MAX_FIELD_CHARS) this
-        else substring(0, MAX_FIELD_CHARS) + "\n…[truncated ${length - MAX_FIELD_CHARS} chars]"
+        if (toByteArray(Charsets.UTF_8).size <= MAX_FIELD_BYTES) this
+        else {
+            var end = minOf(length, MAX_FIELD_CHARS)
+            var candidate = substring(0, end)
+            while (candidate.toByteArray(Charsets.UTF_8).size > MAX_FIELD_BYTES && end > 0) {
+                end = (end * 0.9).toInt().coerceAtLeast(end - 1024).coerceAtLeast(0)
+                candidate = substring(0, end)
+            }
+            candidate + "\n…[truncated ${length - end} chars]"
+        }
+
+    private fun String.sha256Prefix(): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(12)
 
     companion object {
+        private val DATA_URI_REGEX = Regex("data:([a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+);base64,[A-Za-z0-9+/=_-]+")
+        private val TEXT_BODY_REGEX = Regex("(\\\"(?:text|body|ocrText|recognizedText|transcript|content)\\\"\\s*:\\s*\\\")[^\\\"]*?(\\\")")
+
+        fun labelForMode(mode: String): String = when (mode) {
+            "EDIT" -> "Edit canvas"
+            "ICON_EDIT" -> "Edit icon"
+            "PALETTE" -> "Palette suggestions"
+            "CRITIQUE" -> "Canvas critique"
+            "METADATA" -> "Note metadata"
+            "RESTYLE" -> "Restyle canvas"
+            "REFINE" -> "Refine generated art"
+            "SCENE" -> "Generate scene"
+            "GENERATE" -> "Generate art"
+            "DESIGN_BRUSH" -> "Design brush"
+            "VECTOR_TUNEUP" -> "Vector tune-up"
+            "VECTOR_REDRAW" -> "Vector redraw"
+            else -> mode.replace('_', ' ').lowercase().replaceFirstChar { it.titlecase() }
+        }
+
+
         /** Most recent exchanges retained. Plenty for "what just happened?". */
         const val CAP: Int = 25
 
         /** Per-field character clamp so one huge reply can't bloat memory. */
         const val MAX_FIELD_CHARS: Int = 64 * 1024
+
+        /** Per-field UTF-8 byte clamp used before persistence. */
+        const val MAX_FIELD_BYTES: Int = 64 * 1024
+
+        /** Whole-buffer retained byte cap across request/reply/outcome/rejections. */
+        const val MAX_RETAINED_BYTES: Int = 512 * 1024
     }
 }

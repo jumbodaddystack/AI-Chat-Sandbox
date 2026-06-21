@@ -138,7 +138,7 @@ class DrawingSurface(context: Context) : View(context) {
      * Not default until the I2 parity checklist passes (see
      * `docs/ANDROIDX_INK_MIGRATION_PLAN.md`).
      */
-    var inkAuthoringEnabled: Boolean = false
+    var inkAuthoringEnabled: Boolean = InkInterop.INK_AUTHORING_DEFAULT_ENABLED
 
     /**
      * The attached ink front-buffer view, or null when ink authoring is off.
@@ -169,6 +169,14 @@ class DrawingSurface(context: Context) : View(context) {
         val fixedWidth: Boolean,
         val recordingOriginMs: Long?,
         val holdRecognition: Boolean,
+    )
+
+    private data class InkFallbackMeta(
+        val tool: Tool,
+        val color: Int,
+        val widthPx: Float,
+        val fixedWidth: Boolean,
+        val holdRecognition: Boolean = false,
     )
 
     private val inkPending: HashMap<InProgressStrokeId, InkPendingStroke> = HashMap()
@@ -1140,11 +1148,13 @@ class DrawingSurface(context: Context) : View(context) {
                     appendLassoVertex(event, idx)
                 } else if (inkAuthoringEnabled && strokeTool.isInk && inkAuthoringView != null) {
                     // Ink-first authoring: hand the live stroke to ink's
-                    // front buffer. On failure [startInkStroke] resets
-                    // [inkStrokeActive] so the stroke is simply dropped rather
-                    // than half-drawn through two engines.
-                    inkStrokeActive = true
-                    startInkStroke(event, idx)
+                    // front buffer. If ink declines the stroke, immediately
+                    // seed the legacy path with this down sample so stylus and
+                    // finger-ink routes continue normally.
+                    if (!startInkStroke(event, idx)) {
+                        motionPredictor?.record(event)
+                        if (strokeTool.isEraser) eraseAtLastSample()
+                    }
                 } else {
                     appendStylusSample(event, idx)
                     motionPredictor?.record(event)
@@ -1658,9 +1668,17 @@ class DrawingSurface(context: Context) : View(context) {
         view.addFinishedStrokesListener(inkFinishedListener)
     }
 
-    /** Detach the overlay, abandoning any in-flight ink stroke without loss. */
+    /** Detach the overlay, committing any in-flight ink stroke from the canonical fallback buffer. */
     internal fun detachInkAuthoring() {
-        if (inkStrokeActive || activeInkStrokeId != null) cancelInkStroke()
+        if (inkStrokeActive || activeInkStrokeId != null || inkPending.isNotEmpty()) {
+            commitInkFallback(
+                reason = "detach",
+                meta = activeInkStrokeId?.let { fallbackMetaFor(it) } ?: inkPending.values.firstOrNull()?.let {
+                    InkFallbackMeta(it.tool, it.color, it.widthPx, it.fixedWidth, it.holdRecognition)
+                },
+                cancelOverlayStroke = true,
+            )
+        }
         inkStrokeActive = false
         inkAuthoringView?.removeFinishedStrokesListener(inkFinishedListener)
         inkAuthoringView = null
@@ -1684,8 +1702,12 @@ class DrawingSurface(context: Context) : View(context) {
         }
     }
 
-    private fun startInkStroke(event: MotionEvent, idx: Int) {
-        val view = inkAuthoringView ?: run { inkStrokeActive = false; return }
+    private fun startInkStroke(event: MotionEvent, idx: Int): Boolean {
+        appendStylusSample(event, idx)
+        val view = inkAuthoringView ?: run {
+            inkStrokeActive = false
+            return false
+        }
         val brush = InkInterop.brushForTool(strokeTool.id, strokeColor, strokeEffectiveWidthPx)
         val pointerId = event.getPointerId(idx)
         val id = try {
@@ -1694,9 +1716,9 @@ class DrawingSurface(context: Context) : View(context) {
             // overlay exactly covers this surface.
             view.startStroke(event, pointerId, brush, motionEventToWorldMatrix())
         } catch (e: Exception) {
-            android.util.Log.w(TAG, "ink startStroke failed; falling back (stroke dropped)", e)
+            android.util.Log.w(TAG, "ink startStroke failed; preserving canonical fallback samples", e)
             inkStrokeActive = false
-            return
+            return false
         }
         val origin = if (recordingStartedAt != 0L) {
             android.os.SystemClock.elapsedRealtime() - recordingStartedAt
@@ -1712,35 +1734,106 @@ class DrawingSurface(context: Context) : View(context) {
             holdRecognition = false,
         )
         activeInkStrokeId = id
+        inkStrokeActive = true
+        return true
     }
 
     private fun addInkStroke(event: MotionEvent, idx: Int) {
-        val view = inkAuthoringView ?: return
-        val id = activeInkStrokeId ?: return
+        for (h in 0 until event.historySize) {
+            appendLiveSample(
+                viewport.screenToWorldX(event.getHistoricalX(idx, h)),
+                viewport.screenToWorldY(event.getHistoricalY(idx, h)),
+                event.getHistoricalPressure(idx, h),
+                event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, idx, h),
+            )
+        }
+        appendStylusSample(event, idx)
+        val view = inkAuthoringView ?: run { inkStrokeActive = false; return }
+        val id = activeInkStrokeId ?: run { inkStrokeActive = false; return }
         val pointerId = event.getPointerId(idx)
         motionPredictor?.record(event)
         val predicted = motionPredictor?.predict()
         try {
             view.addToStroke(event, pointerId, id, predicted)
         } catch (e: Exception) {
-            android.util.Log.w(TAG, "ink addToStroke failed", e)
+            android.util.Log.w(TAG, "ink addToStroke failed; preserving canonical fallback samples", e)
+            inkStrokeActive = false
+            activeInkStrokeId = null
+            inkPending.remove(id)
         } finally {
             predicted?.recycle()
         }
     }
 
     private fun finishInkStroke(event: MotionEvent, idx: Int, holdRecognition: Boolean) {
-        val view = inkAuthoringView ?: return
-        val id = activeInkStrokeId ?: return
+        val view = inkAuthoringView ?: run {
+            commitInkFallback("finish without view", meta = null, cancelOverlayStroke = false)
+            return
+        }
+        val id = activeInkStrokeId ?: run {
+            commitInkFallback("finish without active id", meta = null, cancelOverlayStroke = false)
+            return
+        }
+        val meta = fallbackMetaFor(id, holdRecognition)
         inkPending[id]?.let { inkPending[id] = it.copy(holdRecognition = holdRecognition) }
         val pointerId = event.getPointerId(idx)
         try {
             view.finishStroke(event, pointerId, id)
         } catch (e: Exception) {
-            android.util.Log.w(TAG, "ink finishStroke failed; stroke dropped", e)
-            inkPending.remove(id)
+            android.util.Log.w(TAG, "ink finishStroke failed; committing canonical fallback samples", e)
+            commitInkFallback("finish failure", meta, cancelOverlayStroke = false)
         }
         activeInkStrokeId = null
+    }
+
+    private fun fallbackMetaFor(id: InProgressStrokeId, holdRecognition: Boolean? = null): InkFallbackMeta? {
+        val pending = inkPending[id]
+        return if (pending != null) {
+            InkFallbackMeta(
+                pending.tool,
+                pending.color,
+                pending.widthPx,
+                pending.fixedWidth,
+                holdRecognition ?: pending.holdRecognition,
+            )
+        } else {
+            InkFallbackMeta(strokeTool, strokeColor, strokeEffectiveWidthPx, strokeFixedWidth, holdRecognition ?: false)
+        }
+    }
+
+    /**
+     * Canonical fallback seam for fake-host / failure tests: all Ink API
+     * detach and exception paths converge here so an in-progress stroke can be
+     * committed from the same [liveSamples] buffer as the legacy renderer.
+     */
+    private fun commitInkFallback(
+        reason: String,
+        meta: InkFallbackMeta?,
+        cancelOverlayStroke: Boolean,
+    ) {
+        val id = activeInkStrokeId
+        if (cancelOverlayStroke) cancelInkStroke()
+        id?.let { inkPending.remove(it) }
+        activeInkStrokeId = null
+        inkStrokeActive = false
+        if (liveSampleCount < 1) {
+            android.util.Log.w(TAG, "ink fallback skipped with no samples: $reason")
+            return
+        }
+        val m = meta ?: InkFallbackMeta(strokeTool, strokeColor, strokeEffectiveWidthPx, strokeFixedWidth)
+        val previousTool = strokeTool
+        val previousColor = strokeColor
+        val previousWidth = strokeEffectiveWidthPx
+        val previousFixedWidth = strokeFixedWidth
+        strokeTool = m.tool
+        strokeColor = m.color
+        strokeEffectiveWidthPx = m.widthPx
+        strokeFixedWidth = m.fixedWidth
+        commitLiveStroke(m.holdRecognition)
+        strokeTool = previousTool
+        strokeColor = previousColor
+        strokeEffectiveWidthPx = previousWidth
+        strokeFixedWidth = previousFixedWidth
     }
 
     private fun cancelInkStroke() {
@@ -1781,6 +1874,10 @@ class DrawingSurface(context: Context) : View(context) {
                 strokeHoldRecognizeListener?.invoke(item)
             } else {
                 offerBeautify(item)
+            }
+            if (id == activeInkStrokeId || liveSampleCount > 0) {
+                liveSampleCount = 0
+                clearPredicted()
             }
         }
         inkAuthoringView?.removeFinishedStrokes(strokes.keys)
@@ -3161,7 +3258,7 @@ fun DrawingSurfaceView(
     // strokes are authored by AndroidX Ink; when false (the default, and the
     // current parity-gated behaviour) the custom quad-Bézier path is used and
     // no ink view exists. See `docs/ANDROIDX_INK_MIGRATION_PLAN.md` (I1/I2).
-    inkAuthoringEnabled: Boolean = false,
+    inkAuthoringEnabled: Boolean = InkInterop.INK_AUTHORING_DEFAULT_ENABLED,
     // Phase I8 — tutor "draw with me": guide-layer items not yet revealed by the
     // current teaching step. Default-empty, so non-tutor sessions are unaffected.
     tutorHiddenIds: Set<String> = emptySet(),

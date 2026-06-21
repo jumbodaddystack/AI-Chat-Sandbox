@@ -1,10 +1,14 @@
 package com.aichat.sandbox.data.notes
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
 import com.aichat.sandbox.ui.components.notes.BackgroundLayer
+import com.aichat.sandbox.ui.components.notes.ImageItemCodec
 import com.aichat.sandbox.ui.components.notes.StrokeCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -12,6 +16,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Bitmap-level checks for [NoteRasterizer]. Lives in androidTest because
@@ -69,6 +75,39 @@ class NoteRasterizerInstrumentedTest {
         plainBmp.recycle()
     }
 
+
+    @Test
+    fun aiImageRendererDrawsEmbeddedImageWhenFilesDirProvided() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val dir = File(context.filesDir, "note-images").apply { mkdirs() }
+        val imageFile = File(dir, "rasterizer-test.png")
+        val source = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.RED)
+        }
+        FileOutputStream(imageFile).use { out ->
+            source.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+        source.recycle()
+
+        val image = imageItem("note-images/${imageFile.name}")
+        val pngBytes = NoteRasterizerImageRenderer.renderToPng(
+            items = listOf(image),
+            backgroundStyle = BackgroundLayer.STYLE_PLAIN,
+            maxEdgePx = 128,
+            filesDir = context.filesDir,
+        )
+
+        assertNotNull("AI rasterizer should produce PNG bytes for an embedded image", pngBytes)
+        val bitmap = BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes!!.size)
+        assertNotNull("rendered PNG should decode", bitmap)
+        val redPixels = countPixelsMatching(bitmap!!) { pixel ->
+            Color.red(pixel) > 200 && Color.green(pixel) < 80 && Color.blue(pixel) < 80
+        }
+        assertTrue("expected ImageRenderer.draw output to include red image pixels", redPixels > 0)
+        bitmap.recycle()
+        imageFile.delete()
+    }
+
     @Test
     fun toPngRoundTripsToNonEmptyByteArray() {
         val stroke = strokeItem(
@@ -101,6 +140,34 @@ class NoteRasterizerInstrumentedTest {
         for (p in pixels) if (p != paper) count++
         return count
     }
+
+    private fun countPixelsMatching(bitmap: android.graphics.Bitmap, predicate: (Int) -> Boolean): Int {
+        var count = 0
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        for (p in pixels) if (predicate(p)) count++
+        return count
+    }
+
+    private fun imageItem(relativePath: String): NoteItem = NoteItem(
+        noteId = "n",
+        zIndex = 0,
+        kind = NoteItem.KIND_IMAGE,
+        tool = null,
+        colorArgb = Color.BLACK,
+        baseWidthPx = 1f,
+        payload = ImageItemCodec.encode(
+            ImageItemCodec.ImagePayload(
+                relativePath = relativePath,
+                naturalWidth = 4f,
+                naturalHeight = 4f,
+                minX = 0f,
+                minY = 0f,
+                maxX = 40f,
+                maxY = 40f,
+            ),
+        ),
+    )
 
     private fun strokeItem(points: FloatArray, colorArgb: Int): NoteItem = NoteItem(
         noteId = "n",

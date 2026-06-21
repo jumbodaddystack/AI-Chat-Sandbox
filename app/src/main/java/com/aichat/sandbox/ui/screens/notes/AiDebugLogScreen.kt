@@ -98,7 +98,7 @@ fun AiDebugLogScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Capture AI exchanges", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        "Records the prompt, raw model reply and parse outcome for each note/canvas AI request.",
+                        "Records redacted prompts, raw model replies, and parse outcomes. Some modes can include user canvas text; image data URIs are removed before storage.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -163,7 +163,7 @@ private fun TraceCard(trace: AiDebugTrace) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "${trace.mode} · ${timeFmt.format(Date(trace.epochMillis))}",
+                    text = "${trace.modeLabel} · ${timeFmt.format(Date(trace.epochMillis))}",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -174,10 +174,18 @@ private fun TraceCard(trace: AiDebugTrace) {
                 }
             }
             Text(
-                text = trace.modelId,
+                text = "${trace.mode} · ${trace.modelId}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (trace.containsUserCanvasText) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "May contain user canvas text",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 text = trace.outcome,

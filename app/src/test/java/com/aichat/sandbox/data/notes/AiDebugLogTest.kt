@@ -50,11 +50,62 @@ class AiDebugLogTest {
     @Test
     fun oversizedFieldsAreClamped() {
         val log = log().apply { enabled = true }
-        val huge = "x".repeat(AiDebugLog.MAX_FIELD_CHARS + 5000)
+        val huge = "x".repeat(AiDebugLog.MAX_FIELD_BYTES + 5000)
         log.recordEdit("big", raw = huge)
         val stored = log.traces.value.single().rawReply
         assertTrue(stored.length < huge.length)
         assertTrue(stored.contains("truncated"))
+    }
+
+    @Test
+    fun dataUrisAreRedactedBeforeStorage() {
+        val log = log().apply { enabled = true }
+        val dataUri = "data:image/png;base64," + "A".repeat(256)
+        log.record(
+            mode = "EDIT",
+            modelId = "m",
+            request = "{\"image\":\"$dataUri\"}",
+            rawReply = "{\"echo\":\"$dataUri\"}",
+            outcome = "ok",
+        )
+
+        val trace = log.traces.value.single()
+        assertFalse(trace.request.contains(dataUri))
+        assertFalse(trace.rawReply.contains(dataUri))
+        assertTrue(trace.request.contains("[redacted sha256="))
+        assertTrue(trace.rawReply.contains("[redacted sha256="))
+    }
+
+    @Test
+    fun oversizedRawRepliesAreNotStoredVerbatim() {
+        val log = log().apply { enabled = true }
+        val raw = "{\"reply\":\"${"z".repeat(AiDebugLog.MAX_FIELD_BYTES * 2)}\"}"
+        log.recordEdit("huge", raw = raw)
+
+        val stored = log.traces.value.single().rawReply
+        assertFalse(stored == raw)
+        assertTrue(stored.toByteArray(Charsets.UTF_8).size < raw.toByteArray(Charsets.UTF_8).size)
+        assertTrue(stored.contains("truncated"))
+    }
+
+    @Test
+    fun canStripCanvasTextBodiesAndLabelsMode() {
+        val log = log().apply { enabled = true }
+        log.record(
+            mode = "EDIT",
+            modelId = "m",
+            request = "{\"type\":\"text\",\"text\":\"private OCR words\"}",
+            rawReply = "{}",
+            outcome = "ok",
+            containsUserCanvasText = true,
+            stripTextItemBodies = true,
+        )
+
+        val trace = log.traces.value.single()
+        assertEquals("Edit canvas", trace.modeLabel)
+        assertTrue(trace.containsUserCanvasText)
+        assertFalse(trace.request.contains("private OCR words"))
+        assertTrue(trace.request.contains("[redacted canvas text body]"))
     }
 
     @Test
@@ -69,7 +120,8 @@ class AiDebugLogTest {
     @Test
     fun shareTextIncludesReplyAndRejections() {
         val trace = AiDebugTrace(
-            id = "1", epochMillis = 0L, mode = "EDIT", modelId = "m",
+            id = "1", epochMillis = 0L, mode = "EDIT", modeLabel = "Edit canvas",
+            containsUserCanvasText = true, modelId = "m",
             request = "the-request", rawReply = "the-reply", outcome = "0 of 1",
             rejections = listOf("smooth p_004 (not a stroke)"),
         )

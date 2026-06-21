@@ -4,6 +4,7 @@ import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.data.model.Message
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.NoteItem
+import com.aichat.sandbox.data.model.NoteLayer
 import com.aichat.sandbox.data.model.ToolDefinition
 import com.aichat.sandbox.data.model.Usage
 import com.aichat.sandbox.data.remote.ChatStreamer
@@ -23,6 +24,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.util.UUID
 
 /**
@@ -42,13 +44,17 @@ class NoteAiServiceTest {
                 StreamEvent.Complete(Usage(promptTokens = 10, completionTokens = 5, totalTokens = 15)),
             ),
         )
+        val imageRenderer = FakeImageRenderer(ByteArray(8) { 1 })
         val service = NoteAiService(
             chatStreamer = streamer,
             ocr = FakeRecognizer("should-not-be-called"),
-            imageRenderer = FakeImageRenderer(ByteArray(8) { 1 }),
+            imageRenderer = imageRenderer,
         )
+        val filesDir = File("/tmp/note-ai-service-files")
 
-        val chunks = service.ask(visionRequest(strokes = listOf(strokeItem()))).toList()
+        val chunks = service.ask(
+            visionRequest(strokes = listOf(strokeItem())).copy(filesDir = filesDir)
+        ).toList()
 
         assertEquals(3, chunks.size)
         assertEquals(AiChunk.Delta("Hello "), chunks[0])
@@ -67,6 +73,7 @@ class NoteAiServiceTest {
             "image metadata should embed a base64 PNG data URI",
             sentMsg.metadata!!.contains("data:image/png;base64,")
         )
+        assertEquals(filesDir, imageRenderer.lastFilesDir)
     }
 
     @Test
@@ -385,7 +392,6 @@ class NoteAiServiceTest {
         assertEquals(EditOpsParser.ICON_REFINE_SYSTEM_MESSAGE, streamer.lastChat!!.systemMessage)
     }
 
-
     @Test
     fun editModePreflightWarnsWhenCanvasJsonOmitsItems() = runTest {
         val streamer = RecordingChatStreamer(
@@ -448,6 +454,50 @@ class NoteAiServiceTest {
         assertTrue(chunks.any { it is AiChunk.Preflight })
         assertEquals(NoteAiService.LARGE_SCOPE_CONFIRMATION_MESSAGE, chunks.filterIsInstance<AiChunk.Error>().single().message)
         assertTrue("blocked requests must not dispatch upstream", streamer.lastMessages.isEmpty())
+    }
+
+    @Test
+    fun jsonDrivenVisionModesRasterizeOnlyUnlockedSerializedScope() = runTest {
+        val lockedLayer = NoteLayer(
+            id = "L_LOCK", noteId = "n", name = "Locked",
+            opacityPercent = 100, visible = true, locked = true, ordinal = 0,
+        )
+        val openLayer = lockedLayer.copy(id = "L_OPEN", name = "Ink", locked = false, ordinal = 1)
+        val locked = strokeItem().copy(layerId = lockedLayer.id)
+        val unlocked = strokeItem().copy(layerId = openLayer.id)
+        val unlayered = strokeItem()
+
+        val modesAndReplies = listOf(
+            AskMode.EDIT to "```edit-ops\n{ \"schema\": 1, \"summary\": \"none\", \"ops\": [] }\n```",
+            AskMode.RESTYLE to "```edit-ops\n{ \"schema\": 1, \"summary\": \"none\", \"ops\": [] }\n```",
+            AskMode.CRITIQUE to "{ \"summary\": \"ok\", \"suggestions\": [ { \"title\": \"Keep it\", \"why\": \"Balanced.\" } ] }",
+            AskMode.SUGGEST_PALETTE to "{ \"swatches\": [\"#111111\", \"#222222\", \"#333333\"] }",
+            AskMode.SUGGEST_METADATA to "{ \"title\": \"Ink\", \"tags\": [\"ink\"], \"description\": \"Unlocked ink.\" }",
+        )
+
+        for ((mode, reply) in modesAndReplies) {
+            val renderer = RecordingImageRenderer(ByteArray(4))
+            val streamer = RecordingChatStreamer(
+                flow = flowOf(StreamEvent.Delta(reply), StreamEvent.Complete(null)),
+            )
+            val service = NoteAiService(
+                chatStreamer = streamer,
+                ocr = FakeRecognizer("unused"),
+                imageRenderer = renderer,
+            )
+
+            service.ask(
+                visionRequest(strokes = listOf(locked, unlocked, unlayered)).copy(
+                    mode = mode,
+                    layers = listOf(lockedLayer, openLayer),
+                )
+            ).toList()
+
+            assertEquals("$mode raster scope", listOf(unlocked.id, unlayered.id), renderer.lastItems.map { it.id })
+            val body = streamer.lastMessages.single().content
+            assertTrue("$mode JSON should include editable item ids", body.contains("s_001"))
+            assertEquals("$mode JSON should omit locked layer", false, body.contains("Locked"))
+        }
     }
 
     // ---- I4 / N1: DESIGN_BRUSH mode ----
@@ -692,12 +742,33 @@ class NoteAiServiceTest {
         }
     }
 
-    private class FakeImageRenderer(private val bytes: ByteArray) : NoteImageRenderer {
+    private class RecordingImageRenderer(private val bytes: ByteArray) : NoteImageRenderer {
+        var lastItems: List<NoteItem> = emptyList()
+            private set
+
         override fun renderToPng(
             items: List<NoteItem>,
             backgroundStyle: String,
             maxEdgePx: Int,
-        ): ByteArray = bytes
+        ): ByteArray {
+            lastItems = items
+            return bytes
+        }
+    }
+
+    private class FakeImageRenderer(private val bytes: ByteArray) : NoteImageRenderer {
+        var lastFilesDir: File? = null
+            private set
+
+        override fun renderToPng(
+            items: List<NoteItem>,
+            backgroundStyle: String,
+            maxEdgePx: Int,
+            filesDir: java.io.File?,
+        ): ByteArray {
+            lastFilesDir = filesDir
+            return bytes
+        }
     }
 
     private object ExplodingImageRenderer : NoteImageRenderer {
@@ -705,6 +776,7 @@ class NoteAiServiceTest {
             items: List<NoteItem>,
             backgroundStyle: String,
             maxEdgePx: Int,
+            filesDir: java.io.File?,
         ): ByteArray = error("image renderer must not be called on the non-vision branch")
     }
 }

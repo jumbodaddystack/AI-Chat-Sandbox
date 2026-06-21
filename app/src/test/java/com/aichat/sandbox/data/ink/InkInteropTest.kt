@@ -3,10 +3,13 @@ package com.aichat.sandbox.data.ink
 import androidx.ink.brush.InputToolType
 import com.aichat.sandbox.data.model.BrushPreset
 import com.aichat.sandbox.ui.components.notes.StrokeCodec
+import com.aichat.sandbox.ui.components.notes.StrokeRenderer
+import com.aichat.sandbox.ui.components.notes.ToolDynamics
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import kotlin.random.Random
 
@@ -156,6 +159,67 @@ class InkInteropTest {
         val t0 = conv.batch.get(0).tiltRadians
         assertTrue("pressure clamped", p0 in 0f..1f)
         assertTrue("tilt clamped", t0 in 0f..(Math.PI.toFloat() / 2f))
+    }
+
+
+    @Test
+    fun representativePressureTiltFixturesConvertToInkInputs() {
+        for (fixture in InkToolSampleFixtures.all) {
+            val conv = InkInterop.toInputBatch(fixture.payload)
+            val count = fixture.samples.size / StrokeCodec.FLOATS_PER_SAMPLE
+            assertEquals("${fixture.tool} sample count", count, conv.batch.size)
+            assertTrue("${fixture.tool} has pressure", conv.batch.hasPressure())
+            assertTrue("${fixture.tool} has tilt", conv.batch.hasTilt())
+
+            val first = conv.batch.get(0)
+            val last = conv.batch.get(count - 1)
+            assertEquals("${fixture.tool} first pressure", fixture.samples[2], first.pressure, tol)
+            assertEquals("${fixture.tool} first tilt", fixture.samples[3], first.tiltRadians, tol)
+            val lastBase = (count - 1) * StrokeCodec.FLOATS_PER_SAMPLE
+            assertEquals("${fixture.tool} last pressure", fixture.samples[lastBase + 2], last.pressure, tol)
+            assertEquals("${fixture.tool} last tilt", fixture.samples[lastBase + 3], last.tiltRadians, tol)
+        }
+    }
+
+    @Test
+    fun brushConversionAndRendererOpacityContractUseSameToolDynamicsChecklist() {
+        assertFalse("live ink authoring stays gated by the parity checklist", InkInterop.INK_AUTHORING_DEFAULT_ENABLED)
+
+        for (fixture in InkToolSampleFixtures.all) {
+            val brush = InkInterop.toBrush(penPreset().copy(
+                tool = fixture.tool,
+                colorArgb = fixture.colorArgb,
+                opacity = fixture.opacity,
+                baseWidthPx = fixture.baseWidthPx,
+            ))
+            assertEquals(
+                "${fixture.tool} preset opacity folds into brush alpha",
+                InkInterop.applyOpacityToArgb(fixture.colorArgb, fixture.opacity),
+                brush.colorIntArgb,
+            )
+
+            val firstStyle = ToolDynamics.forTool(fixture.tool, fixture.baseWidthPx, fixture.samples[2], fixture.samples[3])
+            val last = fixture.samples.size - StrokeCodec.FLOATS_PER_SAMPLE
+            val lastStyle = ToolDynamics.forTool(fixture.tool, fixture.baseWidthPx, fixture.samples[last + 2], fixture.samples[last + 3])
+            when (fixture.tool) {
+                StrokeRenderer.TOOL_PEN -> {
+                    assertTrue("pen width rises with pressure", lastStyle.widthPx > firstStyle.widthPx)
+                    assertEquals("pen opacity is constant", firstStyle.alpha, lastStyle.alpha, 0f)
+                }
+                StrokeRenderer.TOOL_PENCIL -> {
+                    assertTrue("pencil width rises with tilt", lastStyle.widthPx > firstStyle.widthPx)
+                    assertTrue("pencil opacity follows pressure", lastStyle.alpha > firstStyle.alpha)
+                }
+                StrokeRenderer.TOOL_HIGHLIGHTER -> {
+                    assertEquals("highlighter width is constant", firstStyle.widthPx, lastStyle.widthPx, 0f)
+                    assertEquals("highlighter opacity is constant", firstStyle.alpha, lastStyle.alpha, 0f)
+                }
+                StrokeRenderer.TOOL_MARKER -> {
+                    assertTrue("marker width rises slightly with pressure", lastStyle.widthPx > firstStyle.widthPx)
+                    assertTrue("marker opacity rises slightly with pressure", lastStyle.alpha > firstStyle.alpha)
+                }
+            }
+        }
     }
 
     // ---- Stroke (mesh) round-trip -----------------------------------------

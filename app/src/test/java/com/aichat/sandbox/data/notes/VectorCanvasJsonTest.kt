@@ -82,6 +82,34 @@ class VectorCanvasJsonTest {
     }
 
     @Test
+    fun editableItemsMatchesSerializeLockedLayerScope() {
+        val lockedLayer = NoteLayer(
+            id = "L_LOCK", noteId = "n1", name = "Locked",
+            opacityPercent = 100, visible = true, locked = true, ordinal = 0,
+        )
+        val openLayer = lockedLayer.copy(id = "L_OPEN", name = "Ink", locked = false, ordinal = 1)
+        val locked = strokeItem("n1", "pen", floatArrayOf(0f, 0f, 1f, 0f, 5f, 5f, 1f, 0f))
+            .copy(layerId = lockedLayer.id)
+        val unlocked = strokeItem("n1", "pen", floatArrayOf(10f, 10f, 1f, 0f, 15f, 15f, 1f, 0f))
+            .copy(layerId = openLayer.id)
+        val unlayered = strokeItem("n1", "pen", floatArrayOf(20f, 20f, 1f, 0f, 25f, 25f, 1f, 0f))
+
+        val editable = VectorCanvasJson.editableItems(
+            items = listOf(locked, unlocked, unlayered),
+            layers = listOf(lockedLayer, openLayer),
+        )
+        val out = VectorCanvasJson.serialize(
+            items = listOf(locked, unlocked, unlayered),
+            bounds = null,
+            layers = listOf(lockedLayer, openLayer),
+        )
+
+        assertEquals(listOf(unlocked.id, unlayered.id), editable.map { it.id })
+        assertEquals(editable.map { it.id }, out.includedItemIds)
+        assertFalse(out.json.contains("Locked"))
+    }
+
+    @Test
     fun longStrokesAreDownsampledWithFlag() {
         val n = VectorCanvasJson.MAX_POINTS_PER_STROKE * 3
         val samples = FloatArray(n * StrokeCodec.FLOATS_PER_SAMPLE)

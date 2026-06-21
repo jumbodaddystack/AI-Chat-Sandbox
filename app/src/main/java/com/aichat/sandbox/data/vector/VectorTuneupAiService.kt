@@ -121,7 +121,7 @@ class VectorTuneupAiService @Inject constructor(
             }
         }
         if (errored) {
-            aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "stream error")
+            aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "stream error", containsUserCanvasText = true)
             return@flow
         }
 
@@ -130,7 +130,7 @@ class VectorTuneupAiService @Inject constructor(
         val plan = VectorEditPlanParser.parse(buffer.toString(), knownPathIds, knownColors)
             .getOrElse { t ->
                 logWarn("tune-up plan parse failed: ${t.message}")
-                aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "parse failed: ${t.message}")
+                aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "parse failed: ${t.message}", containsUserCanvasText = true)
                 emit(VectorTuneupAiChunk.Error(PARSE_FAILED_MESSAGE))
                 return@flow
             }
@@ -139,12 +139,12 @@ class VectorTuneupAiService @Inject constructor(
             VectorEditPlanApplier.apply(request.document, request.xml, plan)
         }.getOrElse { t ->
             logWarn("tune-up plan apply failed", t)
-            aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "apply failed: ${t.message}")
+            aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "apply failed: ${t.message}", containsUserCanvasText = true)
             emit(VectorTuneupAiChunk.Error(APPLY_FAILED_MESSAGE))
             return@flow
         }
 
-        aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "plan applied")
+        aiDebugLog.record("VECTOR_TUNEUP", request.modelId, summary.json, buffer.toString(), "plan applied", containsUserCanvasText = true)
         emit(
             VectorTuneupAiChunk.Complete(
                 VectorTuneupAiResult(
