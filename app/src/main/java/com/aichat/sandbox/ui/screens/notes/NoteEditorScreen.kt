@@ -293,9 +293,10 @@ fun NoteEditorScreen(
         snapshotFlow { viewModel.palette.selected }.collectLatest { tool ->
             if (tool != Tool.TEXT) viewModel.commitTextEdit()
             if (tool != Tool.STICKY) viewModel.commitStickyEdit()
-            // 12.3 — picking any tool backs out of node-edit mode (each
-            // gesture already committed, so this is non-destructive).
-            viewModel.exitNodeEdit()
+            // PATH_EDIT is the node-edit tool itself; switching to it must
+            // not exit an in-progress edit (e.g. when re-entering from Done).
+            // Any other tool change properly closes node-edit mode.
+            if (tool != Tool.PATH_EDIT) viewModel.exitNodeEdit()
         }
     }
 
@@ -642,6 +643,7 @@ fun NoteEditorScreen(
                     onSelectionShouldClear = viewModel::clearSelection,
                     onTextTap = viewModel::onTextToolTap,
                     onStickyTap = viewModel::onStickyToolTap,
+                    onPathEditTap = viewModel::enterNodeEditById,
                     onStrokeHoldRecognized = viewModel::onStrokeHoldRecognized,
                     onStrokeBeautifyAccepted = viewModel::onStrokeBeautifyAccepted,
                     modifier = Modifier.fillMaxSize(),

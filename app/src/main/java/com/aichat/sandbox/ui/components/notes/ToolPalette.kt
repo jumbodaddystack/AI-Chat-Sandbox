@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Gesture
 import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.Pentagon
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Polyline
 import androidx.compose.material.icons.filled.StickyNote2
 import androidx.compose.material.icons.filled.TextFields
@@ -135,6 +136,8 @@ fun ToolPalette(
                     InkConfigRow(state = state, onPickCustomColor = onPickCustomColor)
                     ShapeStyleRow(state = state, onPickShapeFillColor = onPickShapeFillColor)
                     PathCapJoinRow(state = state)
+                } else if (selected.isPathEdit) {
+                    PathEditHintRow()
                 }
             }
         }
@@ -176,15 +179,22 @@ private fun ToolRow(state: ToolPaletteState) {
         ToolIconButton(state, Tool.TEXT, Modifier.weight(1f))
         GroupedToolButton(
             state = state,
-            // 12.2 — the vector pen joins the shapes roster.
             groupTools = listOf(
-                Tool.LINE, Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.POLYGON, Tool.PATH_PEN,
+                Tool.LINE, Tool.RECT, Tool.ELLIPSE, Tool.ARROW, Tool.POLYGON,
             ),
             lastUsed = state.lastShapeTool,
             // The group button wears the last-used shape's glyph so the next
             // tap's outcome is visible before tapping.
             groupIcon = { state.lastShapeTool.icon() },
             groupDescription = "Shapes",
+            modifier = Modifier.weight(1f),
+        )
+        GroupedToolButton(
+            state = state,
+            groupTools = listOf(Tool.PATH_PEN, Tool.PATH_EDIT),
+            lastUsed = state.lastPathTool,
+            groupIcon = { state.lastPathTool.icon() },
+            groupDescription = "Path tools",
             modifier = Modifier.weight(1f),
         )
         // V3 fix — the whiteboard "Board" group bundled two conceptually
@@ -352,8 +362,9 @@ private fun Tool.icon(): ImageVector = when (this) {
     Tool.POLYGON -> Icons.Filled.Pentagon
     Tool.FRAME -> Icons.Filled.CropFree
     Tool.STICKY -> Icons.Filled.StickyNote2
-    Tool.CONNECTOR -> Icons.Filled.Polyline
+    Tool.CONNECTOR -> Icons.Filled.Link
     Tool.PATH_PEN -> Icons.Filled.Timeline
+    Tool.PATH_EDIT -> Icons.Filled.Polyline
 }
 
 @Composable
@@ -510,6 +521,15 @@ private fun FrameHintRow() {
             style = MaterialTheme.typography.labelMedium,
         )
     }
+}
+
+@Composable
+private fun PathEditHintRow() {
+    Text(
+        text = "Tap a path stroke to edit its anchor points",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+    )
 }
 
 /**
