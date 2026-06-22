@@ -502,6 +502,48 @@ class NoteAiServiceTest {
         assertEquals(2, streamer.callCount)
     }
 
+
+    @Test
+    fun nonIconGenerateSkipsIconSelfRefineCritique() = runTest {
+        val streamer = RecordingChatStreamer.ofTurns(
+            flowOf(
+                StreamEvent.Delta("```edit-ops\n{ \"schema\": 1, \"summary\": \"tutorial geometry\", "),
+                StreamEvent.Delta("\"ops\": [ { \"op\": \"add_path\", \"closed\": false, "),
+                StreamEvent.Delta("\"anchors\": [ [0,0], [10,10] ] } ] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+            flowOf(
+                StreamEvent.Delta("```edit-ops\n{ \"schema\": 1, \"summary\": \"should not run\", \"ops\": [] }\n```"),
+                StreamEvent.Complete(null),
+            ),
+        )
+        val service = NoteAiService(
+            chatStreamer = streamer,
+            ocr = FakeRecognizer(""),
+            imageRenderer = FakeImageRenderer(ByteArray(8) { 4 }),
+        )
+
+        val chunks = service.ask(
+            AskRequest(
+                note = sampleNote(),
+                allItems = emptyList(),
+                selection = null,
+                userPrompt = "draw with me",
+                modelId = "gpt-4o",
+                baseUrl = "https://example.invalid/v1/",
+                apiKey = "test-key",
+                mode = AskMode.EDIT,
+                isIcon = false,
+                generate = true,
+            )
+        ).toList()
+
+        val preview = chunks.filterIsInstance<AiChunk.EditPreview>().single()
+        assertEquals("tutorial geometry", preview.doc.summary)
+        assertEquals(1, streamer.callCount)
+        assertEquals(EditOpsParser.ICON_GENERATE_SYSTEM_MESSAGE, streamer.chats.single().systemMessage)
+    }
+
     private fun countOccurrences(haystack: String, needle: String): Int {
         var count = 0
         var idx = haystack.indexOf(needle)

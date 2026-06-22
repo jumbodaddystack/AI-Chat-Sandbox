@@ -799,15 +799,21 @@ class NoteAiService @Inject constructor(
                     }
                     // Phase 19 (Stage 1) — render-in-the-loop self-refine for
                     // single-icon authoring (generate / "Make real" refine).
-                    // Never for scene (cost) — and the loop itself no-ops for
-                    // non-vision models.
-                    val refined = if (scene) capped else refineLoop(
-                        request = request,
-                        supportsVision = supportsVision,
-                        firstDoc = capped,
-                        firstRawReply = buffer.toString(),
-                        refineSketchItems = if (refining) refineItems else null,
-                    )
+                    // Never for scenes or non-icon generation (cost + the
+                    // critique prompt is explicitly icon-specific) — and the
+                    // loop itself no-ops for non-vision models.
+                    val shouldSelfRefine = request.isIcon && !scene
+                    val refined = if (shouldSelfRefine) {
+                        refineLoop(
+                            request = request,
+                            supportsVision = supportsVision,
+                            firstDoc = capped,
+                            firstRawReply = buffer.toString(),
+                            refineSketchItems = if (refining) refineItems else null,
+                        )
+                    } else {
+                        capped
+                    }
                     // Phase 19 (Stage 4) — unify authored outline weight for a
                     // single icon (never a multi-object scene, where varied
                     // weights may be intentional).
