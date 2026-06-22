@@ -39,6 +39,7 @@ import coil.request.ImageRequest
 import com.aichat.sandbox.data.model.Note
 import com.aichat.sandbox.data.model.Notebook
 import com.aichat.sandbox.ui.components.AppScreenScaffold
+import com.aichat.sandbox.ui.util.rememberHaptics
 import com.aichat.sandbox.ui.screens.notebooks.NewNotebookSheet
 import com.aichat.sandbox.ui.screens.notebooks.NotebooksListViewModel
 import java.io.File
@@ -75,6 +76,7 @@ fun NotesListScreen(
     val notebooks by notebooksViewModel.notebooks.collectAsState()
     val pendingNav by notebooksViewModel.pendingNavigation.collectAsState()
 
+    val haptics = rememberHaptics()
     var pendingDelete by remember { mutableStateOf<Note?>(null) }
     var createMenuOpen by remember { mutableStateOf(false) }
     var newNotebookOpen by remember { mutableStateOf(false) }
@@ -224,7 +226,10 @@ fun NotesListScreen(
                                 NotebookCover(
                                     card = card,
                                     onOpen = { card.noteId?.let(onOpenNotebook) },
-                                    onLongPress = { renameTarget = card.notebook },
+                                    onLongPress = {
+                                        haptics.longPress()
+                                        renameTarget = card.notebook
+                                    },
                                 )
                             }
                         }
@@ -240,7 +245,10 @@ fun NotesListScreen(
                         NoteListItem(
                             note = note,
                             onClick = { onNoteClick(note.id) },
-                            onLongClick = { pendingDelete = note },
+                            onLongClick = {
+                                haptics.longPress()
+                                pendingDelete = note
+                            },
                         )
                     }
                 }
@@ -260,6 +268,7 @@ fun NotesListScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
+                    haptics.reject()
                     viewModel.delete(target)
                     pendingDelete = null
                 }) { Text("Delete") }
@@ -306,6 +315,7 @@ fun NotesListScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
+                    haptics.reject()
                     notebooksViewModel.delete(dt)
                     deleteNotebookTarget = null
                 }) { Text("Delete") }

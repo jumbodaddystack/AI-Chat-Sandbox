@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichat.sandbox.data.model.Chat
 import com.aichat.sandbox.ui.components.AppScreenScaffold
+import com.aichat.sandbox.ui.util.rememberHaptics
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -354,6 +355,7 @@ private fun ChatListItem(
     onDelete: () -> Unit
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
+    val haptics = rememberHaptics()
     val dateFormat = remember { SimpleDateFormat("yyyy/MM/dd", Locale.getDefault()) }
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
 
@@ -369,7 +371,10 @@ private fun ChatListItem(
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = { showDeleteDialog = true },
+                onLongClick = {
+                    haptics.longPress()
+                    showDeleteDialog = true
+                },
             ),
         color = MaterialTheme.colorScheme.background
     ) {
@@ -418,6 +423,7 @@ private fun ChatListItem(
             text = { Text("This action cannot be undone.") },
             confirmButton = {
                 TextButton(onClick = {
+                    haptics.reject()
                     onDelete()
                     showDeleteDialog = false
                 }) { Text("Delete", color = MaterialTheme.colorScheme.error) }

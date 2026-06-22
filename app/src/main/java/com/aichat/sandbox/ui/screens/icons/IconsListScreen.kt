@@ -66,6 +66,7 @@ import com.aichat.sandbox.ui.components.studio.StudioSectionMarker
 import com.aichat.sandbox.ui.components.studio.StudioToolChip
 import com.aichat.sandbox.ui.theme.studio.StudioText
 import com.aichat.sandbox.ui.theme.studio.StudioTheme
+import com.aichat.sandbox.ui.util.rememberHaptics
 import java.io.File
 
 /**
@@ -95,6 +96,7 @@ fun IconsListScreen(
         // confirm step behind it.
         var actionTarget by remember { mutableStateOf<Note?>(null) }
         var pendingDelete by remember { mutableStateOf<Note?>(null) }
+        val haptics = rememberHaptics()
         val colors = StudioTheme.colors
         val spacing = StudioTheme.spacing
         val context = LocalContext.current
@@ -211,7 +213,10 @@ fun IconsListScreen(
                             IconTile(
                                 note = icon,
                                 onClick = { onIconClick(icon.id) },
-                                onLongClick = { actionTarget = icon },
+                                onLongClick = {
+                                    haptics.longPress()
+                                    actionTarget = icon
+                                },
                             )
                         }
                     }
@@ -333,6 +338,7 @@ fun IconsListScreen(
                 },
                 confirmButton = {
                     TextButton(onClick = {
+                        haptics.reject()
                         viewModel.delete(target)
                         pendingDelete = null
                     }) { Text("Delete") }

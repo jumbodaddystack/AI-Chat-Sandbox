@@ -55,6 +55,7 @@ import com.aichat.sandbox.data.model.MessageRole
 import com.aichat.sandbox.ui.screens.notes.NotePickerSheet
 import com.aichat.sandbox.ui.theme.AssistantBubble
 import com.aichat.sandbox.ui.theme.UserBubble
+import com.aichat.sandbox.ui.util.rememberHaptics
 import com.google.gson.Gson
 import kotlinx.coroutines.launch
 
@@ -977,6 +978,7 @@ private fun ChatInputBar(
     consumeDraftText: () -> String? = { null },
 ) {
     var text by remember { mutableStateOf("") }
+    val haptics = rememberHaptics()
 
     // Photo picker launcher (multiple images)
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -1151,7 +1153,10 @@ private fun ChatInputBar(
                 // Send / Stop button
                 if (isLoading) {
                     IconButton(
-                        onClick = onStop,
+                        onClick = {
+                            haptics.tick()
+                            onStop()
+                        },
                         modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
@@ -1165,6 +1170,7 @@ private fun ChatInputBar(
                     IconButton(
                         onClick = {
                             if (canSend) {
+                                haptics.light()
                                 onSend(text)
                                 text = ""
                             }

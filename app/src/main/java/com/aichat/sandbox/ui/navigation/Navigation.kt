@@ -1,5 +1,11 @@
 package com.aichat.sandbox.ui.navigation
 
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,6 +55,7 @@ import com.aichat.sandbox.ui.screens.notes.NotesListScreen
 import com.aichat.sandbox.ui.screens.settings.SettingsScreen
 import com.aichat.sandbox.ui.screens.vector.ROUTE_VECTOR_TUNEUP
 import com.aichat.sandbox.ui.screens.vector.VectorTuneupScreen
+import com.aichat.sandbox.ui.util.rememberHaptics
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
     data object ChatList : Screen("chat_list", "Chat", Icons.Filled.Chat)
@@ -76,6 +83,21 @@ sealed interface NotesDeepLink {
     data class NewNote(val source: String?, val stylus: Boolean) : NotesDeepLink
 }
 
+// Push/pop transitions for detail destinations. New screen slides in from the
+// trailing edge and fades; on back it slides back out the same way. Kept as
+// top-level vals so every detail `composable` shares one definition.
+private const val PUSH_DURATION = 280
+
+private val pushEnter: AnimatedContentTransitionScope<*>.() -> androidx.compose.animation.EnterTransition = {
+    slideInHorizontally(animationSpec = tween(PUSH_DURATION)) { it } +
+        fadeIn(animationSpec = tween(PUSH_DURATION))
+}
+
+private val pushPopExit: AnimatedContentTransitionScope<*>.() -> androidx.compose.animation.ExitTransition = {
+    slideOutHorizontally(animationSpec = tween(PUSH_DURATION)) { it } +
+        fadeOut(animationSpec = tween(PUSH_DURATION))
+}
+
 @Composable
 fun AppNavigation(
     pendingDeepLink: NotesDeepLink? = null,
@@ -84,6 +106,7 @@ fun AppNavigation(
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
+    val haptics = rememberHaptics()
 
     val showBottomBar = currentDestination?.route in bottomNavItems.map { it.route }
 
@@ -121,6 +144,9 @@ fun AppNavigation(
                         currentDestination?.hierarchy?.any { it.route == screen.route } == true
                     },
                     onSelect = { screen ->
+                        // A subtle tick on every tab change — the compact bar
+                        // previously gave no feedback at all on selection.
+                        haptics.tick()
                         navController.navigate(screen.route) {
                             popUpTo(navController.graph.findStartDestination().id) {
                                 saveState = true
@@ -142,7 +168,13 @@ fun AppNavigation(
         NavHost(
             navController = navController,
             startDestination = Screen.ChatList.route,
-            modifier = Modifier.padding(padding)
+            modifier = Modifier.padding(padding),
+            // Default for the bottom-nav destinations: a quick fade-through so
+            // switching tabs cross-dissolves instead of cutting hard. Push
+            // destinations (chat, note editor, search) override these with a
+            // horizontal slide via [pushEnter]/[pushPopExit] below.
+            enterTransition = { fadeIn(animationSpec = tween(180)) },
+            exitTransition = { fadeOut(animationSpec = tween(140)) },
         ) {
             composable(Screen.ChatList.route) {
                 ChatListScreen(
@@ -167,7 +199,9 @@ fun AppNavigation(
                         type = NavType.StringType
                         defaultValue = ""
                     },
-                )
+                ),
+                enterTransition = pushEnter,
+                popExitTransition = pushPopExit,
             ) { backStackEntry ->
                 val chatId = backStackEntry.arguments?.getString("chatId") ?: return@composable
                 ChatScreen(
@@ -235,6 +269,8 @@ fun AppNavigation(
                         defaultValue = null
                     },
                 ),
+                enterTransition = pushEnter,
+                popExitTransition = pushPopExit,
             ) {
                 NoteEditorScreen(
                     onNavigateBack = { navController.popBackStack() },
@@ -249,7 +285,9 @@ fun AppNavigation(
             }
             composable(
                 route = "note/{noteId}",
-                arguments = listOf(navArgument("noteId") { type = NavType.StringType })
+                arguments = listOf(navArgument("noteId") { type = NavType.StringType }),
+                enterTransition = pushEnter,
+                popExitTransition = pushPopExit,
             ) {
                 NoteEditorScreen(
                     onNavigateBack = { navController.popBackStack() },
@@ -258,7 +296,11 @@ fun AppNavigation(
                     },
                 )
             }
-            composable("notes_search") {
+            composable(
+                route = "notes_search",
+                enterTransition = pushEnter,
+                popExitTransition = pushPopExit,
+            ) {
                 NoteSearchScreen(
                     onNavigateBack = { navController.popBackStack() },
                     onOpenNote = { noteId ->
