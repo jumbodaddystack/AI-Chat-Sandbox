@@ -53,6 +53,11 @@ enum class Tool(
     // pulls symmetric handles, tapping the first anchor closes the path;
     // switching tools commits whatever is in progress.
     PATH_PEN("path_pen", "Pen path"),
+
+    // Sub-phase N — direct path node-edit tool. When active, tapping any
+    // committed path item enters node-edit mode for it without requiring a
+    // lasso selection first.
+    PATH_EDIT("path_edit", "Edit path"),
     ;
 
     val isInk: Boolean get() = this == PEN || this == HIGHLIGHTER || this == PENCIL
@@ -66,6 +71,7 @@ enum class Tool(
     val isSticky: Boolean get() = this == STICKY
     val isConnector: Boolean get() = this == CONNECTOR
     val isPathPen: Boolean get() = this == PATH_PEN
+    val isPathEdit: Boolean get() = this == PATH_EDIT
 
     companion object {
         /** Resolve a persisted [id] back to its enum, or null for unknown ids. */
@@ -117,6 +123,10 @@ class ToolPaletteState {
 
     /** Most-recent board tool (sticky / connector) — grouped button re-selects it. */
     var lastBoardTool: Tool by mutableStateOf(Tool.STICKY)
+        private set
+
+    /** Most-recent path tool (PATH_PEN / PATH_EDIT) — grouped button re-selects it. */
+    var lastPathTool: Tool by mutableStateOf(Tool.PATH_PEN)
         private set
 
     // ── Phase 10.2 — shape fill + stroke style ───────────────────────────
@@ -236,8 +246,8 @@ class ToolPaletteState {
         selected = tool
         if (tool.isInk) lastInkTool = tool
         if (tool.isEraser) lastEraserTool = tool
-        // 12.2 — the pen path tool lives in the grouped shapes button.
-        if (tool.isShape || tool.isPathPen) lastShapeTool = tool
+        if (tool.isShape) lastShapeTool = tool
+        if (tool.isPathPen || tool.isPathEdit) lastPathTool = tool
         if (tool.isSticky || tool.isConnector) lastBoardTool = tool
     }
 

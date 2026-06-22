@@ -26,3 +26,6 @@ local.properties
 *.keystore
 google-services.json
 Placeholder.txt
+
+# Claude Code agent worktrees (ephemeral, never committed)
+.claude/worktrees/

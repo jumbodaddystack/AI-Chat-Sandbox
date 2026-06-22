@@ -529,6 +529,13 @@ class DrawingSurface(context: Context) : View(context) {
      */
     var stickyTapListener: ((worldX: Float, worldY: Float) -> Unit)? = null
 
+    /**
+     * Fired when the user taps the canvas with PATH_EDIT tool active and a
+     * path item is found under the tap point. The receiver enters node-edit
+     * mode for that item.
+     */
+    var pathEditTapListener: ((itemId: String) -> Unit)? = null
+
     // Viewport gesture state — only used for finger input (stylus has its own branch).
     private enum class GestureMode { NONE, PAN, PINCH }
     private var gestureMode: GestureMode = GestureMode.NONE
@@ -984,6 +991,9 @@ class DrawingSurface(context: Context) : View(context) {
             // gestures until the path closes or the tool changes.
             return handlePathPenEvent(event)
         }
+        if (paletteTool.isPathEdit) {
+            return handlePathEditToolEvent(event)
+        }
         if (paletteTool.isShape) {
             // Phase 6.2 — shape tools accept any pointer (stylus or finger)
             // and emit a rubber-band preview between ACTION_DOWN / UP.
@@ -1090,6 +1100,63 @@ class DrawingSurface(context: Context) : View(context) {
                     } else {
                         textTapListener?.invoke(wx, wy)
                     }
+                }
+                textTapActive = false
+                gestureMode = GestureMode.NONE
+                true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                textTapActive = false
+                gestureMode = GestureMode.NONE
+                true
+            }
+            else -> false
+        }
+    }
+
+    private fun handlePathEditToolEvent(event: MotionEvent): Boolean {
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                textTapStartX = event.x
+                textTapStartY = event.y
+                textTapActive = true
+                gestureMode = GestureMode.NONE
+                true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                textTapActive = false
+                if (event.pointerCount >= 2) {
+                    pinchLastDist = pointerDistance(event, 0, 1)
+                    gestureMode = GestureMode.PINCH
+                }
+                true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (gestureMode == GestureMode.PINCH && event.pointerCount >= 2) {
+                    val newDist = pointerDistance(event, 0, 1)
+                    if (pinchLastDist > 1f && newDist > 1f) {
+                        val factor = newDist / pinchLastDist
+                        val focalX = (event.getX(0) + event.getX(1)) * 0.5f
+                        val focalY = (event.getY(0) + event.getY(1)) * 0.5f
+                        viewport.applyZoom(focalX, focalY, factor)
+                    }
+                    pinchLastDist = newDist
+                } else if (textTapActive) {
+                    val dx = event.x - textTapStartX
+                    val dy = event.y - textTapStartY
+                    if (hypot(dx, dy) > tapSlopPx) textTapActive = false
+                }
+                true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (event.pointerCount - 1 == 1) gestureMode = GestureMode.NONE
+                true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (textTapActive && gestureMode == GestureMode.NONE) {
+                    val wx = viewport.screenToWorldX(event.x)
+                    val wy = viewport.screenToWorldY(event.y)
+                    hitTestPathItem(wx, wy)?.let { pathEditTapListener?.invoke(it) }
                 }
                 textTapActive = false
                 gestureMode = GestureMode.NONE
@@ -3121,6 +3188,44 @@ class DrawingSurface(context: Context) : View(context) {
         val bounds: FloatArray,
     )
 
+    /** Minimum distance from point ([px],[py]) to segment ([x0],[y0])→([x1],[y1]). */
+    private fun segmentDist(px: Float, py: Float, x0: Float, y0: Float, x1: Float, y1: Float): Float {
+        val dx = x1 - x0; val dy = y1 - y0
+        val lenSq = dx * dx + dy * dy
+        if (lenSq < 1e-12f) return hypot(px - x0, py - y0)
+        val t = ((px - x0) * dx + (py - y0) * dy) / lenSq
+        val tc = t.coerceIn(0f, 1f)
+        return hypot(px - (x0 + tc * dx), py - (y0 + tc * dy))
+    }
+
+    /**
+     * Returns the id of the path item nearest to world point ([wx],[wy])
+     * within [PATH_EDIT_HIT_SLOP_PX] screen pixels, or null when nothing
+     * is close enough.
+     */
+    private fun hitTestPathItem(wx: Float, wy: Float): String? {
+        val slopWorld = PATH_EDIT_HIT_SLOP_PX / viewport.scale.coerceAtLeast(MIN_DIV_SCALE)
+        var bestId: String? = null
+        var bestDist = slopWorld
+        for (item in committedItems) {
+            if (item.kind != PathCodec.KIND) continue
+            val payload = try { PathCodec.decode(item.payload) } catch (_: Exception) { continue }
+            val bounds = PathCodec.boundsOf(payload) ?: continue
+            if (wx < bounds[0] - slopWorld || wx > bounds[2] + slopWorld ||
+                wy < bounds[1] - slopWorld || wy > bounds[3] + slopWorld) continue
+            for (sub in payload.subpaths) {
+                val pts = PathCodec.flatten(sub)
+                var i = 2
+                while (i < pts.size) {
+                    val d = segmentDist(wx, wy, pts[i - 2], pts[i - 1], pts[i], pts[i + 1])
+                    if (d < bestDist) { bestDist = d; bestId = item.id }
+                    i += 2
+                }
+            }
+        }
+        return bestId
+    }
+
     companion object {
         private const val TAG = "DrawingSurface"
 
@@ -3205,6 +3310,10 @@ class DrawingSurface(context: Context) : View(context) {
         /** Rubber-band preview colour used while dragging out a frame. */
         private const val FRAME_PREVIEW_COLOR: Int = 0xFF1E88E5.toInt()
         private const val FRAME_PREVIEW_WIDTH_PX: Float = 1.5f
+
+        // ── Edit-path tool ────────────────────────────────────────────
+        /** Screen-space tap radius for selecting a path item to edit. */
+        private const val PATH_EDIT_HIT_SLOP_PX: Float = 20f
     }
 }
 
@@ -3225,6 +3334,7 @@ fun DrawingSurfaceView(
     // Sub-phase 11.1 — sticky notes: tap dispatch + in-edit body suppression.
     editingStickyId: String? = null,
     onStickyTap: (worldX: Float, worldY: Float) -> Unit = { _, _ -> },
+    onPathEditTap: (String) -> Unit = {},
     // Sub-phase 11.3 — hold-to-snap shape recognition.
     onStrokeHoldRecognized: (NoteItem) -> Unit = { },
     // Phase I5 — live beautify: the user tapped the ghost to accept the cleaned
@@ -3269,6 +3379,7 @@ fun DrawingSurfaceView(
     val currentOnSelectionClear by rememberUpdatedState(onSelectionShouldClear)
     val currentOnTextTap by rememberUpdatedState(onTextTap)
     val currentOnStickyTap by rememberUpdatedState(onStickyTap)
+    val currentOnPathEditTap by rememberUpdatedState(onPathEditTap)
     val currentOnHoldRecognized by rememberUpdatedState(onStrokeHoldRecognized)
     val currentOnBeautifyAccepted by rememberUpdatedState(onStrokeBeautifyAccepted)
     val currentOnPresentationAdvance by rememberUpdatedState(onPresentationAdvance)
@@ -3295,6 +3406,7 @@ fun DrawingSurfaceView(
                 selectionShouldClearListener = { currentOnSelectionClear() }
                 textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
                 stickyTapListener = { wx, wy -> currentOnStickyTap(wx, wy) }
+                pathEditTapListener = { id -> currentOnPathEditTap(id) }
                 strokeHoldRecognizeListener = { item -> currentOnHoldRecognized(item) }
                 strokeBeautifyListener = { raw, beautified -> currentOnBeautifyAccepted(raw, beautified) }
                 presentationAdvanceListener = { currentOnPresentationAdvance() }
@@ -3344,6 +3456,7 @@ fun DrawingSurfaceView(
             view.selectionShouldClearListener = { currentOnSelectionClear() }
             view.textTapListener = { wx, wy -> currentOnTextTap(wx, wy) }
             view.stickyTapListener = { wx, wy -> currentOnStickyTap(wx, wy) }
+            view.pathEditTapListener = { id -> currentOnPathEditTap(id) }
             view.strokeHoldRecognizeListener = { item -> currentOnHoldRecognized(item) }
             view.strokeBeautifyListener = { raw, beautified -> currentOnBeautifyAccepted(raw, beautified) }
             view.presentationAdvanceListener = { currentOnPresentationAdvance() }

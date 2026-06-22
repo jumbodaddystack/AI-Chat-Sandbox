@@ -2472,6 +2472,14 @@ class NoteEditorViewModel @Inject constructor(
         _nodeEditTarget.value = item.id
     }
 
+    /** PATH_EDIT tool: enter node-edit mode directly by item id, bypassing the selection. */
+    fun enterNodeEditById(id: String) {
+        val item = items.firstOrNull { it.id == id } ?: return
+        if (item.kind != PathCodec.KIND) return
+        clearSelection()
+        _nodeEditTarget.value = id
+    }
+
     fun exitNodeEdit() {
         _nodeEditTarget.value = null
     }
